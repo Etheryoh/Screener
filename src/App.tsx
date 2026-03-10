@@ -1652,28 +1652,33 @@ export default function App() {
         *{box-sizing:border-box;margin:0;padding:0}
         ::-webkit-scrollbar{width:5px} ::-webkit-scrollbar-thumb{background:#2a3548;border-radius:3px}
         input,button{font-family:inherit}
+        .app-inner { width:100%; max-width:1200px; margin:0 auto; padding:0 clamp(16px, 4vw, 40px); }
       `}</style>
 
-      <div style={{ borderBottom:"1px solid #141e2e", padding:"10px 28px", background:"#090f1a" }}>
-        <div style={{ fontSize:9, color:"#445", letterSpacing:2.5, textTransform:"uppercase", marginBottom:2 }}>
-          Multi-sources · Gratuit · Mondial
-        </div>
-        <div style={{ fontSize:19, fontWeight:800, color:"#e6edf3" }}>
-          Stock Screener <span style={{ color:"#2a3548" }}>—</span>{" "}
-          <span style={{ color:"#f0a500" }}>Méthodologie d'Investissement</span>
-        </div>
-        <div style={{ display:"flex", gap:14, marginTop:4 }}>
-          {[["Yahoo Finance","#22c55e"],["CoinGecko","#f59e0b"],["ECB","#60a5fa"]].map(([l,c]) => (
-            <span key={l} style={{ fontSize:9, color:"#556" }}>
-              <span style={{ color:c }}>●</span> {l}
-            </span>
-          ))}
+      {/* HEADER */}
+      <div style={{ borderBottom:"1px solid #141e2e", background:"#090f1a", padding:"10px 0" }}>
+        <div className="app-inner">
+          <div style={{ fontSize:9, color:"#445", letterSpacing:2.5, textTransform:"uppercase", marginBottom:2 }}>
+            Multi-sources · Gratuit · Mondial
+          </div>
+          <div style={{ fontSize:19, fontWeight:800, color:"#e6edf3" }}>
+            Stock Screener <span style={{ color:"#2a3548" }}>—</span>{" "}
+            <span style={{ color:"#f0a500" }}>Méthodologie d'Investissement</span>
+          </div>
+          <div style={{ display:"flex", gap:14, marginTop:4 }}>
+            {[["Yahoo Finance","#22c55e"],["CoinGecko","#f59e0b"],["ECB","#60a5fa"]].map(([l,c]) => (
+              <span key={l} style={{ fontSize:9, color:"#556" }}>
+                <span style={{ color:c }}>●</span> {l}
+              </span>
+            ))}
+          </div>
         </div>
       </div>
 
-      <div style={{ padding:"24px 28px 0" }}>
-        <div style={{ maxWidth:740 }}>
-          <div style={{ display:"flex", gap:10 }}>
+      {/* BARRE DE RECHERCHE */}
+      <div style={{ paddingTop:24, paddingBottom:0 }}>
+        <div className="app-inner">
+          <div style={{ maxWidth:760, display:"flex", gap:10 }}>
             <input
               value={query}
               onChange={e => setQuery(e.target.value)}
@@ -1704,34 +1709,75 @@ export default function App() {
         </div>
       </div>
 
+      {/* JOURNAL */}
       {log.length > 0 && (
-        <div style={{ margin:"14px 28px 0", background:"#090f1a", border:"1px solid #141e2e", borderRadius:8, padding:"8px 14px" }}>
-          <div style={{ fontSize:9, color:"#445", textTransform:"uppercase", letterSpacing:1.5, marginBottom:5 }}>Journal</div>
-          {log.map((l,i) => (
-            <div key={i} style={{ fontSize:11, color:"#556", fontFamily:"'IBM Plex Mono',monospace" }}>{l}</div>
-          ))}
+        <div style={{ marginTop:14 }}>
+          <div className="app-inner">
+            <div style={{ background:"#090f1a", border:"1px solid #141e2e", borderRadius:8, padding:"8px 14px" }}>
+              <div style={{ fontSize:9, color:"#445", textTransform:"uppercase", letterSpacing:1.5, marginBottom:5 }}>Journal</div>
+              {log.map((l,i) => (
+                <div key={i} style={{ fontSize:11, color:"#556", fontFamily:"'IBM Plex Mono',monospace" }}>{l}</div>
+              ))}
+            </div>
+          </div>
         </div>
       )}
 
+      {/* ERREUR */}
       {error && (
-        <div style={{ margin:"14px 28px 0", background:"#1e0a0a", border:"1px solid #5a1a1a", borderRadius:8, padding:"12px 16px", color:"#ef4444", fontSize:13 }}>
-          ⚠️ {error}
+        <div style={{ marginTop:14 }}>
+          <div className="app-inner">
+            <div style={{ background:"#1e0a0a", border:"1px solid #5a1a1a", borderRadius:8, padding:"12px 16px", color:"#ef4444", fontSize:13 }}>
+              ⚠️ {error}
+            </div>
+          </div>
         </div>
       )}
 
+      {/* LOADING */}
       {loading && (
         <div style={{ display:"flex", justifyContent:"center", padding:60 }}>
           <div style={{ width:34, height:34, border:"3px solid #141e2e", borderTopColor:"#f0a500", borderRadius:"50%", animation:"spin 1s linear infinite" }}/>
         </div>
       )}
 
+      {/* RÉSULTATS */}
       {result && !loading && (
-        <div style={{ padding:"22px 28px", maxWidth:900 }}>
-          {result.type === "stock"  && <StockView metrics={result.metrics} chartData={result.chartData} ticker={result.ticker ?? ""}/>}
-          {result.type === "crypto" && <CryptoView data={result.data}/>}
-          {result.type === "forex"  && <ForexView {...result}/>}
+        <div style={{ paddingTop:22, paddingBottom:40 }}>
+          <div className="app-inner">
+            {result.type === "stock"  && <StockView metrics={result.metrics} chartData={result.chartData} ticker={result.ticker ?? ""}/>}
+            {result.type === "crypto" && <CryptoView data={result.data}/>}
+            {result.type === "forex"  && <ForexView {...result}/>}
+          </div>
         </div>
       )}
+
+      {/* DISCLAIMER LÉGAL */}
+      <div style={{ borderTop:"1px solid #141e2e", background:"#090f1a", marginTop:"auto", padding:"20px 0" }}>
+        <div className="app-inner">
+          <div style={{
+            background:"#0d1420", border:"1px solid #1e2a3a", borderRadius:10,
+            padding:"16px 20px", display:"flex", gap:14, alignItems:"flex-start",
+          }}>
+            <span style={{ fontSize:18, flexShrink:0 }}>⚖️</span>
+            <div>
+              <div style={{ fontSize:11, fontWeight:800, color:"#8b949e", textTransform:"uppercase", letterSpacing:1.2, marginBottom:6 }}>
+                Avertissement — Pas de conseil en investissement
+              </div>
+              <div style={{ fontSize:11, color:"#556", lineHeight:1.8 }}>
+                Les informations, analyses et signaux présentés sur ce screener sont fournis à titre <strong style={{ color:"#8b949e" }}>purement informatif et éducatif</strong>.
+                Ils ne constituent en aucun cas un conseil en investissement, une recommandation d'achat ou de vente, ni une incitation à investir.
+                Tout investissement comporte un <strong style={{ color:"#8b949e" }}>risque de perte partielle ou totale du capital</strong>.
+                Les performances passées ne préjugent pas des performances futures.
+                L'auteur de cet outil <strong style={{ color:"#8b949e" }}>décline toute responsabilité</strong> quant aux décisions prises sur la base de ces données
+                et aux pertes éventuelles qui pourraient en résulter.
+                Consultez un conseiller financier agréé avant toute décision d'investissement.
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
     </div>
   );
 }
