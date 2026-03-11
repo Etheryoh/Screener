@@ -92,6 +92,27 @@ const CHART_RANGES: Record<string, { range: string; interval: string; label: str
   "5a":  { range: "5y",   interval: "1wk", label: "5 ans"  },
 };
 
+// ── MODES DE RECHERCHE ────────────────────────────────────────
+type SearchMode = "all" | "equity" | "etf" | "futures" | "forex" | "crypto" | "index" | "bond";
+
+const SEARCH_MODES: { key: SearchMode; label: string; yfTypes?: string[]; color: string }[] = [
+  { key: "all",     label: "Tout",             color: "#8b949e" },
+  { key: "equity",  label: "Actions",          color: "#60a5fa", yfTypes: ["EQUITY"] },
+  { key: "etf",     label: "Fonds",            color: "#a78bfa", yfTypes: ["ETF", "MUTUALFUND"] },
+  { key: "futures", label: "Contrats à terme", color: "#fb923c", yfTypes: ["FUTURE"] },
+  { key: "forex",   label: "Forex",            color: "#34d399", yfTypes: ["CURRENCY"] },
+  { key: "crypto",  label: "Crypto",           color: "#f0a500", yfTypes: ["CRYPTOCURRENCY"] },
+  { key: "index",   label: "Indices",          color: "#fbbf24", yfTypes: ["INDEX"] },
+  { key: "bond",    label: "Obligations",      color: "#22d3ee", yfTypes: ["BOND"] },
+];
+
+interface SearchSuggestion {
+  symbol:    string;
+  name:      string;
+  type:      string;
+  exchange?: string;
+}
+
 async function yfChart(ticker: string, addLog: (s: string) => void, period = "1a") {
   const { range, interval } = CHART_RANGES[period] || CHART_RANGES["1a"];
   const url = `${PROXY}?ticker=${encodeURIComponent(ticker)}&type=chart&range=${range}&interval=${interval}`;
@@ -168,6 +189,34 @@ async function ecbRates(): Promise<Record<string, number>> {
   } catch { return {}; }
 }
 
+// ── SUGGESTIONS DE RECHERCHE ──────────────────────────────────
+// Nécessite proxy ?type=search → ajouter dans le Worker CF :
+//   const q = url.searchParams.get("q");
+//   const r = await fetch(`https://query1.finance.yahoo.com/v1/finance/search?q=${q}&quotesCount=10&newsCount=0`);
+async function yfSearch(q: string): Promise<SearchSuggestion[]> {
+  try {
+    const d = await getJson(`${PROXY}?q=${encodeURIComponent(q)}&type=search`);
+    return (d?.quotes ?? []).slice(0, 10).map((r: any) => ({
+      symbol:   r.symbol,
+      name:     r.shortname || r.longname || r.symbol,
+      type:     r.quoteType || "EQUITY",
+      exchange: r.exchDisp  || r.exchange || "",
+    }));
+  } catch { return []; }
+}
+
+async function cgSearchSuggest(q: string): Promise<SearchSuggestion[]> {
+  try {
+    const d = await getJson(`${CG_BASE}/search?query=${encodeURIComponent(q)}`);
+    return (d?.coins ?? []).slice(0, 5).map((c: any) => ({
+      symbol:   c.symbol.toUpperCase(),
+      name:     c.name,
+      type:     "CRYPTOCURRENCY",
+      exchange: "CoinGecko",
+    }));
+  } catch { return []; }
+}
+
 // ════════════════════════════════════════════════════════════════
 // BLOC 4 — MOTEUR D'ANALYSE (scoring pondéré)
 // ════════════════════════════════════════════════════════════════
@@ -200,7 +249,10 @@ function buildMetrics(yf: any, meta: any) {
   const mktCap      = (pr.marketCap?.raw ?? sd.marketCap?.raw ?? meta?.marketCap) as number | undefined;
   const price       = (pr.regularMarketPrice?.raw ?? meta?.regularMarketPrice) as number | undefined;
   const change1d    = (pr.regularMarketChangePercent?.raw ?? meta?.regularMarketChangePercent) as number | undefined;
-  const change52w   = (sd["52WeekChange"]?.raw ?? ks["52WeekChange"]?.raw) as number | undefined;
+  // Yahoo Finance retourne parfois 52WeekChange en % (ex: 21.1) au lieu de décimal (0.211)
+  // Si |valeur| > 15, c'est forcément un pourcentage → on normalise
+  let change52w = (sd["52WeekChange"]?.raw ?? ks["52WeekChange"]?.raw) as number | undefined;
+  if (change52w != null && Math.abs(change52w) > 15) change52w = change52w / 100;
   const name        = (pr.longName || pr.shortName || meta?.longName || meta?.shortName || "") as string;
   const sector      = (yf?.assetProfile?.sector   || "") as string;
   const industry    = (yf?.assetProfile?.industry || "") as string;
@@ -326,6 +378,17 @@ function buildMetrics(yf: any, meta: any) {
   }
   if (globalScore != null) globalScore = parseFloat(globalScore.toFixed(1));
 
+  // ── Règle 5 : couverture fondamentale insuffisante ────────────
+  // Si moins de 2 groupes ont des données réelles, le score est non significatif.
+  const coveredGroups = [gValorisation, gRentabilite, gSante, gRisque]
+    .filter(g => g != null).length;
+  if (coveredGroups < 2) globalScore = null;
+
+  // ── Règle 6 : types sans fondamentaux d'entreprise ───────────
+  // INDEX, FUTURE, BOND ne se lisent pas avec des ratios PE/PB/ROE.
+  const noFundaTypes = ["INDEX", "FUTURE", "BOND", "MUTUALFUND"];
+  if (noFundaTypes.indexOf((quoteType || "").toUpperCase()) !== -1) globalScore = null;
+
   const scores: Record<string, number | null> = {
     pe: scorePE, pb: scorePB, ps: scorePS, evEbitda: scoreEvEbitda,
     roe: scoreROE, netMargin: scoreNetMargin, opMargin: scoreOpMargin,
@@ -414,10 +477,147 @@ interface TechSignal {
   strength: "bull" | "bear" | "neutral";
 }
 
+interface SinewaveResult {
+  sine:           number;
+  leadSine:       number;
+  dominantPeriod: number;
+  phase:          number;
+  mode:           "trending" | "cycling";
+  cycleTurn:      "peak" | "trough" | null;
+  momentum14:     number;
+  optimalUT: { label: string; horizon: string; note: string; };
+}
+
+// ── SINEWAVE EHLERS (Hilbert Transform) + ROC MOMENTUM ─────────
+function calcSinewave(closes: (number|null)[]): SinewaveResult | null {
+  const c = closes.filter((v): v is number => v != null);
+  if (c.length < 50) return null;
+  const N = c.length;
+
+  // Smooth price (WMA-4)
+  const sp = new Array(N).fill(0);
+  for (let i = 3; i < N; i++) sp[i] = (c[i] + 2*c[i-1] + 2*c[i-2] + c[i-3]) / 6;
+
+  const Per = new Array(N).fill(10);
+  const Smp = new Array(N).fill(10);
+  const Det = new Array(N).fill(0);
+  const Q1  = new Array(N).fill(0);
+  const I1  = new Array(N).fill(0);
+  const jI  = new Array(N).fill(0);
+  const jQ  = new Array(N).fill(0);
+  const I2  = new Array(N).fill(0);
+  const Q2  = new Array(N).fill(0);
+  const Re  = new Array(N).fill(0);
+  const Im  = new Array(N).fill(0);
+  const Ph  = new Array(N).fill(0);
+  const Sn  = new Array(N).fill(0);
+  const LSn = new Array(N).fill(0);
+
+  for (let i = 10; i < N; i++) {
+    const a = 0.075 * Smp[i-1] + 0.54;
+    Det[i] = (0.0962*sp[i] + 0.5769*sp[i-2] - 0.5769*sp[i-4] - 0.0962*sp[i-6]) * a;
+    Q1[i]  = (0.0962*Det[i] + 0.5769*Det[i-2] - 0.5769*Det[i-4] - 0.0962*Det[i-6]) * a;
+    I1[i]  = Det[i-3];
+    jI[i]  = 0.33*I1[i] + 0.67*I1[i-1];
+    jQ[i]  = 0.33*Q1[i] + 0.67*Q1[i-1];
+    I2[i]  = 0.2*(I1[i] - jQ[i]) + 0.8*I2[i-1];
+    Q2[i]  = 0.2*(Q1[i] + jI[i]) + 0.8*Q2[i-1];
+    Re[i]  = 0.2*(I2[i]*I2[i-1] + Q2[i]*Q2[i-1]) + 0.8*Re[i-1];
+    Im[i]  = 0.2*(I2[i]*Q2[i-1] - Q2[i]*I2[i-1]) + 0.8*Im[i-1];
+    let p  = Per[i-1];
+    if (Im[i] !== 0 && Re[i] !== 0) {
+      const ang = Math.atan(Im[i] / Re[i]);
+      if (ang !== 0) p = 2 * Math.PI / Math.abs(ang);
+    }
+    if (p > 1.5*Per[i-1]) p = 1.5*Per[i-1];
+    if (p < 0.67*Per[i-1]) p = 0.67*Per[i-1];
+    if (p < 6) p = 6; if (p > 50) p = 50;
+    Per[i] = p;
+    Smp[i] = 0.33*p + 0.67*Smp[i-1];
+    Ph[i]  = I1[i] !== 0 ? (180/Math.PI) * Math.atan(Q1[i]/I1[i]) : Ph[i-1];
+    Sn[i]  = Math.sin(Ph[i] * Math.PI / 180);
+    LSn[i] = Math.sin((Ph[i] + 45) * Math.PI / 180);
+  }
+
+  const L = N - 1;
+  const sine     = parseFloat(Sn[L].toFixed(3));
+  const leadSine = parseFloat(LSn[L].toFixed(3));
+  const phase    = parseFloat(Ph[L].toFixed(1));
+  const dp       = Math.max(6, Math.round(Smp[L]));
+
+  const crossBull = Sn[L-1] < LSn[L-1] && Sn[L] >= LSn[L];
+  const crossBear = Sn[L-1] > LSn[L-1] && Sn[L] <= LSn[L];
+  const cycleTurn: "peak" | "trough" | null = crossBull ? "trough" : crossBear ? "peak" : null;
+
+  const phAdv = Math.abs(Ph[L] - Ph[Math.max(10, L-5)]);
+  const mode: "trending" | "cycling" = phAdv > 30 ? "trending" : "cycling";
+
+  const momentum14 = N >= 15
+    ? parseFloat((((c[N-1] - c[N-15]) / c[N-15]) * 100).toFixed(1))
+    : 0;
+
+  const optimalUT =
+    dp <= 10  ? { label:"Journalier",             horizon:"Court terme · Swing 1-2 sem.",           note:`Cycle dominant ~${dp}j — le journalier est l'UT optimale pour piloter les entrées/sorties.` } :
+    dp <= 22  ? { label:"Journalier / Hebdomadaire", horizon:"Swing 2-6 semaines",                  note:`Cycle ~${dp}j — journalier pour l'entrée, hebdomadaire pour le contexte.` } :
+    dp <= 40  ? { label:"Hebdomadaire",            horizon:"Position 1-3 mois",                     note:`Cycle ~${dp}j — l'hebdomadaire filtre le bruit et aligne sur les mouvements de fond.` } :
+                { label:"Mensuel / Hebdomadaire",  horizon:"Long terme 3-12 mois",                  note:`Cycle long ~${dp}j — les fondamentaux reprennent le dessus sur les signaux techniques.` };
+
+  return { sine, leadSine, dominantPeriod: dp, phase, mode, cycleTurn, momentum14, optimalUT };
+}
+
+// ── RÉGRESSION LOG-LINÉAIRE (déviation prix / tendance) ───────
+interface TrendDevResult {
+  deviation:   number;   // % écart au-dessus (+) ou en dessous (-) de la tendance
+  trendPrice:  number;   // prix estimé par la droite de tendance
+  r2:          number;   // R² — qualité d'ajustement (0-1)
+}
+
+function calcTrendDeviation(closes: (number|null)[]): TrendDevResult | null {
+  const c = closes.filter((v): v is number => v != null && v > 0);
+  const N = c.length;
+  if (N < 40) return null;
+
+  // ln(price) = slope * i + intercept
+  let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+  for (let i = 0; i < N; i++) {
+    const y = Math.log(c[i]);
+    sumX  += i;
+    sumY  += y;
+    sumXY += i * y;
+    sumX2 += i * i;
+  }
+  const denom = N * sumX2 - sumX * sumX;
+  if (denom === 0) return null;
+
+  const slope     = (N * sumXY - sumX * sumY) / denom;
+  const intercept = (sumY - slope * sumX) / N;
+
+  // R²
+  const meanY = sumY / N;
+  let ssTot = 0, ssRes = 0;
+  for (let i = 0; i < N; i++) {
+    const y    = Math.log(c[i]);
+    const yHat = slope * i + intercept;
+    ssTot += (y - meanY) * (y - meanY);
+    ssRes += (y - yHat) * (y - yHat);
+  }
+  const r2 = ssTot > 0 ? 1 - ssRes / ssTot : 0;
+
+  const trendPrice   = Math.exp(slope * (N - 1) + intercept);
+  const currentPrice = c[N - 1];
+  const deviation    = ((currentPrice - trendPrice) / trendPrice) * 100;
+
+  return {
+    deviation:  parseFloat(deviation.toFixed(1)),
+    trendPrice: parseFloat(trendPrice.toFixed(2)),
+    r2:         parseFloat(r2.toFixed(3)),
+  };
+}
+
 function computeTechSignals(
   closes: (number|null)[],
   volumes: (number|null)[],
-): TechSignal[] {
+): { signals: TechSignal[]; sinewave: SinewaveResult | null } {
   const signals: TechSignal[] = [];
   const rsi   = calcRSI(closes);
   const ema50  = calcEMA(closes, 50);
@@ -535,7 +735,99 @@ function computeTechSignals(
       strength:"neutral", edu: { ...volEduBase,
         example:`Les volumes récents sont ${vol.ratio}x supérieurs à la moyenne historique. Ce niveau d'activité inhabituel mérite attention — croiser avec l'évolution du prix pour déterminer si c'est un achat ou une vente de grande ampleur.` } });
 
-  return signals;
+  // ── Sinewave + Momentum ──────────────────────────────────────
+  const sw = calcSinewave(closes);
+  const swEdu = {
+    concept: "Le Sinewave d'Ehlers (Hilbert Transform) décompose le prix en composantes cycliques pour identifier la phase de marché et la durée du cycle dominant.",
+    howToRead: "Quand la ligne Sine croise la LeadSine vers le bas → creux de cycle (signal haussier). Vers le haut → sommet de cycle (signal baissier). La période dominante indique la durée du cycle actuel en jours.",
+  };
+  const momEdu = {
+    concept: "Le Momentum ROC-14 (Rate of Change) mesure la variation de prix sur 14 séances en %. Il capture la vitesse et la direction du mouvement récent.",
+    howToRead: "Au-dessus de +5% : élan haussier. En dessous de -5% : élan baissier. Proche de 0 : marché sans direction. Un changement de signe peut précéder un retournement de prix.",
+  };
+
+  if (sw != null) {
+    if (sw.cycleTurn === "trough") {
+      signals.push({ emoji:"🔋", color:"#22c55e",
+        plain:"Retournement de cycle haussier — fin probable de la phase baissière",
+        label:`Sinewave — creux de cycle (~${sw.dominantPeriod}j)`,
+        detail:`Sine ${sw.sine} croise LeadSine ${sw.leadSine} · Phase ${sw.phase.toFixed(0)}°`,
+        strength:"bull", edu: { ...swEdu,
+          example:`Le Sinewave vient de croiser la LeadSine dans la zone basse — signal de creux de cycle. Confirmé par le RSI ou le MACD, il indique souvent un point bas à exploiter.` } });
+    } else if (sw.cycleTurn === "peak") {
+      signals.push({ emoji:"🔻", color:"#ef4444",
+        plain:"Retournement de cycle baissier — fin probable de la phase haussière",
+        label:`Sinewave — sommet de cycle (~${sw.dominantPeriod}j)`,
+        detail:`Sine ${sw.sine} croise LeadSine ${sw.leadSine} · Phase ${sw.phase.toFixed(0)}°`,
+        strength:"bear", edu: { ...swEdu,
+          example:`Croisement Sine/LeadSine en zone haute — sommet de cycle probable. Réduire les positions longues ou serrer les stops.` } });
+    } else {
+      const pos = sw.sine > 0.5 ? "phase haute" : sw.sine < -0.5 ? "phase basse" : sw.sine > 0 ? "montée" : "descente";
+      signals.push({ emoji:"〰️", color:"#8b949e",
+        plain:`Cycle ${sw.mode === "trending" ? "en tendance" : "oscillant"} — actuellement en ${pos}`,
+        label:`Sinewave — période ~${sw.dominantPeriod}j`,
+        detail:`Sine ${sw.sine} · LeadSine ${sw.leadSine} · Phase ${sw.phase.toFixed(0)}°`,
+        strength:"neutral", edu: { ...swEdu,
+          example:`Période dominante ~${sw.dominantPeriod}j. Sine à ${sw.sine} — pas de retournement imminent, le cycle poursuit sa course.` } });
+    }
+
+    if (sw.momentum14 > 5) {
+      signals.push({ emoji:"⬆️", color:"#22c55e",
+        plain:`Élan haussier solide — +${sw.momentum14.toFixed(1)}% sur 14 séances`,
+        label:`Momentum ROC +${sw.momentum14.toFixed(1)}%`,
+        detail:"Rate of Change 14 jours · Tendance court terme haussière",
+        strength:"bull", edu: { ...momEdu,
+          example:`+${sw.momentum14.toFixed(1)}% sur 14 séances — pression acheteuse soutenue. Signal positif pour les positions longues.` } });
+    } else if (sw.momentum14 < -5) {
+      signals.push({ emoji:"⬇️", color:"#ef4444",
+        plain:`Élan baissier — ${sw.momentum14.toFixed(1)}% sur 14 séances`,
+        label:`Momentum ROC ${sw.momentum14.toFixed(1)}%`,
+        detail:"Rate of Change 14 jours · Tendance court terme baissière",
+        strength:"bear", edu: { ...momEdu,
+          example:`${sw.momentum14.toFixed(1)}% sur 14 séances — pression vendeuse persistante. Éviter les achats impulsifs tant que le momentum reste négatif.` } });
+    } else {
+      signals.push({ emoji:"↔️", color:"#8b949e",
+        plain:`Momentum neutre — ${sw.momentum14 >= 0 ? "+" : ""}${sw.momentum14.toFixed(1)}% sur 14 séances`,
+        label:`Momentum ROC ${sw.momentum14 >= 0 ? "+" : ""}${sw.momentum14.toFixed(1)}%`,
+        detail:"Rate of Change 14 jours · Absence d'élan directionnel",
+        strength:"neutral", edu: { ...momEdu,
+          example:`ROC de ${sw.momentum14.toFixed(1)}% — le titre évolue sans élan marqué. Le momentum changera probablement avant que le prix ne montre une vraie direction.` } });
+    }
+  }
+
+  // ── Déviation à la tendance log-linéaire ─────────────────────
+  const trendDev = calcTrendDeviation(closes);
+  const trendEdu = {
+    concept: "La régression log-linéaire trace une droite de tendance sur toute la période analysée. Elle modélise la croissance naturelle du prix en supposant une progression exponentielle dans le temps.",
+    howToRead: "Un écart positif élevé signifie que le prix est bien au-dessus de sa tendance historique — signe de surchauffe ou de bulle. Un écart négatif indique que le prix est sous sa tendance — possible opportunité si les fondamentaux le soutiennent.",
+  };
+  if (trendDev != null && trendDev.r2 >= 0.4) {
+    const dev = trendDev.deviation;
+    if (dev > 30) {
+      signals.push({ emoji:"📈", color:"#ef4444",
+        plain:`Prix ${dev.toFixed(0)}% au-dessus de sa tendance historique — zone de surchauffe`,
+        label:`Déviation tendance +${dev.toFixed(0)}%`,
+        detail:`Régression log-linéaire · Tendance à ${trendDev.trendPrice} · R²=${trendDev.r2}`,
+        strength:"bear", edu: { ...trendEdu,
+          example:`Le prix est ${dev.toFixed(0)}% au-dessus de sa trajectoire historique. Ce niveau de déviation est souvent suivi d'un retour vers la moyenne, rapide ou progressif.` } });
+    } else if (dev > 15) {
+      signals.push({ emoji:"📊", color:"#f59e0b",
+        plain:`Prix ${dev.toFixed(0)}% au-dessus de sa tendance — vigilance`,
+        label:`Déviation tendance +${dev.toFixed(0)}%`,
+        detail:`Régression log-linéaire · Tendance à ${trendDev.trendPrice} · R²=${trendDev.r2}`,
+        strength:"neutral", edu: { ...trendEdu,
+          example:`${dev.toFixed(0)}% au-dessus de la tendance — pas encore critique mais extensible. Un retour vers la moyenne est toujours possible.` } });
+    } else if (dev < -20) {
+      signals.push({ emoji:"📉", color:"#22c55e",
+        plain:`Prix ${Math.abs(dev).toFixed(0)}% sous sa tendance — possible opportunité`,
+        label:`Déviation tendance ${dev.toFixed(0)}%`,
+        detail:`Régression log-linéaire · Tendance à ${trendDev.trendPrice} · R²=${trendDev.r2}`,
+        strength:"bull", edu: { ...trendEdu,
+          example:`Le prix est ${Math.abs(dev).toFixed(0)}% sous sa tendance de long terme. Si les fondamentaux le soutiennent, c'est souvent le signe d'une opportunité de retour à la moyenne.` } });
+    }
+  }
+
+  return { signals, sinewave: sw };
 }
 
 // ── ENCART CONTEXTE SITUATIONNEL ─────────────────────────────
@@ -546,7 +838,11 @@ interface SitSignal {
   detail: string;
 }
 
-function computeSituationalContext(metrics: any): {
+function computeSituationalContext(
+  metrics: any,
+  sw?: SinewaveResult | null,
+  trendDev?: TrendDevResult | null,
+): {
   profile: string;
   profileColor: string;
   profileEmoji: string;
@@ -555,7 +851,7 @@ function computeSituationalContext(metrics: any): {
 } | null {
   if (!metrics) return null;
   const { pe, pb, roe, netMargin, change52w, shortRatio, debtEq, currentRatio,
-          gValorisation, gSante, globalScore, fcf, mktCap } = metrics;
+          gValorisation, gSante, globalScore, fcf, mktCap, quoteType } = metrics;
   const signals: SitSignal[] = [];
 
   // ── Surévaluation extrême
@@ -610,6 +906,38 @@ function computeSituationalContext(metrics: any): {
       detail:"Génère du cash malgré une valorisation basse — signe de solidité opérationnelle réelle." });
   }
 
+  // ── Indice : P/E vs norme historique ─────────────────────────
+  const qt = (quoteType || "").toUpperCase();
+  if (qt === "INDEX" && pe != null) {
+    if (pe > 25) {
+      signals.push({ emoji:"🫧", color:"#ef4444",
+        label:`Valorisation indice élevée — P/E ${pe.toFixed(0)}x`,
+        detail:`La moyenne historique du S&P 500 est ~15-17x. À ${pe.toFixed(0)}x, le marché intègre une croissance parfaite des bénéfices — toute déception macro peut déclencher une correction sévère.` });
+    } else if (pe > 20) {
+      signals.push({ emoji:"⚠️", color:"#f59e0b",
+        label:`P/E indice au-dessus de la moyenne — ${pe.toFixed(0)}x`,
+        detail:`Au-dessus de 20x, la valorisation dépasse la moyenne historique (~15-17x). Pas encore en bulle, mais la marge de sécurité se réduit — surveiller les taux et les révisions de bénéfices.` });
+    }
+  }
+
+  // ── Déviation à la tendance long terme ───────────────────────
+  if (trendDev != null && trendDev.r2 >= 0.4) {
+    const dev = trendDev.deviation;
+    if (dev > 30) {
+      signals.push({ emoji:"📈", color:"#ef4444",
+        label:`Marché ${dev.toFixed(0)}% au-dessus de sa tendance`,
+        detail:`Le prix actuel dépasse de ${dev.toFixed(0)}% la trajectoire historique long terme (R²=${trendDev.r2}). Ce niveau de déviation précède souvent un retour vers la moyenne — rapide ou progressif selon le contexte macro.` });
+    } else if (dev > 15) {
+      signals.push({ emoji:"📊", color:"#f59e0b",
+        label:`Déviation tendance +${dev.toFixed(0)}%`,
+        detail:`Prix ${dev.toFixed(0)}% au-dessus de la tendance de fond (R²=${trendDev.r2}) — marché extensible mais pas encore en bulle caractérisée. La vigilance s'impose.` });
+    } else if (dev < -20) {
+      signals.push({ emoji:"📉", color:"#22c55e",
+        label:`Prix sous la tendance (${dev.toFixed(0)}%)`,
+        detail:`Compression de ${Math.abs(dev).toFixed(0)}% sous la tendance historique (R²=${trendDev.r2}) — possible opportunité de retour à la moyenne si les fondamentaux sont sains.` });
+    }
+  }
+
   // ── Profil global
   let profile = "Profil standard", profileColor = "#8b949e", profileEmoji = "📊", horizon = "—";
 
@@ -628,6 +956,49 @@ function computeSituationalContext(metrics: any): {
   } else if (gSante != null && gSante <= 2.5) {
     profile = "Fragilité financière"; profileColor = "#f97316"; profileEmoji = "⚠️";
     horizon = "Spéculatif · Taille de position réduite";
+  }
+
+  // ── Override pour les indices de marché ──────────────────────
+  if (qt === "INDEX") {
+    if (pe != null && pe > 25) {
+      profile = "Marché en excès"; profileColor = "#ef4444"; profileEmoji = "🫧";
+      horizon = "Vigilance — valorisation historiquement élevée";
+    } else if (pe != null && pe > 20) {
+      profile = "Valorisation tendue"; profileColor = "#f59e0b"; profileEmoji = "⚠️";
+      horizon = "Surveiller les révisions de bénéfices et les taux";
+    } else if (change52w != null && change52w > 0.20) {
+      profile = "Marché haussier prolongé"; profileColor = "#f59e0b"; profileEmoji = "📈";
+      horizon = "Surveiller les données macro et le P/E";
+    } else {
+      profile = "Indice de marché"; profileColor = "#fbbf24"; profileEmoji = "📊";
+      horizon = "Analyse technique disponible";
+    }
+  }
+
+  // ── Synthèse cycle × fondamentaux ────────────────────────────
+  if (sw != null) {
+    if (sw.optimalUT.label !== "—") {
+      horizon = `${sw.optimalUT.label} · ${sw.optimalUT.horizon}`;
+    }
+    if (sw.cycleTurn === "trough" && globalScore != null && globalScore >= 5.5) {
+      signals.push({ emoji:"🎯", color:"#22c55e",
+        label:"Timing favorable — creux de cycle",
+        detail:`Score fondamental ${globalScore.toFixed(1)}/10 + retournement de cycle haussier → configuration d'entrée potentiellement optimale.` });
+    } else if (sw.cycleTurn === "peak" && gValorisation != null && gValorisation <= 3.5) {
+      signals.push({ emoji:"⏸️", color:"#f59e0b",
+        label:"Timing défavorable — sommet de cycle",
+        detail:`Valorisation tendue (score ${gValorisation.toFixed(1)}/5) + cycle en retournement baissier → attendre le prochain creux pour entrer en position.` });
+    }
+    if (sw.momentum14 < -10 && gSante != null && gSante >= 5) {
+      signals.push({ emoji:"🔍", color:"#60a5fa",
+        label:"Correction sur fondamentaux solides",
+        detail:`Momentum de ${sw.momentum14.toFixed(1)}% malgré une santé financière saine — correction potentiellement temporaire à surveiller.` });
+    }
+    if (sw.mode === "trending" && sw.momentum14 > 8 && globalScore != null && globalScore >= 6) {
+      signals.push({ emoji:"🚀", color:"#22c55e",
+        label:"Tendance forte + fondamentaux",
+        detail:`Titre en tendance avec un momentum de +${sw.momentum14.toFixed(1)}% et un score fondamental de ${globalScore.toFixed(1)}/10 — contexte porteur.` });
+    }
   }
 
   if (signals.length === 0) return null;
@@ -697,11 +1068,11 @@ function EduTooltip({ edu }: { edu: TechSignal["edu"] }) {
 // ── COMPOSANT ENCART TECHNIQUE ────────────────────────────────
 function TechnicalPanel({ closes, volumes }: { closes:(number|null)[]; volumes:(number|null)[] }) {
   const [open, setOpen] = useState(true);
-  const signals = computeTechSignals(closes, volumes);
+  const { signals, sinewave } = computeTechSignals(closes, volumes);
   if (signals.length === 0) return null;
 
-  const bulls  = signals.filter(s => s.strength === "bull").length;
-  const bears  = signals.filter(s => s.strength === "bear").length;
+  const bulls  = signals.filter((s: TechSignal) => s.strength === "bull").length;
+  const bears  = signals.filter((s: TechSignal) => s.strength === "bear").length;
   const consensus = bulls > bears ? { label:"Haussier", color:"#22c55e" }
     : bears > bulls ? { label:"Baissier", color:"#ef4444" }
     : { label:"Neutre", color:"#8b949e" };
@@ -724,6 +1095,22 @@ function TechnicalPanel({ closes, volumes }: { closes:(number|null)[]; volumes:(
       </div>
       {open && (
         <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+          {sinewave && (
+            <div style={{ background:"#111825", borderRadius:8, padding:"10px 14px", borderLeft:"3px solid #f0a500", marginBottom:2 }}>
+              <div style={{ fontSize:9, color:"#f0a500", textTransform:"uppercase", letterSpacing:1.5, fontWeight:800, marginBottom:5 }}>
+                🕐 Unité de temps optimale
+              </div>
+              <div style={{ display:"flex", gap:16, flexWrap:"wrap", alignItems:"flex-start" }}>
+                <div style={{ minWidth:130 }}>
+                  <div style={{ fontSize:12, fontWeight:800, color:"#e6edf3" }}>{sinewave.optimalUT.label}</div>
+                  <div style={{ fontSize:10, color:"#8b949e", marginTop:2 }}>{sinewave.optimalUT.horizon}</div>
+                </div>
+                <div style={{ flex:1, fontSize:10, color:"#556", lineHeight:1.6, borderLeft:"1px solid #2a3548", paddingLeft:14 }}>
+                  {sinewave.optimalUT.note}
+                </div>
+              </div>
+            </div>
+          )}
           {signals.map((s, i) => (
             <div key={i} style={{ display:"flex", alignItems:"flex-start", gap:10, padding:"10px 12px", background:"#111825", borderRadius:8, borderLeft:`3px solid ${s.color}` }}>
               <span style={{ fontSize:13, flexShrink:0, marginTop:1 }}>{s.emoji}</span>
@@ -746,9 +1133,11 @@ function TechnicalPanel({ closes, volumes }: { closes:(number|null)[]; volumes:(
 }
 
 // ── COMPOSANT ENCART SITUATIONNEL ────────────────────────────
-function SituationalPanel({ metrics }: { metrics: any }) {
+function SituationalPanel({ metrics, closes }: { metrics: any; closes?: (number|null)[] }) {
   const [open, setOpen] = useState(true);
-  const ctx = computeSituationalContext(metrics);
+  const sw       = closes && closes.length > 0 ? calcSinewave(closes) : null;
+  const trendDev = closes && closes.length > 0 ? calcTrendDeviation(closes) : null;
+  const ctx = computeSituationalContext(metrics, sw, trendDev);
   if (!ctx) return null;
 
   return (
@@ -1089,31 +1478,31 @@ function InteractiveChart({
 
 function ScoreGauge({ score }: { score: number | null }) {
   if (score == null) return null;
-  // cy=62 : centre du demi-cercle. Texte à cy+16=78 et cy+28=90 → height=96 suffit
-  const cx = 70, cy = 62, r = 52;
+  const cx = 91, cy = 80, r = 67;
   const toRad = (d: number) => d * Math.PI / 180;
   const px = (deg: number) => cx + r * Math.cos(toRad(180 - deg));
   const py = (deg: number) => cy + r * Math.sin(toRad(180 - deg));
+  // strokeLinecap="butt" + 2° de gap entre segments → 3 tiers strictement égaux
   const arc = (a1: number, a2: number, color: string) => (
     <path
       d={`M${px(a1)},${py(a1)} A${r},${r} 0 0 0 ${px(a2)},${py(a2)}`}
-      stroke={color} strokeWidth="12" fill="none" strokeLinecap="round"
+      stroke={color} strokeWidth="14" fill="none" strokeLinecap="butt"
     />
   );
   const nd = (score / 10) * 180;
   const nx = cx + r * 0.72 * Math.cos(toRad(180 - nd));
   const ny = cy + r * 0.72 * Math.sin(toRad(180 - nd));
   return (
-    <svg width="140" height="96" viewBox="0 0 140 96" style={{ overflow: "visible" }}>
+    <svg width="182" height="92" viewBox="0 0 182 92" style={{ overflow: "visible" }}>
       <g transform={`translate(0, ${cy * 2}) scale(1, -1)`}>
-        {arc(  0,  60, "#ef4444")}
-        {arc( 60, 120, "#f59e0b")}
-        {arc(120, 180, "#22c55e")}
-        <line x1={cx} y1={cy} x2={nx} y2={ny} stroke="white" strokeWidth="2.5" strokeLinecap="round"/>
-        <circle cx={cx} cy={cy} r="4" fill="white"/>
+        <path d={`M${px(0)},${py(0)} A${r},${r} 0 0 0 ${px(180)},${py(180)}`}
+          stroke="#1e2a3a" strokeWidth="14" fill="none" strokeLinecap="butt"/>
+        {arc(  2,  58, "#ef4444")}
+        {arc( 62, 118, "#f59e0b")}
+        {arc(122, 178, "#22c55e")}
+        <line x1={cx} y1={cy} x2={nx} y2={ny} stroke="white" strokeWidth="3" strokeLinecap="round"/>
+        <circle cx={cx} cy={cy} r="5" fill="white"/>
       </g>
-      <text x={cx} y={cy + 16} textAnchor="middle" fontSize="15" fontWeight="900" fill="white">{score}</text>
-      <text x={cx} y={cy + 28} textAnchor="middle" fontSize="9" fill="#666">/10</text>
     </svg>
   );
 }
@@ -1141,17 +1530,19 @@ interface MetricProps {
   label: string;
   value: string;
   s?: number | null;
-  explain?: string;
-  good?: string;
-  bad?: string;
+  edu?: {
+    concept: string;
+    howToRead: string;
+    good: string;
+    bad: string;
+  };
 }
 
 // ════════════════════════════════════════════════════════════════
 // BLOC 6 — VUE ACTION / ETF
 // ════════════════════════════════════════════════════════════════
-function MetricCard({ label, value, s, explain, good, bad }: MetricProps) {
+function MetricCard({ label, value, s, edu }: MetricProps) {
   const [open, setOpen] = useState(false);
-  const hasDetail = explain || good || bad;
   const bg = s == null ? "#111825"
     : s >= 7 ? "#0a2e1a"
     : s >= 4 ? "#2a1f00"
@@ -1162,11 +1553,11 @@ function MetricCard({ label, value, s, explain, good, bad }: MetricProps) {
     : "#ef444444";
   return (
     <div
-      onClick={() => hasDetail && setOpen(o => !o)}
+      onClick={() => edu && setOpen(o => !o)}
       style={{
         background: bg, border: `1px solid ${border}`,
         borderRadius: 10, padding: "12px 14px",
-        cursor: hasDetail ? "pointer" : "default",
+        cursor: edu ? "pointer" : "default",
         transition: "all .15s",
       }}
     >
@@ -1191,20 +1582,27 @@ function MetricCard({ label, value, s, explain, good, bad }: MetricProps) {
           </span>
         )}
       </div>
-      {hasDetail && (
+      {edu && (
         <div style={{ fontSize: 9, color: "#445", marginTop: 4 }}>
-          {open ? "▲ réduire" : "▼ détail"}
+          {open ? "▲ réduire" : "▼ comprendre"}
         </div>
       )}
-      {open && (
-        <div style={{
-          marginTop: 8, paddingTop: 8,
-          borderTop: `1px solid ${border}`,
-          fontSize: 11, color: "#8b949e", lineHeight: 1.7,
-        }}>
-          {explain && <p style={{ margin: "0 0 4px" }}>{explain}</p>}
-          {good && <p style={{ margin: "0 0 2px", color: "#22c55e" }}>✅ {good}</p>}
-          {bad  && <p style={{ margin: 0, color: "#ef4444" }}>⚠️ {bad}</p>}
+      {open && edu && (
+        <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${border}` }}>
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 9, color: "#f0a500", fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>C'est quoi ?</div>
+            <div style={{ fontSize: 11, color: "#8b949e", lineHeight: 1.7 }}>{edu.concept}</div>
+          </div>
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 9, color: "#f0a500", fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Comment le lire ?</div>
+            <div style={{ fontSize: 11, color: "#8b949e", lineHeight: 1.7 }}>{edu.howToRead}</div>
+          </div>
+          <div style={{ background: "#22c55e0d", borderLeft: "3px solid #22c55e55", padding: "7px 10px", borderRadius: 4, marginBottom: 6, fontSize: 11, color: "#22c55e", lineHeight: 1.6 }}>
+            ✅ {edu.good}
+          </div>
+          <div style={{ background: "#ef44440d", borderLeft: "3px solid #ef444455", padding: "7px 10px", borderRadius: 4, fontSize: 11, color: "#ef4444", lineHeight: 1.6 }}>
+            ⚠️ {edu.bad}
+          </div>
         </div>
       )}
     </div>
@@ -1229,7 +1627,7 @@ function StockView({ metrics, chartData: initialChartData, ticker }: {
   if (!metrics) return null;
   const {
     name, sector, industry, currency, exchange, quoteType,
-    price, change1d, scores = {}, globalScore,
+    price, change1d, change52w, scores = {}, globalScore,
     gValorisation, gRentabilite, gSante, gRisque,
   } = metrics;
   const v = getVerdict(globalScore);
@@ -1281,134 +1679,297 @@ function StockView({ metrics, chartData: initialChartData, ticker }: {
       icon: "💰", label: "Valorisation",
       note: "40% du score",
       cards: [
-        { label: "P/E Ratio",    value: fmt(metrics.pe),       s: scores.pe,
-          explain: "Prix payé pour 1€ de bénéfice. Plus c'est bas, moins l'action est chère.",
-          good: "Sous 15 : attractif", bad: "Au-dessus de 40 : très cher" },
-        { label: "P/B Ratio",    value: fmt(metrics.pb),       s: scores.pb,
-          explain: "Prix vs valeur comptable. Seuils ajustés si ROE > 20% (P/B élevé peut être justifié).",
-          good: "Sous 3 : zone saine", bad: "Au-dessus de 10 avec ROE faible : danger" },
-        { label: "P/S Ratio",    value: fmt(metrics.ps),       s: scores.ps,
-          explain: "Prix vs chiffre d'affaires. Utile quand les bénéfices sont nuls.",
-          good: "Sous 2 : bon rapport", bad: "Au-dessus de 8 : valorisation tendue" },
-        { label: "EV/EBITDA",    value: fmt(metrics.evEbitda), s: scores.evEbitda,
-          explain: "Valeur entreprise / bénéfices opérationnels. Neutre sur la structure de capital.",
-          good: "Sous 10 : pas cher", bad: "Au-dessus de 25 : très premium" },
-        { label: "PEG Ratio",    value: fmt(metrics.peg),      s: null,
-          explain: "P/E divisé par la croissance attendue. Sous 1 = sous-évalué vs croissance.",
-          good: "Sous 1 : opportunité", bad: "Au-dessus de 2 : cher pour sa croissance" },
-        { label: "Market Cap",   value: `${currency} ${fmt(metrics.mktCap)}`, s: null,
-          explain: "Valeur totale en bourse = prix × nombre d'actions." },
+        { label: "P/E Ratio", value: fmt(metrics.pe), s: scores.pe,
+          edu: {
+            concept: "Le Price-to-Earnings compare le prix de l'action aux bénéfices générés par action sur un an. Si une action vaut 100 € et que l'entreprise gagne 5 € par action, son P/E est 20 : vous payez 20 fois les bénéfices annuels.",
+            howToRead: "Un P/E bas peut indiquer une action bon marché — ou une entreprise en difficulté. Un P/E élevé reflète des attentes de forte croissance future. Comparez toujours le P/E à la moyenne historique du secteur : un P/E de 30 est normal pour une tech en croissance rapide, excessif pour une utility.",
+            good: "Sous 15 : attractif pour une entreprise mature et stable. Sous 25 dans un secteur technologique en croissance : acceptable.",
+            bad: "Au-dessus de 40 : le marché paye très cher la croissance future — toute déception peut entraîner une correction sévère. P/E négatif : l'entreprise est déficitaire.",
+          }},
+        { label: "P/B Ratio", value: fmt(metrics.pb), s: scores.pb,
+          edu: {
+            concept: "Le Price-to-Book compare le prix de marché à la valeur comptable nette de l'entreprise (actifs totaux moins dettes). Un PB de 1 signifie que vous achetez l'entreprise exactement à la valeur de ses actifs nets enregistrés au bilan.",
+            howToRead: "Un PB inférieur à 1 peut signaler une décote sur les actifs (opportunité ou piège selon leur qualité). Un PB élevé est justifié pour des entreprises très rentables comme Apple ou LVMH, qui créent de la valeur avec peu d'actifs physiques — leur vraie richesse est dans les marques et brevets, hors bilan.",
+            good: "Sous 1.5 : décote modérée potentiellement intéressante. PB élevé (3-8) acceptable si le ROE dépasse 20 % — l'entreprise justifie sa prime par une rentabilité structurelle.",
+            bad: "PB supérieur à 8 avec un ROE faible : prime difficile à justifier. PB inférieur à 0.5 avec des pertes : risque de value trap — les actifs peuvent se déprécier encore.",
+          }},
+        { label: "P/S Ratio", value: fmt(metrics.ps), s: scores.ps,
+          edu: {
+            concept: "Le Price-to-Sales compare la valeur boursière au chiffre d'affaires total. Contrairement au P/E, il est utile même quand l'entreprise est déficitaire, car les ventes existent avant les bénéfices — indispensable pour évaluer les startups ou entreprises en forte croissance.",
+            howToRead: "Un PS bas signifie qu'on paye peu pour chaque euro de ventes. Mais attention : des ventes ne sont pas des bénéfices. Un PS élevé n'est défendable que si les marges vont s'améliorer fortement dans le futur. Comparez avec des entreprises similaires en termes de stade de maturité.",
+            good: "Sous 2 : valorisation raisonnable pour une entreprise rentable. Entre 2 et 5 : acceptable pour une société en forte croissance avec des marges en amélioration.",
+            bad: "Au-dessus de 8 : pari très optimiste sur une amélioration future des marges. Au-dessus de 20 : réservé aux hypercroissances — risque important si la croissance ralentit même légèrement.",
+          }},
+        { label: "EV/EBITDA", value: fmt(metrics.evEbitda), s: scores.evEbitda,
+          edu: {
+            concept: "L'Enterprise Value / EBITDA compare la valeur totale de l'entreprise (capitalisation boursière + dettes nettes) à ses bénéfices avant intérêts, impôts et amortissements. C'est un outil de valorisation neutre vis-à-vis de la structure de financement.",
+            howToRead: "Contrairement au P/E, l'EV/EBITDA n'est pas faussé par l'effet de levier financier ni par les politiques fiscales — il permet de comparer des entreprises avec des dettes très différentes. Plus le multiple est bas, moins on paye cher la génération de cash opérationnel.",
+            good: "Sous 10 : valorisation raisonnable pour une entreprise mature. Sous 15 : acceptable pour un secteur en croissance. Secteurs défensifs (utilities, alim.) : viser sous 12.",
+            bad: "Au-dessus de 25 : valorisation premium élevée — la croissance future est déjà intégrée dans le prix. Valeur négative : EBITDA négatif, le ratio ne s'applique pas.",
+          }},
+        { label: "PEG Ratio", value: fmt(metrics.peg), s: null,
+          edu: {
+            concept: "Le PEG (Price/Earnings to Growth) divise le P/E par le taux de croissance annuel attendu des bénéfices. Il corrige le biais du P/E en intégrant la dynamique de croissance : une entreprise chère sur le P/E peut être sous-valorisée si sa croissance est encore plus rapide.",
+            howToRead: "Une entreprise avec un P/E de 30 mais une croissance bénéficiaire de 30 % a un PEG de 1 — équilibrée. Une entreprise avec un P/E de 15 mais seulement 5 % de croissance a un PEG de 3 — chère pour sa croissance. Le PEG dépend de la fiabilité des prévisions de croissance.",
+            good: "Sous 1 : action potentiellement sous-valorisée par rapport à sa croissance attendue. Entre 1 et 1.5 : valorisation équilibrée, raisonnable pour entrer.",
+            bad: "Au-dessus de 2 : on paye cher pour la croissance anticipée. Si les prévisions de croissance ne se réalisent pas, la correction peut être importante.",
+          }},
+        { label: "Market Cap", value: `${currency} ${fmt(metrics.mktCap)}`, s: null,
+          edu: {
+            concept: "La capitalisation boursière = prix de l'action × nombre total d'actions en circulation. Elle représente la valeur que le marché attribue aujourd'hui à l'ensemble de l'entreprise. Ce n'est pas le chiffre d'affaires ni les actifs — c'est le prix que vous paieriez pour acheter 100 % de l'entreprise en bourse.",
+            howToRead: "Large cap (> 10 Md€) : entreprises stables, bien couvertes par les analystes, moins volatiles. Mid cap (2-10 Md€) : potentiel de croissance supérieur, risque modéré. Small cap (< 2 Md€) : opportunités de croissance importantes mais volatilité élevée et liquidité parfois limitée.",
+            good: "Large cap avec fondamentaux solides : pilier de portefeuille, résilience en période de crise. Small cap sous-valorisée avec croissance : potentiel de multiplication.",
+            bad: "Micro cap (< 300 M€) : risque de manipulation de cours, spreads larges à l'achat/vente, couverture analytique quasi nulle. Méfiance accrue.",
+          }},
       ],
     },
     {
       icon: "📈", label: "Rentabilité",
       note: "30% du score",
       cards: [
-        { label: "ROE",          value: pct(metrics.roe),         s: scores.roe,
-          explain: "Retour sur capitaux propres. Plafonné à 7/10 si > 50% (peut être artificiel via rachats d'actions).",
-          good: "Entre 15% et 50% : excellent", bad: "Négatif : perd de l'argent" },
-        { label: "ROA",          value: pct(metrics.roa),         s: null,
-          explain: "Retour sur actifs totaux. Moins sensible aux buybacks que le ROE.",
-          good: "Au-dessus de 5% : efficace", bad: "Sous 1% : actifs mal utilisés" },
-        { label: "Marge Brute",  value: pct(metrics.grossMargin), s: null,
-          explain: "% du CA conservé après coûts de production.",
-          good: "Au-dessus de 40% : sain", bad: "Sous 20% : coûts élevés" },
-        { label: "Marge Opé.",   value: pct(metrics.opMargin),    s: scores.opMargin,
-          explain: "Rentabilité avant impôts et intérêts.",
-          good: "Au-dessus de 12%", bad: "Sous 5% : fragile" },
-        { label: "Marge Nette",  value: pct(metrics.netMargin),   s: scores.netMargin,
-          explain: "Ce qui reste pour les actionnaires après tout.",
-          good: "Au-dessus de 10%", bad: "Négative : perd de l'argent" },
+        { label: "ROE", value: pct(metrics.roe), s: scores.roe,
+          edu: {
+            concept: "Le Return on Equity mesure combien l'entreprise génère de bénéfice net pour chaque euro de capitaux propres investis par les actionnaires. Un ROE de 20 % signifie : 20 € de bénéfice net pour 100 € de fonds propres au bilan.",
+            howToRead: "Un ROE élevé et stable indique une entreprise efficace qui crée réellement de la valeur. Attention cependant : un ROE supérieur à 50 % peut être artificiel si l'entreprise a massivement racheté ses propres actions, réduisant mécaniquement les capitaux propres au dénominateur. Vérifiez la dette associée.",
+            good: "Entre 15 % et 30 % sur plusieurs années consécutives : signe de qualité réelle et d'avantage concurrentiel durable. ROE stable > 20 % depuis 5 ans : entreprise de qualité 'Buffett-style'.",
+            bad: "Sous 8 % : rentabilité insuffisante pour les actionnaires. Négatif : l'entreprise détruit de la valeur. ROE > 50 % : vérifier l'endettement et les rachats d'actions avant de conclure à l'excellence.",
+          }},
+        { label: "ROA", value: pct(metrics.roa), s: null,
+          edu: {
+            concept: "Le Return on Assets mesure combien l'entreprise génère de bénéfice net pour chaque euro d'actifs qu'elle possède (usines, stocks, brevets, trésorerie...). Moins sensible aux rachats d'actions que le ROE, il reflète mieux l'efficacité opérationnelle réelle.",
+            howToRead: "Le ROA est calculé sur l'ensemble des actifs (pas seulement les fonds propres), ce qui le rend plus stable et moins manipulable. Un ROA de 10 % signifie 10 € de profit pour 100 € d'actifs totaux. Comparez toujours dans le même secteur : les banques ont structurellement un ROA faible (1-2 %) à cause de leur bilan très chargé.",
+            good: "Au-dessus de 10 % : très efficace, rare et précieux. Au-dessus de 5 % : correct pour un secteur industriel, manufacturier ou bancaire.",
+            bad: "Sous 2 % : les actifs sont mal utilisés ou trop lourds par rapport aux profits. Négatif : l'entreprise détruit de la valeur sur l'ensemble de son parc d'actifs.",
+          }},
+        { label: "Marge Brute", value: pct(metrics.grossMargin), s: null,
+          edu: {
+            concept: "La marge brute = (Chiffre d'affaires − Coût des marchandises vendues) / CA. Elle mesure la part des ventes conservée avant tous les frais généraux, marketing et R&D. C'est le premier indicateur du pouvoir de tarification et de la compétitivité du modèle économique.",
+            howToRead: "Une marge brute élevée (> 50 %) indique un fort pricing power : l'entreprise peut augmenter ses prix sans perdre ses clients. Elle finance la R&D, le marketing et les bénéfices. Les logiciels, le luxe et la pharma affichent souvent > 70 %. La grande distribution peut être à 25 % et être très rentable si les volumes sont massifs.",
+            good: "Au-dessus de 40 % : modèle compétitif et scalable. Au-dessus de 60 % : pouvoir de marché structurel fort — difficile à répliquer par des concurrents.",
+            bad: "Sous 20 % : peu de marge pour absorber les chocs de coûts. Dans ces secteurs, surveiller la marge nette de près — la moindre hausse de matières premières peut effacer les bénéfices.",
+          }},
+        { label: "Marge Opé.", value: pct(metrics.opMargin), s: scores.opMargin,
+          edu: {
+            concept: "La marge opérationnelle = Résultat d'exploitation / Chiffre d'affaires. Elle mesure la rentabilité après tous les coûts d'exploitation (production, R&D, marketing, frais généraux), mais avant les intérêts sur la dette et les impôts. C'est un bon reflet de l'efficacité de gestion.",
+            howToRead: "Une marge opérationnelle en hausse sur plusieurs années est un signal fort : l'équipe de direction contrôle bien ses coûts et améliore l'efficacité. À comparer systématiquement avec les concurrents du même secteur. Une marge opérationnelle bien supérieure au secteur = avantage concurrentiel réel.",
+            good: "Au-dessus de 15 % : bonne efficacité opérationnelle pour la plupart des secteurs. Au-dessus de 25 % : entreprise très bien gérée avec un pricing power fort.",
+            bad: "Sous 5 % : coussin très mince face aux imprévus (hausse de coûts, concurrence). Négative : l'entreprise perd de l'argent sur ses opérations courantes — situation urgente à surveiller.",
+          }},
+        { label: "Marge Nette", value: pct(metrics.netMargin), s: scores.netMargin,
+          edu: {
+            concept: "La marge nette = Bénéfice net / Chiffre d'affaires. C'est ce qui reste réellement pour les actionnaires après tout : coûts d'exploitation, intérêts sur la dette, impôts. C'est la mesure de rentabilité finale — le vrai 'bottom line'.",
+            howToRead: "Si la marge brute est haute mais la marge nette faible, les frais généraux, la dette ou les impôts consomment trop. Une marge nette élevée et stable sur plusieurs années est un signe de qualité rare. Microsoft et Apple dépassent les 25 %. Comparez avec la tendance historique de l'entreprise.",
+            good: "Au-dessus de 10 % : très rentable, l'entreprise monétise efficacement ses activités. Au-dessus de 20 % : profil 'cash machine' — génère massivement du profit par rapport à ses ventes.",
+            bad: "Négative : l'entreprise perd de l'argent in fine. Sous 3 % : très exposée à tout choc de coûts ou de demande — très peu de marge de sécurité.",
+          }},
       ],
     },
     {
       icon: "🏦", label: "Santé Financière",
       note: "20% du score",
       cards: [
-        { label: "Dette/Equity",     value: fmt(metrics.debtEq),      s: scores.debtEq,
-          explain: "Niveau d'endettement vs capitaux propres.",
-          good: "Sous 0.5 : peu endetté", bad: "Au-dessus de 1.5 : risque financier" },
-        { label: "Current Ratio",    value: fmt(metrics.currentRatio), s: scores.currentRatio,
-          explain: "Capacité à rembourser les dettes court terme.",
-          good: "Au-dessus de 1.5 : confortable", bad: "Sous 1 : alerte liquidité" },
-        { label: "Free Cash Flow",   value: `${currency} ${fmt(metrics.fcf)}`, s: null,
-          explain: "Cash généré après investissements.",
-          good: "Positif : génère du cash", bad: "Négatif : consomme du cash" },
+        { label: "Dette/Equity", value: fmt(metrics.debtEq), s: scores.debtEq,
+          edu: {
+            concept: "Le ratio Dette/Equity compare les dettes financières totales aux capitaux propres. Un D/E de 0.5 signifie que l'entreprise a 50 € de dettes pour 100 € de fonds propres. Il mesure le niveau de levier financier et le risque associé.",
+            howToRead: "L'endettement amplifie les gains en bonne période (effet de levier), mais peut être fatal en période de crise ou de hausse des taux. Certains secteurs sont structurellement plus endettés (immobilier, utilities, télécoms) — comparez toujours dans le même secteur. Ce qui compte autant que le niveau : la capacité de remboursement (flux de trésorerie / charges d'intérêts).",
+            good: "Sous 0.5 : bilan très sain, peu de risque financier, grande flexibilité stratégique. Entre 0.5 et 1.0 : levier modéré, gérable dans la plupart des environnements de taux.",
+            bad: "Au-dessus de 2 : endettement élevé — surveiller les flux de trésorerie et la couverture des intérêts. Au-dessus de 3 hors secteurs spécialisés : risque sérieux en cas de remontée des taux ou de retournement conjoncturel.",
+          }},
+        { label: "Current Ratio", value: fmt(metrics.currentRatio), s: scores.currentRatio,
+          edu: {
+            concept: "Le current ratio = Actifs courants / Passifs courants. Il mesure si l'entreprise peut honorer ses dettes à court terme (moins d'un an) avec ses actifs liquides disponibles : trésorerie, créances clients à encaisser, stocks à vendre.",
+            howToRead: "Un current ratio supérieur à 1 signifie que l'entreprise a plus d'actifs liquides que de dettes court terme — elle peut faire face à ses obligations immédiates. Un ratio inférieur à 1 n'est pas toujours catastrophique si l'entreprise génère des flux de trésorerie très réguliers (grande distribution, par exemple), mais c'est un signal d'alerte à vérifier.",
+            good: "Entre 1.5 et 3 : confort de liquidité solide, bonne capacité à absorber les imprévus. Au-dessus de 1 : situation a priori saine.",
+            bad: "Sous 1 : les dettes court terme dépassent les actifs liquides — risque de tension trésorerie. Sous 0.7 : alerte rouge — l'entreprise pourrait avoir des difficultés à honorer ses prochaines échéances.",
+          }},
+        { label: "Free Cash Flow", value: `${currency} ${fmt(metrics.fcf)}`, s: null,
+          edu: {
+            concept: "Le Free Cash Flow (flux de trésorerie libre) = Cash généré par l'activité opérationnelle − Investissements en capital (capex : usines, équipements, machines...). C'est l'argent réellement disponible pour rembourser des dettes, payer des dividendes, racheter des actions ou financer des acquisitions.",
+            howToRead: "Le FCF est souvent plus fiable que le bénéfice comptable, qui peut être influencé par des choix comptables. Une entreprise peut afficher des bénéfices mais avoir un FCF négatif (problème réel de trésorerie). Warren Buffett considère le FCF comme la mesure de valeur la plus fondamentale d'une entreprise.",
+            good: "Positif et croissant sur plusieurs années : qualité rare et très recherchée. FCF yield supérieur à 5 % (FCF / capitalisation boursière) : entreprise potentiellement sous-valorisée.",
+            bad: "Négatif : l'entreprise consomme plus de cash qu'elle n'en génère — elle dépend de financements externes (dettes, émissions d'actions). Acceptable en phase d'investissement intense, problématique si persistant sans amélioration visible.",
+          }},
         { label: "Actions en circ.", value: fmt(metrics.sharesOut, 0), s: null,
-          explain: "Nombre total d'actions. Surveiller la dilution." },
+          edu: {
+            concept: "Le nombre d'actions en circulation représente toutes les actions de l'entreprise détenues par les investisseurs (flottant + actions des dirigeants + institutionnels). La capitalisation boursière = prix × ce nombre.",
+            howToRead: "Surveiller l'évolution dans le temps : une augmentation du nombre d'actions (dilution) réduit la part de chaque actionnaire dans les bénéfices et la valeur. À l'inverse, des rachats d'actions (buybacks) réduisent ce nombre et augmentent mécaniquement le bénéfice par action — souvent un signal positif.",
+            good: "Nombre stable ou en baisse sur 5 ans : l'entreprise protège ses actionnaires de la dilution. Rachats réguliers + croissance des bénéfices = double effet positif sur le BPA.",
+            bad: "Forte augmentation du nombre d'actions : dilution des actionnaires existants. Souvent signe que l'entreprise a besoin de lever des fonds pour survivre — à analyser avec le FCF.",
+          }},
       ],
     },
     {
       icon: "💵", label: "Dividende",
       note: "informatif",
       cards: [
-        { label: "Rendement Div.", value: pct(metrics.divYield),    s: scores.divYield,
-          explain: "Dividende annuel / prix.",
-          good: "Entre 2% et 5% : attractif et durable", bad: "Au-dessus de 8% : souvent insoutenable" },
-        { label: "Payout Ratio",   value: pct(metrics.payoutRatio), s: null,
-          explain: "% des bénéfices distribués en dividendes.",
-          good: "Entre 30% et 60% : équilibré", bad: "Au-dessus de 90% : peu de marge" },
+        { label: "Rendement Div.", value: pct(metrics.divYield), s: scores.divYield,
+          edu: {
+            concept: "Le rendement du dividende = Dividende annuel par action / Prix de l'action. Il représente le revenu passif annuel généré pour chaque euro investi — comparable à un loyer pour un investissement immobilier. Un rendement de 4 % sur 10 000 € investis génère 400 € par an.",
+            howToRead: "Un rendement élevé n'est pas toujours bon signe : il peut refléter une chute du cours (action en difficulté, marché qui anticipe une coupe de dividende). Vérifiez toujours la soutenabilité : payout ratio inférieur à 70-75 % et FCF couvrant le dividende. Les 'aristocrates du dividende' (>25 ans de hausse consécutive) sont les références.",
+            good: "Entre 2 % et 4 % : attractif et généralement soutenable pour une entreprise saine. Historique de croissance du dividende sur 10+ ans : signe de qualité et d'engagement envers les actionnaires.",
+            bad: "Au-dessus de 8 % : souvent insoutenable — le marché anticipe probablement une coupe prochaine. Payout ratio supérieur à 90 % : le dividende sera fragilisé par tout choc sur les bénéfices.",
+          }},
+        { label: "Payout Ratio", value: pct(metrics.payoutRatio), s: null,
+          edu: {
+            concept: "Le payout ratio = Dividendes versés / Bénéfice net. Il mesure la part des bénéfices redistribuée aux actionnaires sous forme de dividendes. Le reste est réinvesti dans l'entreprise pour la croissance, le désendettement ou les acquisitions.",
+            howToRead: "Un payout faible (< 40 %) laisse beaucoup de marge pour la croissance future et la résilience. Un payout élevé (> 80 %) signifie que l'entreprise reverse presque tout — peu de coussin si les bénéfices reculent. Le payout idéal dépend du stade : une entreprise mature peut distribuer plus, une entreprise en croissance doit réinvestir.",
+            good: "Entre 30 % et 60 % : équilibre sain entre rémunération des actionnaires et réinvestissement pour la croissance. Payout stable ou en légère hausse = gestion prudente.",
+            bad: "Au-dessus de 90 % : le dividende est à risque au moindre recul des bénéfices. Supérieur à 100 % : dividende financé par la dette ou la trésorerie — non soutenable à long terme.",
+          }},
       ],
     },
     {
-      icon: "⚡", label: "Risque & Momentum",
+      icon: "⚡", label: "Risque",
       note: "10% du score",
       cards: [
-        { label: "Bêta (1y)",     value: fmt(metrics.beta),      s: scores.beta,
-          explain: "Volatilité vs le marché. 1 = suit le marché.",
-          good: "Entre 0.7 et 1.3 : risque modéré", bad: "Au-dessus de 2 : très spéculatif" },
-        { label: "Short Ratio",   value: fmt(metrics.shortRatio), s: null,
-          explain: "Jours pour couvrir les positions baissières.",
-          good: "Sous 3 jours : normal", bad: "Au-dessus de 10 : forte défiance" },
+        { label: "Bêta", value: fmt(metrics.beta), s: scores.beta,
+          edu: {
+            concept: "Le bêta mesure la sensibilité d'une action aux mouvements du marché de référence (S&P 500 ou indice local = bêta 1). Un bêta de 1.5 signifie que si le marché monte de 10 %, l'action monte en moyenne de 15 % — et perd 15 % si le marché recule de 10 %.",
+            howToRead: "Bêta > 1 : action plus volatile que le marché — amplification des gains ET des pertes. Bêta < 1 : action défensive, moins sensible aux retournements (utilities, pharma, alimentaire). Bêta négatif : l'action évolue en sens inverse du marché — très rare (or, certaines valeurs refuge). Le bêta mesure la volatilité passée, pas le risque fondamental.",
+            good: "Entre 0.5 et 1 : profil défensif, idéal en période d'incertitude ou pour équilibrer un portefeuille volatile. Bêta faible couplé à un dividende stable = valeur refuge classique.",
+            bad: "Au-dessus de 2 : très spéculatif — en marché baissier, les pertes peuvent être sévères et rapides. Bêta élevé combiné à une valorisation tendue : risque maximal, position réduite recommandée.",
+          }},
+        { label: "Short Ratio", value: fmt(metrics.shortRatio), s: null,
+          edu: {
+            concept: "Le short ratio (ou Days to Cover) = nombre de jours nécessaires pour que tous les vendeurs à découvert rachètent leurs positions, basé sur le volume quotidien moyen. Les vendeurs à découvert parient professionnellement sur la baisse du titre — ce sont souvent des hedge funds ou institutionnels bien informés.",
+            howToRead: "Un short ratio élevé signifie que beaucoup d'investisseurs professionnels parient contre l'action. Mais c'est une arme à double tranchant : si une bonne nouvelle arrive (résultats meilleurs que prévu, acquisition...), ces vendeurs sont forcés de racheter en urgence, ce qui peut déclencher un 'short squeeze' — une hausse violente et explosive du cours.",
+            good: "Sous 3 jours : niveau normal, peu de pression baissière structurelle. Faible short ratio sur une action décotée = le marché ne la déteste pas, signal potentiellement positif.",
+            bad: "Au-dessus de 10 jours : forte conviction des professionnels baissiers. À surveiller de très près : soit ils ont raison sur un problème fondamental, soit un squeeze violent est possible si le sentiment tourne.",
+          }},
         { label: "Perf. 52 sem.", value: metrics.change52w != null ? (metrics.change52w * 100).toFixed(1) + "%" : "—",
           s: scores.perf52w,
-          explain: "Performance sur les 12 derniers mois." },
+          edu: {
+            concept: "La performance sur les 52 dernières semaines mesure la variation du cours entre aujourd'hui et il y a exactement un an. C'est un indicateur de momentum à moyen terme qui révèle si le marché a récompensé ou sanctionné l'entreprise sur la période récente.",
+            howToRead: "Une performance forte (+30 % sur 12 mois) indique une tendance haussière — mais signifie aussi que la valorisation a probablement progressé. Une performance négative peut créer une opportunité d'entrée si les fondamentaux restent solides (le marché a peut-être surréagi). Comparez toujours avec l'indice de référence du secteur.",
+            good: "+10 % à +30 % en phase avec un marché haussier : momentum sain sans surchauffe. Surperformance du secteur + fondamentaux solides = force relative positive.",
+            bad: "Baisse supérieure à −30 % sans amélioration visible des fondamentaux : tendance baissière possiblement structurelle. Hausse supérieure à +80 % : valorisation déjà élevée, la marge de sécurité pour entrer s'est réduite.",
+          }},
       ],
     },
   ];
 
+  // Synthèse technique pour l'encart résumé
+  const techSummary = (() => {
+    if (!chartData || chartData.closes.length === 0) return null;
+    const { signals } = computeTechSignals(chartData.closes, chartData.volumes);
+    const bulls = signals.filter((s: TechSignal) => s.strength === "bull").length;
+    const bears = signals.filter((s: TechSignal) => s.strength === "bear").length;
+    if (bears > bulls + 1) return { label: "Baissière", color: "#ef4444" };
+    if (bulls > bears + 1) return { label: "Haussière", color: "#22c55e" };
+    return { label: "Neutre / Mitigée", color: "#f59e0b" };
+  })();
+
   return (
     <div style={{ animation: "fadeIn .4s ease" }}>
       {/* HEADER */}
-      <div style={{ display: "flex", gap: 20, marginBottom: 22, flexWrap: "wrap", alignItems: "flex-start" }}>
-        <div style={{ flex: 1, minWidth: 220 }}>
-          <div style={{ fontSize: 11, color: "#445", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 4 }}>
-            {[exchange, sector, industry].filter(Boolean).join(" · ")}
-          </div>
-          <div style={{ fontSize: 22, fontWeight: 800, color: "#e6edf3", marginBottom: 8, lineHeight: 1.3 }}>
-            {name}<TypeBadge type={quoteType}/>
-          </div>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
-            <span style={{ fontSize: 34, fontWeight: 900, color: "#f0a500", fontFamily: "'IBM Plex Mono',monospace" }}>
-              {currency} {fmt(price)}
-            </span>
-            {change1d != null && (
-              <span style={{ fontSize: 15, fontWeight: 700, color: change1d >= 0 ? "#22c55e" : "#ef4444" }}>
-                {change1d >= 0 ? "▲" : "▼"} {Math.abs(change1d * 100).toFixed(2)}%
-              </span>
-            )}
-          </div>
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontSize: 11, color: "#445", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 4 }}>
+          {[exchange, sector, industry].filter(Boolean).join(" · ")}
         </div>
+        <div style={{ fontSize: 22, fontWeight: 800, color: "#e6edf3", marginBottom: 8, lineHeight: 1.3 }}>
+          {name}<TypeBadge type={quoteType}/>
+        </div>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+          <span style={{ fontSize: 34, fontWeight: 900, color: "#f0a500", fontFamily: "'IBM Plex Mono',monospace" }}>
+            {currency} {fmt(price)}
+          </span>
+          {change1d != null && (
+            <span style={{ fontSize: 15, fontWeight: 700, color: change1d >= 0 ? "#22c55e" : "#ef4444" }}>
+              {change1d >= 0 ? "▲" : "▼"} {Math.abs(change1d * 100).toFixed(2)}%
+            </span>
+          )}
+        </div>
+      </div>
 
-        {/* VERDICT + JAUGE */}
-        {v && (
-          <div style={{
-            background: v.color + "12", border: `1px solid ${v.color}44`,
-            borderRadius: 14, padding: "14px 22px", textAlign: "center", minWidth: 200,
-          }}>
-            <ScoreGauge score={globalScore}/>
-            <div style={{ fontSize: 18, fontWeight: 900, color: v.color, marginTop: 4 }}>{v.emoji} {v.label}</div>
-            <div style={{ fontSize: 11, color: "#8b949e", marginTop: 5, lineHeight: 1.5, marginBottom: 12 }}>{v.desc}</div>
-            {/* Mini jauges par groupe */}
-            <div style={{ display:"flex", gap:8, flexWrap:"wrap", justifyContent:"center" }}>
+      {/* CARTE VERDICT — pleine largeur, jauge intégrée à droite */}
+      {v ? (
+        <div style={{
+          background: v.color + "0f", border: `1px solid ${v.color}33`,
+          borderRadius: 14, padding: "18px 22px", marginBottom: 14,
+          display: "flex", alignItems: "center", gap: 24,
+        }}>
+          {/* Contenu principal */}
+          <div style={{ flex: 1 }}>
+            {/* Score + verdict */}
+            <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 12, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                <span style={{
+                  fontSize: 56, fontWeight: 900, lineHeight: 1,
+                  color: scoreColor(globalScore!),
+                  fontFamily: "'IBM Plex Mono',monospace",
+                }}>{globalScore}</span>
+                <span style={{ fontSize: 18, color: "#556", fontFamily: "'IBM Plex Mono',monospace" }}>/10</span>
+              </div>
+              <div>
+                <div style={{ fontSize: 20, fontWeight: 900, color: v.color }}>{v.emoji} {v.label}</div>
+                <div style={{ fontSize: 11, color: "#8b949e", lineHeight: 1.4, marginTop: 2 }}>{v.desc}</div>
+              </div>
+            </div>
+            {/* Mini-jauges */}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
               <MiniGauge label="Valorisation" score={gValorisation} weight={0.40}/>
               <MiniGauge label="Rentabilité"  score={gRentabilite}  weight={0.30}/>
               <MiniGauge label="Santé"        score={gSante}        weight={0.20}/>
               <MiniGauge label="Risque"       score={gRisque}       weight={0.10}/>
             </div>
+            {/* Synthèse technique */}
+            {techSummary && (
+              <div style={{
+                display: "inline-flex", alignItems: "center", gap: 8,
+                padding: "5px 10px", borderRadius: 6,
+                background: techSummary.color + "15",
+                borderLeft: `3px solid ${techSummary.color}`,
+              }}>
+                <span style={{ fontSize: 9, color: "#445", textTransform: "uppercase", letterSpacing: 1 }}>Technique</span>
+                <span style={{ fontSize: 12, fontWeight: 700, color: techSummary.color }}>{techSummary.label}</span>
+              </div>
+            )}
           </div>
-        )}
-      </div>
+          {/* Jauge à droite */}
+          <div style={{ flexShrink: 0 }}>
+            <ScoreGauge score={globalScore}/>
+          </div>
+        </div>
+      ) : (
+        <div style={{
+          background: "#090f1a", border: "1px solid #2a3548",
+          borderRadius: 14, padding: "18px 22px", marginBottom: 14,
+        }}>
+          <div style={{ fontSize: 18, fontWeight: 900, color: "#556", marginBottom: 6 }}>
+            {["INDEX","FUTURE","BOND","MUTUALFUND"].indexOf((quoteType||"").toUpperCase()) !== -1
+              ? "Analyse technique uniquement"
+              : "Données insuffisantes"}
+          </div>
+          <div style={{ fontSize: 11, color: "#445", lineHeight: 1.6, marginBottom: 10 }}>
+            {quoteType === "INDEX"      ? "Les ratios PE / PB / ROE ne s'appliquent pas aux indices de marché." :
+             quoteType === "FUTURE"     ? "Les contrats à terme n'ont pas de fondamentaux d'entreprise." :
+             quoteType === "BOND"       ? "Les obligations se lisent par le taux et la maturité, pas par le PE." :
+             quoteType === "MUTUALFUND" ? "Les fonds n'ont pas de bilan d'entreprise à analyser." :
+             "Données fondamentales insuffisantes pour calculer un score fiable."}
+          </div>
+          {change52w != null && (
+            <div style={{ background: "#111825", borderRadius: 8, padding: "8px 12px", marginBottom: 10, display: "inline-block" }}>
+              <div style={{ fontSize: 9, color: "#445", textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 4 }}>
+                Perf. 52 semaines
+              </div>
+              <div style={{ fontSize: 26, fontWeight: 900, color: change52w >= 0 ? "#22c55e" : "#ef4444", fontFamily: "'IBM Plex Mono',monospace" }}>
+                {change52w >= 0 ? "+" : ""}{(change52w * 100).toFixed(1)}%
+              </div>
+            </div>
+          )}
+          {techSummary && (
+            <div style={{
+              display: "inline-flex", alignItems: "center", gap: 8,
+              padding: "5px 10px", borderRadius: 6, marginLeft: change52w != null ? 12 : 0,
+              background: techSummary.color + "15",
+              borderLeft: `3px solid ${techSummary.color}`,
+            }}>
+              <span style={{ fontSize: 9, color: "#445", textTransform: "uppercase", letterSpacing: 1 }}>Technique</span>
+              <span style={{ fontSize: 12, fontWeight: 700, color: techSummary.color }}>{techSummary.label}</span>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* GRAPHIQUE INTERACTIF */}
       <div style={{ background: "#0d1420", border: "1px solid #1e2a3a", borderRadius: 12, padding: "14px 18px", marginBottom: 4 }}>
@@ -1431,11 +1992,11 @@ function StockView({ metrics, chartData: initialChartData, ticker }: {
           closes={chartData?.closes ?? []}
           volumes={chartData?.volumes ?? []}
         />
-        <SituationalPanel metrics={metrics}/>
+        <SituationalPanel metrics={metrics} closes={chartData?.closes ?? []}/>
       </div>
 
-      {/* SECTIONS */}
-      {SECTIONS.map(sec => (
+      {/* SECTIONS — masquées pour les types sans fondamentaux d'entreprise */}
+      {["INDEX","FUTURE","BOND"].indexOf((quoteType||"").toUpperCase()) === -1 && SECTIONS.map(sec => (
         <div key={sec.label}>
           <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", margin:"20px 0 10px" }}>
             <SectionTitle icon={sec.icon} label={sec.label}/>
@@ -1537,6 +2098,11 @@ export default function App() {
   const [result,  setResult]  = useState<ResultType | null>(null);
   const [log,     setLog]     = useState<string[]>([]);
   const [error,   setError]   = useState("");
+  const [mode,            setMode]            = useState<SearchMode>("all");
+  const [suggestions,     setSuggestions]     = useState<SearchSuggestion[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchRef   = useRef<HTMLDivElement>(null);
 
   const addLog = (msg: string) => setLog(l => [...l, msg]);
 
@@ -1567,10 +2133,11 @@ export default function App() {
       addLog(`  → ${cur} absent ECB, on continue`);
     }
 
-    addLog("⚡ Recherche parallèle Yahoo Finance + CoinGecko...");
+    const skipCG = mode !== "all" && mode !== "crypto";
+    addLog(`⚡ Recherche ${skipCG ? "Yahoo Finance" : "parallèle Yahoo Finance + CoinGecko"}...`);
     const [yfData, cgId] = await Promise.all([
       yfChart(upper, addLog),
-      cgSearch(lower),
+      skipCG ? Promise.resolve(null) : cgSearch(lower),
     ]);
 
     if (cgId) {
@@ -1607,7 +2174,61 @@ export default function App() {
     addLog("❌ Introuvable sur toutes les sources");
     setError(`"${raw}" introuvable. Vérifiez le ticker (ex: AAPL, MC.PA, BTC, USD)`);
     setLoading(false);
-  }, [query]);
+  }, [query, mode]);
+
+  // ── Suggestions ──────────────────────────────────────────────
+  const fetchSuggestions = async (q: string, m: SearchMode) => {
+    if (q.trim().length < 1) { setSuggestions([]); setShowSuggestions(false); return; }
+    const all: SearchSuggestion[] = [];
+    if (m === "crypto") {
+      all.push(...await cgSearchSuggest(q));
+    } else if (m === "all") {
+      const [yf, cg] = await Promise.all([yfSearch(q), cgSearchSuggest(q)]);
+      all.push(...yf, ...cg);
+    } else {
+      all.push(...await yfSearch(q));
+    }
+    const modeTypes = SEARCH_MODES.find(sm => sm.key === m)?.yfTypes ?? [];
+    const filtered  = m === "all" ? all : all.filter(r =>
+      !modeTypes.length || modeTypes.indexOf((r.type || "").toUpperCase()) !== -1
+    );
+    const seen   = new Set<string>();
+    const unique = filtered.filter(r => { if (seen.has(r.symbol)) return false; seen.add(r.symbol); return true; });
+    setSuggestions(unique.slice(0, 10));
+    setShowSuggestions(unique.length > 0);
+  };
+
+  const handleQueryChange = (val: string) => {
+    setQuery(val);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => fetchSuggestions(val, mode), 300);
+  };
+
+  const handleModeChange = (m: SearchMode) => {
+    setMode(m);
+    setSuggestions([]);
+    setShowSuggestions(false);
+    if (query.trim().length >= 1) {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      debounceRef.current = setTimeout(() => fetchSuggestions(query, m), 150);
+    }
+  };
+
+  const selectSuggestion = (s: SearchSuggestion) => {
+    setQuery(s.symbol);
+    setShowSuggestions(false);
+    setSuggestions([]);
+    doAnalyze(s.symbol);
+  };
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (searchRef.current && !searchRef.current.contains(e.target as Node))
+        setShowSuggestions(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
 
   const ForexView = ({ currency, rate, allRates }: { currency: string; rate: number; allRates: Record<string, number> }) => (
     <div style={{ animation:"fadeIn .4s ease" }}>
@@ -1678,34 +2299,113 @@ export default function App() {
       {/* BARRE DE RECHERCHE */}
       <div style={{ paddingTop:24, paddingBottom:0 }}>
         <div className="app-inner">
-          <div style={{ maxWidth:760, display:"flex", gap:10 }}>
-            <input
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              onKeyDown={e => e.key==="Enter" && doAnalyze()}
-              placeholder="Ticker : AAPL · MC.PA · BTC · bitcoin · USD · EUR/GBP..."
-              style={{
-                flex:1, background:"#0d1420", border:"1px solid #2a3548",
-                borderRadius:10, color:"#e6edf3", padding:"14px 18px",
-                fontSize:15, fontWeight:600, outline:"none",
-              }}
-            />
-            <button onClick={() => doAnalyze()} disabled={loading} style={{
+
+          {/* Filtres par mode */}
+          <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:10 }}>
+            {SEARCH_MODES.map(m => {
+              const active = mode === m.key;
+              return (
+                <button
+                  key={m.key}
+                  onClick={() => handleModeChange(m.key)}
+                  style={{
+                    background:  active ? m.color + "22" : "transparent",
+                    border:     `1px solid ${active ? m.color : "#2a3548"}`,
+                    color:       active ? m.color : "#556",
+                    borderRadius: 6, padding: "5px 13px",
+                    fontSize: 11, fontWeight: active ? 800 : 600,
+                    cursor: "pointer", transition: "all .15s",
+                    letterSpacing: 0.2,
+                  }}
+                >
+                  {m.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Champ + suggestions */}
+          <div style={{ maxWidth:760, display:"flex", gap:10, alignItems:"flex-start" }}>
+            <div ref={searchRef} style={{ flex:1, position:"relative" }}>
+              <input
+                value={query}
+                onChange={e => handleQueryChange(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === "Enter")  { setShowSuggestions(false); doAnalyze(); }
+                  if (e.key === "Escape")   setShowSuggestions(false);
+                }}
+                onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
+                placeholder={
+                  mode === "equity"  ? "Ticker action : AAPL · MC.PA · AIR.PA · SAP.DE..." :
+                  mode === "etf"     ? "Ticker ETF / Fonds : SPY · IWDA.AS · CW8.PA..." :
+                  mode === "futures" ? "Contrat à terme : ES=F · NQ=F · CL=F · GC=F..." :
+                  mode === "forex"   ? "Paire Forex : USD · EUR/GBP · JPY · CHF..." :
+                  mode === "crypto"  ? "Crypto : BTC · ethereum · SOL · MATIC..." :
+                  mode === "index"   ? "Indice : ^GSPC · ^FCHI · ^GDAXI · ^N225..." :
+                  mode === "bond"    ? "Obligation : ^TNX · ^IRX · TLT..." :
+                  "Ticker : AAPL · MC.PA · BTC · bitcoin · USD · EUR/GBP..."
+                }
+                style={{
+                  width:"100%", background:"#0d1420", border:"1px solid #2a3548",
+                  borderRadius:10, color:"#e6edf3", padding:"14px 18px",
+                  fontSize:15, fontWeight:600, outline:"none",
+                }}
+              />
+
+              {/* Dropdown suggestions */}
+              {showSuggestions && suggestions.length > 0 && (
+                <div style={{
+                  position:"absolute", top:"calc(100% + 6px)", left:0, right:0,
+                  background:"#0d1420", border:"1px solid #2a3548",
+                  borderRadius:10, overflow:"hidden",
+                  zIndex:50, boxShadow:"0 8px 32px #000d",
+                }}>
+                  {suggestions.map((s, i) => {
+                    const b = getBadge(s.type);
+                    return (
+                      <div
+                        key={i}
+                        onMouseDown={() => selectSuggestion(s)}
+                        style={{
+                          display:"flex", alignItems:"center", gap:10,
+                          padding:"9px 16px", cursor:"pointer",
+                          borderBottom: i < suggestions.length - 1 ? "1px solid #141e2e" : "none",
+                          background:"transparent", transition:"background .1s",
+                        }}
+                        onMouseEnter={e => (e.currentTarget.style.background = "#141e2e")}
+                        onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+                      >
+                        <span style={{ fontFamily:"'IBM Plex Mono',monospace", fontWeight:800, color:"#e6edf3", fontSize:13, minWidth:70, flexShrink:0 }}>
+                          {s.symbol}
+                        </span>
+                        <span style={{ flex:1, fontSize:12, color:"#8b949e", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                          {s.name}
+                        </span>
+                        <span style={{ fontSize:9, fontWeight:800, color:b.color, background:b.bg, borderRadius:4, padding:"2px 6px", letterSpacing:1, textTransform:"uppercase", flexShrink:0 }}>
+                          {b.label}
+                        </span>
+                        {s.exchange && (
+                          <span style={{ fontSize:9, color:"#445", flexShrink:0 }}>{s.exchange}</span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <button onClick={() => { setShowSuggestions(false); doAnalyze(); }} disabled={loading} style={{
               background: loading ? "#141e2e" : "#f0a500",
               color: loading ? "#445" : "#000",
               border:"none", borderRadius:10, padding:"14px 26px",
               fontSize:14, fontWeight:800,
               cursor: loading ? "not-allowed" : "pointer",
-              whiteSpace:"nowrap",
+              whiteSpace:"nowrap", flexShrink:0,
             }}>
               {loading ? "…" : "Analyser →"}
             </button>
           </div>
-          <div style={{ marginTop:8, fontSize:11, color:"#445" }}>
-            💡 Actions : <span style={{ color:"#8b949e" }}>AAPL · MC.PA · AIR.PA · SAP.DE · 7203.T</span>
-            {" "}· Crypto : <span style={{ color:"#8b949e" }}>BTC · ethereum · SOL</span>
-            {" "}· Forex : <span style={{ color:"#8b949e" }}>USD · EUR/GBP</span>
-          </div>
+
         </div>
       </div>
 
