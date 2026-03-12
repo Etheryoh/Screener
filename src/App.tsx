@@ -63,10 +63,10 @@ function scoreEmoji(s: number | null): string {
 }
 function getVerdict(g: number | null) {
   if (g == null) return null;
-  if (g >= 7.5) return { label:"Opportunité", color:"#22c55e", emoji:"🚀",  desc:"Fondamentaux solides — potentiel fort." };
-  if (g >= 5.5) return { label:"Neutre",       color:"#f59e0b", emoji:"⚖️", desc:"Profil équilibré — surveiller avant d'investir." };
-  if (g >= 3.5) return { label:"Prudence",     color:"#f97316", emoji:"⚠️", desc:"Signaux mitigés — risques à ne pas négliger." };
-  return         { label:"Risque élevé", color:"#ef4444", emoji:"🔴", desc:"Fondamentaux dégradés — investissement spéculatif." };
+  if (g >= 7.5) return { label:"Opportunité Technique", color:"#22c55e", emoji:"🚀", desc:"Signal technique fort — fondamentaux confirment." };
+  if (g >= 5.5) return { label:"Signal Intéressant",    color:"#f59e0b", emoji:"⚖️", desc:"Contexte en construction — surveiller l'entrée." };
+  if (g >= 3.5) return { label:"Prudence",              color:"#f97316", emoji:"⚠️", desc:"Signaux mitigés ou contexte défavorable." };
+  return         { label:"Risque Élevé",         color:"#ef4444", emoji:"🔴", desc:"Chaos ou excès spéculatif — risque élevé." };
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -88,8 +88,10 @@ const getJson = async (url: string): Promise<any> => {
 const CHART_RANGES: Record<string, { range: string; interval: string; label: string }> = {
   "3m":  { range: "3mo",  interval: "1d",  label: "3 mois" },
   "1a":  { range: "1y",   interval: "1d",  label: "1 an"   },
+  "2a":  { range: "2y",   interval: "1d",  label: "2 ans"  },
   "3a":  { range: "3y",   interval: "1wk", label: "3 ans"  },
   "5a":  { range: "5y",   interval: "1wk", label: "5 ans"  },
+  "10a": { range: "10y",  interval: "1mo", label: "10 ans" },
 };
 
 // ── MODES DE RECHERCHE ────────────────────────────────────────
@@ -614,9 +616,480 @@ function calcTrendDeviation(closes: (number|null)[]): TrendDevResult | null {
   };
 }
 
-function computeTechSignals(
+// ── ADX PROXY (force de tendance) ─────────────────────────────
+function calcADX(
+  highs:  (number|null)[],
+  lows:   (number|null)[],
   closes: (number|null)[],
+  period = 14
+): number | null {
+  const H = highs.filter((v): v is number => v != null);
+  const L = lows.filter((v): v is number => v != null);
+  const C = closes.filter((v): v is number => v != null);
+  const N = Math.min(H.length, L.length, C.length);
+  if (N < period * 2 + 1) return null;
+
+  const tr: number[] = [];
+  const plusDM: number[] = [];
+  const minusDM: number[] = [];
+  for (let i = 1; i < N; i++) {
+    tr.push(Math.max(H[i]-L[i], Math.abs(H[i]-C[i-1]), Math.abs(L[i]-C[i-1])));
+    const up   = H[i] - H[i-1];
+    const down = L[i-1] - L[i];
+    plusDM.push(up > down && up > 0 ? up : 0);
+    minusDM.push(down > up && down > 0 ? down : 0);
+  }
+
+  const wilderSmooth = (arr: number[], p: number): number[] => {
+    const res: number[] = [];
+    let val = arr.slice(0, p).reduce((a, b) => a + b, 0);
+    res.push(val);
+    for (let i = p; i < arr.length; i++) { val = val - val / p + arr[i]; res.push(val); }
+    return res;
+  };
+
+  const atr14 = wilderSmooth(tr,      period);
+  const pdm14 = wilderSmooth(plusDM,  period);
+  const mdm14 = wilderSmooth(minusDM, period);
+
+  const dx: number[] = [];
+  for (let i = 0; i < atr14.length; i++) {
+    if (atr14[i] === 0) continue;
+    const pdi = (pdm14[i] / atr14[i]) * 100;
+    const mdi = (mdm14[i] / atr14[i]) * 100;
+    const sum = pdi + mdi;
+    if (sum === 0) continue;
+    dx.push((Math.abs(pdi - mdi) / sum) * 100);
+  }
+  if (dx.length < period) return null;
+
+  let adx = dx.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < dx.length; i++) adx = (adx * (period - 1) + dx[i]) / period;
+  return parseFloat(adx.toFixed(1));
+}
+
+// ── STRUCTURE HH/HL OU LL/LH ─────────────────────────────────
+interface TrendStructureResult {
+  type:   "bullish" | "bearish" | "mixed" | "flat";
+  swings: number;
+}
+
+function detectTrendStructure(
+  highs:   (number|null)[],
+  lows:    (number|null)[],
+  lookback = 20
+): TrendStructureResult {
+  const H = highs.filter((v): v is number => v != null).slice(-lookback);
+  const L = lows.filter((v): v is number => v != null).slice(-lookback);
+  const N = Math.min(H.length, L.length);
+  if (N < 4) return { type: "flat", swings: 0 };
+
+  const swingHighs: number[] = [];
+  const swingLows:  number[] = [];
+  for (let i = 1; i < N - 1; i++) {
+    if (H[i] > H[i-1] && H[i] > H[i+1]) swingHighs.push(H[i]);
+    if (L[i] < L[i-1] && L[i] < L[i+1]) swingLows.push(L[i]);
+  }
+
+  const swings = swingHighs.length + swingLows.length;
+  if (swings < 2) return { type: "flat", swings };
+
+  let hh = 0, hl = 0, ll = 0, lh = 0;
+  for (let i = 1; i < swingHighs.length; i++) { if (swingHighs[i] > swingHighs[i-1]) hh++; else lh++; }
+  for (let i = 1; i < swingLows.length;  i++) { if (swingLows[i]  > swingLows[i-1])  hl++; else ll++; }
+
+  const bullScore = hh + hl;
+  const bearScore = ll + lh;
+  const type: "bullish" | "bearish" | "mixed" | "flat" =
+    bullScore > bearScore + 1 ? "bullish" :
+    bearScore > bullScore + 1 ? "bearish" :
+    bullScore + bearScore > 0 ? "mixed"   : "flat";
+  return { type, swings };
+}
+
+// ── DIVERGENCE RSI / PRIX ─────────────────────────────────────
+interface DivergenceResult {
+  type:     "bullish" | "bearish" | null;
+  strength: "weak" | "strong";
+}
+
+function detectDivergence(
+  closes:  (number|null)[],
+  period   = 14,
+  lookback = 30
+): DivergenceResult {
+  const c = closes.filter((v): v is number => v != null);
+  if (c.length < period + lookback) return { type: null, strength: "weak" };
+
+  const slice = c.slice(-(lookback + period));
+  const rsiSeries: number[] = [];
+  for (let i = period; i <= slice.length; i++) {
+    let gains = 0, losses = 0;
+    for (let j = i - period; j < i; j++) {
+      const d = slice[j] - (j > 0 ? slice[j-1] : slice[j]);
+      if (d > 0) gains += d; else losses -= d;
+    }
+    const rs = losses === 0 ? 100 : gains / losses;
+    rsiSeries.push(100 - 100 / (1 + rs));
+  }
+
+  const prices = slice.slice(period);
+  const N = Math.min(rsiSeries.length, prices.length);
+  if (N < 4) return { type: null, strength: "weak" };
+
+  const mid = Math.floor(N / 2);
+  const p1 = Math.max(...prices.slice(0, mid));
+  const p2 = Math.max(...prices.slice(mid));
+  const r1 = Math.max(...rsiSeries.slice(0, mid));
+  const r2 = Math.max(...rsiSeries.slice(mid));
+  const p1l = Math.min(...prices.slice(0, mid));
+  const p2l = Math.min(...prices.slice(mid));
+  const r1l = Math.min(...rsiSeries.slice(0, mid));
+  const r2l = Math.min(...rsiSeries.slice(mid));
+
+  if (p2 > p1 * 1.01 && r2 < r1 * 0.97) {
+    const strength: "weak" | "strong" = (p2/p1 - 1 > 0.05 && r1/r2 - 1 > 0.05) ? "strong" : "weak";
+    return { type: "bearish", strength };
+  }
+  if (p2l < p1l * 0.99 && r2l > r1l * 1.03) {
+    const strength: "weak" | "strong" = (p1l/p2l - 1 > 0.05 && r2l/r1l - 1 > 0.05) ? "strong" : "weak";
+    return { type: "bullish", strength };
+  }
+  return { type: null, strength: "weak" };
+}
+
+// ── MATURITÉ DE TENDANCE ──────────────────────────────────────
+function calcTrendMaturity(
+  closes: (number|null)[],
+  highs:  (number|null)[],
+  lows:   (number|null)[],
+): "jeune" | "en_developpement" | "mature" | "divergence" | null {
+  const adx = calcADX(highs, lows, closes);
+  if (adx == null) return null;
+  const rsi    = calcRSI(closes);
+  const div    = detectDivergence(closes);
+  const ema200 = calcEMA(closes, 200);
+  const c      = closes.filter((v): v is number => v != null);
+  const last   = c.length > 0 ? c[c.length - 1] : null;
+
+  if (div.type === "bearish" || div.type === "bullish") return "divergence";
+  if (adx > 40 || (rsi != null && rsi > 70) || (ema200 != null && last != null && last > ema200 * 1.25)) return "mature";
+  if (adx >= 30) return "en_developpement";
+  if (adx >= 20) return "jeune";
+  return null;
+}
+
+// ── CLASSIFICATEUR DE CONTEXTE DE MARCHÉ ─────────────────────
+interface MarketContext {
+  type:               "range" | "tendance" | "exces" | "chaos";
+  subtype?:           string;
+  maturity?:          "jeune" | "en_developpement" | "mature" | "divergence";
+  confidence:         number;
+  fundamentalConfirm: "confirms" | "neutral" | "warns" | null;
+  adx:                number | null;
+  structure:          TrendStructureResult;
+  divergence:         DivergenceResult;
+}
+
+function classifyMarketContext(
+  closes:  (number|null)[],
+  highs:   (number|null)[],
+  lows:    (number|null)[],
   volumes: (number|null)[],
+): MarketContext {
+  const adx    = calcADX(highs, lows, closes);
+  const rsi    = calcRSI(closes);
+  const ema50  = calcEMA(closes, 50);
+  const ema200 = calcEMA(closes, 200);
+  const ema20  = calcEMA(closes, 20);
+  const struct = detectTrendStructure(highs, lows);
+  const div    = detectDivergence(closes);
+  const vol    = calcVolumeAnomaly(volumes);
+  const c      = closes.filter((v): v is number => v != null);
+  const last   = c.length > 0 ? c[c.length - 1] : null;
+
+  // ATR-based volatility
+  const hArr = highs.filter((v): v is number => v != null);
+  const lArr = lows.filter((v): v is number => v != null);
+  const cArr = closes.filter((v): v is number => v != null);
+  const trArr: number[] = [];
+  for (let i = 1; i < Math.min(hArr.length, lArr.length, cArr.length); i++) {
+    trArr.push(Math.max(hArr[i]-lArr[i], Math.abs(hArr[i]-cArr[i-1]), Math.abs(lArr[i]-cArr[i-1])));
+  }
+  const atr14    = trArr.length >= 14 ? trArr.slice(-14).reduce((a,b)=>a+b)/14    : null;
+  const atrMean50= trArr.length >= 50 ? trArr.slice(-50).reduce((a,b)=>a+b)/50   : null;
+
+  // EMA50 slope (dernier vs 10 bars avant)
+  const ema50Prev = calcEMA(c.slice(0, c.length - 10).map((v): number|null => v), 50);
+  const ema50Slope = (ema50 != null && ema50Prev != null && ema50Prev !== 0)
+    ? ((ema50 - ema50Prev) / ema50Prev) * 100
+    : 0;
+
+  // Alignement EMA long terme — capte la tendance même quand la structure récente (20 bars) est mixte
+  const ltBull = ema50 != null && ema200 != null && ema50 > ema200 * 1.02;
+  const ltBear = ema50 != null && ema200 != null && ema50 < ema200 * 0.98;
+
+  let type: "range" | "tendance" | "exces" | "chaos" = "range";
+  let confidence = 50;
+  let subtype: string | undefined;
+
+  // ── CHAOS ─────────────────────────────────────────────────────
+  const isHighVol = atr14 != null && atrMean50 != null && atr14 > 3 * atrMean50;
+  const emaFlat   = Math.abs(ema50Slope) < 0.3;
+  if (isHighVol && emaFlat) {
+    type = "chaos";
+    confidence = 70;
+  }
+  // ── EXCÈS ─────────────────────────────────────────────────────
+  else if (
+    adx != null && adx > 40 &&
+    ema50 != null && ema200 != null && last != null &&
+    ema50 > ema200 * 1.02 && last > ema50 &&
+    (rsi == null || rsi > 65) &&
+    (vol == null || vol.ratio > 1.3)
+  ) {
+    type = "exces";
+    confidence = Math.min(60 + (adx > 50 ? 20 : adx > 45 ? 10 : 0), 90);
+    subtype = (ema20 != null && ema50 != null && ema200 != null &&
+               ema20 > ema50 * 1.02 && ema50 > ema200 * 1.02)
+      ? "exces_final" : undefined;
+  }
+  // ── TENDANCE ─────────────────────────────────────────────────
+  // Condition primaire : structure récente directionnelle
+  // Condition secondaire : alignement EMA long terme fort (ltBull/ltBear) + slope prononcé
+  // → capte les tendances où la structure 20-bars est mixte mais le momentum est intact
+  else if (
+    adx != null && adx > 25 &&
+    Math.abs(ema50Slope) > 0.8 &&
+    (struct.type === "bullish" || struct.type === "bearish" ||
+     (ltBull && ema50Slope > 2.0) || (ltBear && ema50Slope < -2.0))
+  ) {
+    type = "tendance";
+    const bullish = struct.type === "bullish";
+    if (div.type === (bullish ? "bearish" : "bullish")) {
+      subtype = "divergence";
+      confidence = 55;
+    } else if (adx > 35) {
+      subtype = "suivi";
+      confidence = Math.min(70 + Math.round(adx - 35), 88);
+    } else {
+      subtype = "accumulation";
+      confidence = 62;
+    }
+  }
+  // ── ESSOUFFLEMENT — tendance directionnelle mais momentum déclinant ──
+  // ADX >= 10 suffit quand la structure récente est explicitement directionnelle (bullish/bearish)
+  // ADX >= 15 requis quand on s'appuie uniquement sur l'alignement EMA long terme
+  else if (
+    (struct.type === "bullish" || struct.type === "bearish" || ltBull || ltBear) &&
+    adx != null &&
+    (adx >= 15 || (adx >= 10 && (struct.type === "bullish" || struct.type === "bearish"))) &&
+    Math.abs(ema50Slope) >= 0.15
+  ) {
+    type = "tendance";
+    subtype = "essoufflement";
+    // Direction opposée à la structure = divergence aggravante
+    const hasDivergence = div.type !== null &&
+      div.type !== (struct.type === "bullish" ? "bullish" : "bearish");
+    confidence = hasDivergence ? 70 : adx >= 20 ? 62 : 52;
+  }
+  // ── RANGE ─────────────────────────────────────────────────────
+  else {
+    type = "range";
+    confidence = adx != null && adx < 15 ? 80 : 62;
+    subtype = (struct.swings >= 3 && (struct.type === "mixed" || struct.type === "flat"))
+      ? "3br" : "neuneu";
+    if (subtype === "3br") confidence = Math.min(confidence + 10, 85);
+  }
+
+  return {
+    type,
+    subtype,
+    maturity: type === "tendance"
+      ? (calcTrendMaturity(closes, highs, lows) ?? undefined)
+      : undefined,
+    confidence: Math.round(Math.min(confidence, 95)),
+    fundamentalConfirm: null,
+    adx,
+    structure: struct,
+    divergence: div,
+  };
+}
+
+// ── SCORE FINAL (technique + modificateurs fondamentaux) ───────
+interface FinalScoreResult {
+  score:     number;
+  modifiers: string[];
+  context:   MarketContext;
+}
+
+function computeFinalScore(
+  metrics: ReturnType<typeof buildMetrics>,
+  context: MarketContext,
+  techSignals: TechSignal[] = [],
+): FinalScoreResult {
+  // ── Score de base selon le contexte ──────────────────────────
+  let base: number;
+  if (context.type === "chaos") {
+    base = 1;
+  } else if (context.type === "exces") {
+    base = 4;                          // sera ajusté par les modificateurs
+  } else if (context.type === "tendance") {
+    if (context.subtype === "essoufflement") {
+      // Tendance qui perd son souffle : mauvais point d'entrée dans la direction du trend
+      // Haussier épuisé → éviter d'acheter ; baissier épuisé → prudence avant rebond
+      base = context.structure.type === "bearish" ? 4.5 : 3.5;
+    } else {
+      const isBearDir = context.structure.type === "bearish";
+      // Les scores de maturité dépendent de la direction :
+      // Haussier actif → scores élevés (bonne opportunité d'entrée/suivi)
+      // Baissier actif → scores bas (dangereux, ne pas acheter)
+      switch (context.maturity) {
+        case "jeune":            base = isBearDir ? 2.5 : 8; break;
+        case "en_developpement": base = isBearDir ? 2.0 : 7; break;
+        case "mature":           base = isBearDir ? 3.5 : 5; break;
+        case "divergence":       base = 3;                    break;
+        default:                 base = isBearDir ? 3.0 : 6;
+      }
+      if (context.subtype === "divergence") base = Math.min(base, 4);
+    }
+  } else {
+    // range
+    base = context.subtype === "3br" ? 6 : 5;
+  }
+
+  // ── Modificateurs fondamentaux ────────────────────────────────
+  const modifiers: string[] = [];
+  let mod = 0;
+
+  if (metrics) {
+    const { roe, fcf, debtEq, netMargin, pb, currentRatio } = metrics;
+
+    if (context.type === "exces") {
+      const hasFundamental = roe != null && roe > 0.15 && fcf != null && fcf > 0;
+      if (hasFundamental) {
+        mod += 1.0;
+        modifiers.push("+1.0 Excès avec fondamental haussier (ROE>15%, FCF positif)");
+      } else {
+        mod -= 1.5;
+        modifiers.push("-1.5 Bulle spéculative — aucun fondamental ne justifie la valorisation");
+      }
+    }
+
+    if (context.type === "tendance" && context.subtype !== "essoufflement") {
+      const solidBalance = debtEq != null && debtEq < 0.8 && netMargin != null && netMargin > 0;
+      if (solidBalance) {
+        mod += 0.5;
+        modifiers.push("+0.5 Bilan solide en tendance (faible dette, marges positives)");
+      }
+    }
+
+    if (context.subtype === "essoufflement") {
+      // En essoufflement haussier, les bons fondamentaux limitent la pénalité
+      // mais ne suffisent pas à recommander l'entrée
+      const strongFundamentals = roe != null && roe > 0.2 && fcf != null && fcf > 0 && netMargin != null && netMargin > 0.1;
+      if (context.structure.type === "bullish") {
+        if (strongFundamentals) {
+          mod += 0.5;
+          modifiers.push("+0.5 Fondamentaux solides — essoufflement moins risqué");
+        } else {
+          mod -= 0.5;
+          modifiers.push("-0.5 Momentum déclinant sans soutien fondamental fort");
+        }
+      } else {
+        // Baissier épuisé avec bons fondamentaux → signal de rebond potentiel
+        if (strongFundamentals) {
+          mod += 1.0;
+          modifiers.push("+1.0 Épuisement baissier avec fondamentaux sains — rebond possible");
+        }
+      }
+    }
+
+    const isValue = pb != null && pb < 1 && netMargin != null && netMargin > 0;
+    if (isValue) {
+      mod += 0.5;
+      modifiers.push("+0.5 Value décotée (PB<1, entreprise bénéficiaire)");
+    }
+
+    if (currentRatio != null && currentRatio < 0.8) {
+      mod -= 1.0;
+      modifiers.push("-1.0 Santé financière critique (current ratio<0.8)");
+    }
+
+    if (netMargin != null && netMargin < 0 && context.structure.type === "bearish") {
+      mod -= 1.0;
+      modifiers.push("-1.0 Entreprise déficitaire en tendance baissière");
+    }
+
+    // Confirmation/pénalité valorisation en contexte range et tendance
+    if (context.type === "range" || context.type === "tendance") {
+      const gVal = metrics.gValorisation;
+      if (gVal != null) {
+        if (gVal <= 2.0) {
+          mod -= 1.5;
+          modifiers.push("-1.5 Survalorisation importante (score val. ≤ 2/10)");
+        } else if (gVal <= 3.5) {
+          mod -= 1.0;
+          modifiers.push("-1.0 Valorisation dégradée (score val. ≤ 3.5/10)");
+        } else if (gVal >= 7.0) {
+          mod += 0.5;
+          modifiers.push("+0.5 Valorisation attractive (score val. ≥ 7/10)");
+        }
+      }
+    }
+  }
+
+  // ── Modificateur oscillateurs techniques ─────────────────────
+  // Les signaux neutres (RSI 40-60, EMA ambigus) sont exclus du calcul directionnel.
+  // Seuls RSI, MACD, volume, structure portent une direction exploitable.
+  if (techSignals.length > 0) {
+    const bulls = techSignals.filter(s => s.strength === "bull").length;
+    const bears = techSignals.filter(s => s.strength === "bear").length;
+    const total = bulls + bears;
+    if (total >= 3) {
+      const bullRatio = bulls / total;
+      const isBullCtx = context.structure.type === "bullish" || context.type === "exces";
+      const isBearCtx = context.structure.type === "bearish";
+
+      // Contradiction : oscillateurs s'opposent au contexte structurel → signal d'alerte
+      if (isBullCtx && bullRatio <= 0.30) {
+        mod -= 0.5;
+        modifiers.push(`-0.5 Oscillateurs contredisent le contexte haussier (${bears}↓/${total})`);
+      } else if (isBearCtx && bullRatio >= 0.70) {
+        mod += 0.5;
+        modifiers.push(`+0.5 Oscillateurs s'opposent à la tendance baissière — rebond possible (${bulls}↑/${total})`);
+      }
+      // Confirmation forte : oscillateurs alignés avec le contexte
+      else if (isBullCtx && bullRatio >= 0.70) {
+        mod += 0.3;
+        modifiers.push(`+0.3 Oscillateurs confirment le contexte haussier (${bulls}↑/${total})`);
+      } else if (isBearCtx && bullRatio <= 0.30) {
+        mod -= 0.3;
+        modifiers.push(`-0.3 Oscillateurs confirment la pression baissière (${bears}↓/${total})`);
+      }
+    }
+  }
+
+  const score = parseFloat(Math.max(1, Math.min(10, base + mod)).toFixed(1));
+
+  // ── Mise à jour fundamentalConfirm sur le contexte ───────────
+  const updatedContext: MarketContext = {
+    ...context,
+    fundamentalConfirm:
+      mod >= 0.5  ? "confirms" :
+      mod <= -1.0 ? "warns"    :
+                    "neutral",
+  };
+
+  return { score, modifiers, context: updatedContext };
+}
+
+function computeTechSignals(
+  closes:  (number|null)[],
+  volumes: (number|null)[],
+  highs:   (number|null)[] = [],
+  lows:    (number|null)[] = [],
+  chartInterval: "1d" | "1wk" | "1mo" = "1d",
 ): { signals: TechSignal[]; sinewave: SinewaveResult | null } {
   const signals: TechSignal[] = [];
   const rsi   = calcRSI(closes);
@@ -736,7 +1209,22 @@ function computeTechSignals(
         example:`Les volumes récents sont ${vol.ratio}x supérieurs à la moyenne historique. Ce niveau d'activité inhabituel mérite attention — croiser avec l'évolution du prix pour déterminer si c'est un achat ou une vente de grande ampleur.` } });
 
   // ── Sinewave + Momentum ──────────────────────────────────────
-  const sw = calcSinewave(closes);
+  const swRaw = calcSinewave(closes);
+  // Le dp retourné par calcSinewave est en unités du graphique (jours, semaines ou mois).
+  // On le normalise en jours équivalents pour que le mapping optimalUT soit cohérent
+  // quelle que soit la résolution du graphique analysé.
+  const sw: SinewaveResult | null = (() => {
+    if (swRaw == null) return null;
+    if (chartInterval === "1d") return swRaw;
+    const mult  = chartInterval === "1wk" ? 5 : 22;
+    const dpDays = swRaw.dominantPeriod * mult;
+    const optimalUT =
+      dpDays <= 10  ? { label:"Journalier",               horizon:"Court terme · Swing 1-2 sem.",   note:`Cycle dominant ~${dpDays}j — le journalier est l'UT optimale pour piloter les entrées/sorties.` } :
+      dpDays <= 22  ? { label:"Journalier / Hebdomadaire", horizon:"Swing 2-6 semaines",             note:`Cycle ~${dpDays}j — journalier pour l'entrée, hebdomadaire pour le contexte.` } :
+      dpDays <= 40  ? { label:"Hebdomadaire",              horizon:"Position 1-3 mois",              note:`Cycle ~${dpDays}j — l'hebdomadaire filtre le bruit et aligne sur les mouvements de fond.` } :
+                      { label:"Mensuel / Hebdomadaire",    horizon:"Long terme 3-12 mois",           note:`Cycle long ~${dpDays}j — les fondamentaux reprennent le dessus sur les signaux techniques.` };
+    return { ...swRaw, optimalUT };
+  })();
   const swEdu = {
     concept: "Le Sinewave d'Ehlers (Hilbert Transform) décompose le prix en composantes cycliques pour identifier la phase de marché et la durée du cycle dominant.",
     howToRead: "Quand la ligne Sine croise la LeadSine vers le bas → creux de cycle (signal haussier). Vers le haut → sommet de cycle (signal baissier). La période dominante indique la durée du cycle actuel en jours.",
@@ -824,6 +1312,82 @@ function computeTechSignals(
         detail:`Régression log-linéaire · Tendance à ${trendDev.trendPrice} · R²=${trendDev.r2}`,
         strength:"bull", edu: { ...trendEdu,
           example:`Le prix est ${Math.abs(dev).toFixed(0)}% sous sa tendance de long terme. Si les fondamentaux le soutiennent, c'est souvent le signe d'une opportunité de retour à la moyenne.` } });
+    }
+  }
+
+  // ── ADX ──────────────────────────────────────────────────────
+  const adxEdu = {
+    concept: "L'ADX (Average Directional Index) mesure la force d'une tendance, indépendamment de sa direction. Il va de 0 à 100.",
+    howToRead: "Sous 20 : pas de tendance directionnelle — marché en range. Entre 25 et 40 : tendance modérée. Au-dessus de 40 : tendance forte ou excès de marché.",
+  };
+  if (highs.length > 0 && lows.length > 0) {
+    const adxVal = calcADX(highs, lows, closes);
+    if (adxVal != null) {
+      if (adxVal >= 40) {
+        signals.push({ emoji:"💪", color:"#f59e0b",
+          plain:`Tendance très forte — ADX à ${adxVal.toFixed(0)}, marché directionnel`,
+          label:`ADX ${adxVal.toFixed(0)}`, detail:"Force de tendance · Zone forte (>40)",
+          strength:"neutral", edu: { ...adxEdu,
+            example:`ADX de ${adxVal.toFixed(0)} : tendance très puissante. Dans ce contexte, les corrections sont souvent courtes. Mais un ADX > 50 peut aussi signaler un excès proche d'un retournement.` } });
+      } else if (adxVal >= 25) {
+        signals.push({ emoji:"📐", color:"#8b949e",
+          plain:`Tendance modérée présente — ADX à ${adxVal.toFixed(0)}`,
+          label:`ADX ${adxVal.toFixed(0)}`, detail:"Force de tendance · Zone modérée (25-40)",
+          strength:"neutral", edu: { ...adxEdu,
+            example:`ADX de ${adxVal.toFixed(0)} : il y a une direction, mais la tendance n'est pas encore dominante. Bon contexte pour les stratégies de suivi de tendance prudentes.` } });
+      } else {
+        signals.push({ emoji:"〰️", color:"#445",
+          plain:`Pas de tendance directionnelle — ADX faible à ${adxVal.toFixed(0)}`,
+          label:`ADX ${adxVal.toFixed(0)}`, detail:"Force de tendance · Zone de range (<25)",
+          strength:"neutral", edu: { ...adxEdu,
+            example:`ADX de ${adxVal.toFixed(0)} : le marché oscille sans direction claire. Les stratégies de range (acheter bas, vendre haut) sont plus adaptées que le suivi de tendance.` } });
+      }
+    }
+
+    // ── Structure HH/HL ────────────────────────────────────────
+    const struct = detectTrendStructure(highs, lows);
+    const structEdu = {
+      concept: "En tendance haussière, le prix fait des Hauts de Plus en Plus Hauts (HH) et des Bas de Plus en Plus Hauts (HL). C'est la définition technique d'une tendance — utilisée depuis Dow Theory (1900).",
+      howToRead: "HH+HL = tendance haussière structurelle confirmée. LL+LH = tendance baissière. Mixte = indécision, possible retournement ou range. Plat = absence de structure directionnelle.",
+    };
+    if (struct.type === "bullish") {
+      signals.push({ emoji:"🏔️", color:"#22c55e",
+        plain:"Structure haussière confirmée — le prix fait des hauts et bas croissants",
+        label:`Structure HH+HL (${struct.swings} pivots)`, detail:"Analyse des pivots sur 20 barres · Tendance haussière structurelle",
+        strength:"bull", edu: { ...structEdu,
+          example:`${struct.swings} pivots analysés : HH+HL confirmés. La structure du prix valide une tendance haussière en cours. Les corrections restent des opportunités d'achat tant que la structure tient.` } });
+    } else if (struct.type === "bearish") {
+      signals.push({ emoji:"🏚️", color:"#ef4444",
+        plain:"Structure baissière confirmée — le prix fait des hauts et bas décroissants",
+        label:`Structure LL+LH (${struct.swings} pivots)`, detail:"Analyse des pivots sur 20 barres · Tendance baissière structurelle",
+        strength:"bear", edu: { ...structEdu,
+          example:`${struct.swings} pivots analysés : LL+LH confirmés. La structure du prix valide une tendance baissière. Chaque rebond est une opportunité de sortie, pas d'achat.` } });
+    } else if (struct.type === "mixed") {
+      signals.push({ emoji:"↕️", color:"#8b949e",
+        plain:"Structure mixte — le marché hésite entre hausse et baisse",
+        label:`Structure mixte (${struct.swings} pivots)`, detail:"Analyse des pivots sur 20 barres · Indécision directionnelle",
+        strength:"neutral", edu: { ...structEdu,
+          example:`${struct.swings} pivots sans direction claire. Le marché est en phase de transition — attendre la formation d'une structure claire avant de prendre position.` } });
+    }
+
+    // ── Divergence RSI ─────────────────────────────────────────
+    const div = detectDivergence(closes);
+    const divEdu = {
+      concept: "Une divergence se produit quand le prix et le RSI divergent : le prix monte mais le RSI fait des sommets plus bas, ou le prix baisse mais le RSI fait des creux plus hauts. Signal avancé de retournement possible.",
+      howToRead: "Divergence baissière (prix HH, RSI LH) : la tendance haussière s'essouffle — risque de retournement. Divergence haussière (prix LL, RSI HL) : la pression vendeuse s'épuise — rebond probable.",
+    };
+    if (div.type === "bearish") {
+      signals.push({ emoji:"⚠️", color:"#ef4444",
+        plain:`Divergence baissière ${div.strength === "strong" ? "forte" : "faible"} — le prix monte mais le RSI décroche`,
+        label:`Divergence RSI baissière (${div.strength === "strong" ? "forte" : "faible"})`, detail:"Prix HH · RSI LH · Signal de maturité de tendance",
+        strength:"bear", edu: { ...divEdu,
+          example:`Le prix a fait de nouveaux sommets mais le RSI n'a pas suivi. Cette divergence ${div.strength === "strong" ? "forte" : "modérée"} est un signal classique d'épuisement haussier — réduire les positions longues.` } });
+    } else if (div.type === "bullish") {
+      signals.push({ emoji:"🌱", color:"#22c55e",
+        plain:`Divergence haussière ${div.strength === "strong" ? "forte" : "faible"} — le prix baisse mais le RSI remonte`,
+        label:`Divergence RSI haussière (${div.strength === "strong" ? "forte" : "faible"})`, detail:"Prix LL · RSI HL · Signal d'épuisement baissier",
+        strength:"bull", edu: { ...divEdu,
+          example:`Le prix a fait de nouveaux creux mais le RSI se redresse. Cette divergence ${div.strength === "strong" ? "forte" : "modérée"} indique que les vendeurs s'épuisent — signal précurseur d'un rebond.` } });
     }
   }
 
@@ -1066,16 +1630,14 @@ function EduTooltip({ edu }: { edu: TechSignal["edu"] }) {
 }
 
 // ── COMPOSANT ENCART TECHNIQUE ────────────────────────────────
-function TechnicalPanel({ closes, volumes }: { closes:(number|null)[]; volumes:(number|null)[] }) {
+function TechnicalPanel({ precomputed }: { precomputed: { signals: TechSignal[]; sinewave: SinewaveResult | null } }) {
   const [open, setOpen] = useState(true);
-  const { signals, sinewave } = computeTechSignals(closes, volumes);
+  const { signals, sinewave } = precomputed;
   if (signals.length === 0) return null;
 
   const bulls  = signals.filter((s: TechSignal) => s.strength === "bull").length;
   const bears  = signals.filter((s: TechSignal) => s.strength === "bear").length;
-  const consensus = bulls > bears ? { label:"Haussier", color:"#22c55e" }
-    : bears > bulls ? { label:"Baissier", color:"#ef4444" }
-    : { label:"Neutre", color:"#8b949e" };
+  const total  = bulls + bears;
 
   return (
     <div style={{ background:"#0d1420", border:"1px solid #1e2a3a", borderRadius:12, padding:"14px 18px", marginBottom:10 }}>
@@ -1085,11 +1647,16 @@ function TechnicalPanel({ closes, volumes }: { closes:(number|null)[]; volumes:(
       >
         <div style={{ display:"flex", alignItems:"center", gap:10 }}>
           <span style={{ fontSize:10, fontWeight:800, color:"#445", textTransform:"uppercase", letterSpacing:2 }}>
-            📊 Analyse technique
+            📊 Signaux oscillateurs
           </span>
-          <span style={{ fontSize:10, fontWeight:800, color:consensus.color, background:consensus.color+"22", borderRadius:4, padding:"2px 8px" }}>
-            {consensus.label}
-          </span>
+          {total > 0 && (
+            <span style={{ fontSize:10, color:"#556" }}>
+              <span style={{ color:"#22c55e", fontWeight:700 }}>{bulls}↑</span>
+              {" · "}
+              <span style={{ color:"#ef4444", fontWeight:700 }}>{bears}↓</span>
+              {" / "}{total}
+            </span>
+          )}
         </div>
         <span style={{ fontSize:10, color:"#334" }}>{open ? "▲" : "▼"}</span>
       </div>
@@ -1209,6 +1776,7 @@ function InteractiveChart({
   onPeriodChange,
   period,
   loading,
+  optimalUTKey,
 }: {
   chartData:      ChartData | null;
   currency:       string;
@@ -1216,13 +1784,14 @@ function InteractiveChart({
   onPeriodChange: (p: string) => void;
   period:         string;
   loading:        boolean;
+  optimalUTKey?:  string;
 }) {
   const svgRef  = useRef<SVGSVGElement>(null);
   const [tooltip, setTooltip] = useState<{ x: number; y: number; price: number; date: string } | null>(null);
 
   const PERIODS = quoteType === "CRYPTOCURRENCY"
     ? [{ key:"3m", label:"3 mois" }, { key:"1a", label:"1 an" }]
-    : [{ key:"3m", label:"3 mois" }, { key:"1a", label:"1 an" }, { key:"3a", label:"3 ans" }, { key:"5a", label:"5 ans" }];
+    : [{ key:"3m", label:"3 mois" }, { key:"1a", label:"1 an" }, { key:"2a", label:"2 ans" }, { key:"3a", label:"3 ans" }, { key:"5a", label:"5 ans" }, { key:"10a", label:"10 ans" }];
 
   const closes     = chartData?.closes     ?? [];
   const timestamps = chartData?.timestamps ?? [];
@@ -1231,7 +1800,8 @@ function InteractiveChart({
   // Fallback : si timestamps absent (proxy ne les transmet pas), on les génère
   const now = Math.floor(Date.now() / 1000);
   const PERIOD_SECS: Record<string, number> = {
-    "3m": 90*86400, "1a": 365*86400, "3a": 3*365*86400, "5a": 5*365*86400
+    "3m": 90*86400, "1a": 365*86400, "2a": 2*365*86400,
+    "3a": 3*365*86400, "5a": 5*365*86400, "10a": 10*365*86400,
   };
   const periodSecs = PERIOD_SECS[period] ?? 365*86400;
   const hasTimestamps = timestamps.length > 0;
@@ -1249,7 +1819,7 @@ function InteractiveChart({
   // Filtrage côté client selon la période demandée
   // (le Worker peut retourner plus de données que nécessaire)
   const PERIOD_DAYS: Record<string, number> = {
-    "3m": 92, "1a": 366, "3a": 3*366, "5a": 5*366
+    "3m": 92, "1a": 366, "2a": 2*366, "3a": 3*366, "5a": 5*366, "10a": 10*366
   };
   const cutoffDays = PERIOD_DAYS[period] ?? 366;
   const cutoffTs   = Math.floor(Date.now() / 1000) - cutoffDays * 86400;
@@ -1368,7 +1938,10 @@ function InteractiveChart({
                 fontSize: 10, fontWeight: 700, cursor: "pointer",
                 transition: "all .15s",
               }}
-            >{p.label}</button>
+            >
+              {p.label}
+              {p.key === optimalUTKey && <span style={{ fontSize:6, marginLeft:3, color:"#f0a500", verticalAlign:"super" }}>●</span>}
+            </button>
           ))}
         </div>
       </div>
@@ -1621,19 +2194,198 @@ function SectionTitle({ icon, label }: { icon: string; label: string }) {
   );
 }
 
-function StockView({ metrics, chartData: initialChartData, ticker }: {
-  metrics: any; chartData: any; ticker: string;
+// ════════════════════════════════════════════════════════════════
+// BLOC 5b — PANNEAU CONTEXTE DE MARCHÉ
+// ════════════════════════════════════════════════════════════════
+
+const CONTEXT_COLORS: Record<string, { bg: string; border: string; badge: string; emoji: string }> = {
+  range:    { bg: "#111d30", border: "#4a90d9", badge: "#4a90d9", emoji: "🔵" },
+  tendance: { bg: "#0a2212", border: "#22c55e", badge: "#22c55e", emoji: "📈" },
+  exces:    { bg: "#221500", border: "#f59e0b", badge: "#f59e0b", emoji: "🚀" },
+  chaos:    { bg: "#1e0808", border: "#ef4444", badge: "#ef4444", emoji: "❌" },
+};
+
+const SUBTYPE_LABELS: Record<string, string> = {
+  "3br":            "3ème Borne",
+  "neuneu":         "Range Neuneu",
+  "accumulation":   "Momentum Modéré",
+  "breakout":       "Breakout",
+  "suivi":          "Tendance Active",
+  "pullback":       "Pullback",
+  "divergence":     "Divergence",
+  "exces_final":    "Excès Final",
+  "bulle":          "Bulle Spéculative",
+  "essoufflement":  "Essoufflement",
+};
+
+const MATURITY_LABELS: Record<string, { label: string; color: string }> = {
+  "jeune":            { label: "Tendance Jeune",   color: "#22c55e" },
+  "en_developpement": { label: "En Développement", color: "#4ade80" },
+  "mature":           { label: "Tendance Mature",  color: "#f59e0b" },
+  "divergence":       { label: "Divergence ⚠️",    color: "#ef4444" },
+};
+
+function MarketContextPanel({
+  context, modifiers,
+}: {
+  context:   MarketContext;
+  modifiers: string[];
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const isEssoufflement = context.subtype === "essoufflement";
+  const isBearDir = context.structure.type === "bearish";
+
+  const cc = isEssoufflement
+    ? { bg: "#1a1000", border: "#d97706", badge: "#f59e0b", emoji: "⚠️" }
+    : context.type === "tendance" && isBearDir
+    ? { bg: "#1e0808", border: "#ef4444", badge: "#ef4444", emoji: "📉" }
+    : CONTEXT_COLORS[context.type] || CONTEXT_COLORS["range"];
+
+  const typeLabel =
+    isEssoufflement             ? "Essoufflement"    :
+    context.type === "range"    ? "Range"            :
+    context.type === "tendance" ? (isBearDir ? "Tendance ↓" : "Tendance ↑") :
+    context.type === "exces"    ? "Excès"            : "Chaos";
+
+  // Subtype label direction-aware
+  // Note : "accumulation"/"distribution" (Wyckoff) sont des phases de marché, pas des synonymes de direction.
+  // On utilise des termes neutres décrivant la force du momentum observé.
+  const subtypeLabel = (() => {
+    if (!context.subtype) return null;
+    if (context.subtype === "accumulation") return isBearDir ? "Momentum Baissier" : "Momentum Haussier";
+    if (context.subtype === "suivi")        return isBearDir ? "Tendance Baissière" : "Tendance Haussière";
+    return SUBTYPE_LABELS[context.subtype] ?? null;
+  })();
+
+  // Maturity label direction-aware
+  const maturityEntry = context.maturity ? (() => {
+    if (isBearDir) {
+      const labels: Record<string, string> = {
+        "jeune":            "Baisse Récente",
+        "en_developpement": "Baisse Active",
+        "mature":           "Baisse Étendue",
+        "divergence":       "Divergence ⚠️",
+      };
+      return { label: labels[context.maturity] ?? context.maturity, color: "#ef4444" };
+    }
+    return MATURITY_LABELS[context.maturity] ?? null;
+  })() : null;
+
+  const adxDesc =
+    context.adx == null       ? null :
+    context.adx < 20          ? "Pas de tendance directionnelle" :
+    context.adx < 35          ? "Tendance modérée" :
+    context.adx < 50          ? "Tendance forte" :
+                                 "Tendance très forte";
+
+  const structLabel =
+    context.structure.type === "bullish" ? "📈 HH+HL — Haussière" :
+    context.structure.type === "bearish" ? "📉 LL+LH — Baissière" :
+    context.structure.type === "mixed"   ? "↔️ Structure mixte"   :
+                                           "— Structure plate";
+
+  return (
+    <div style={{
+      background: cc.bg, border: `1px solid ${cc.border}55`,
+      borderRadius: 14, padding: "16px 20px", marginBottom: 14,
+    }}>
+      {/* Ligne principale */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 20 }}>{cc.emoji}</span>
+
+        <span style={{ fontSize: 17, fontWeight: 900, color: cc.badge, textTransform: "uppercase", letterSpacing: 1 }}>
+          {typeLabel}
+        </span>
+
+        {subtypeLabel && (
+          <span style={{ fontSize: 11, fontWeight: 700, color: cc.badge, background: cc.badge+"22", borderRadius: 4, padding: "2px 8px" }}>
+            {subtypeLabel}
+          </span>
+        )}
+
+        {maturityEntry && (
+          <span style={{ fontSize: 11, fontWeight: 700, color: maturityEntry.color, background: maturityEntry.color+"22", borderRadius: 4, padding: "2px 8px" }}>
+            {maturityEntry.label}
+          </span>
+        )}
+
+        <div style={{ marginLeft: "auto", textAlign: "right", flexShrink: 0 }}>
+          <div style={{ fontSize: 9, color: "#445", textTransform: "uppercase", letterSpacing: 1, marginBottom: 2 }}>Confiance</div>
+          <div style={{ fontSize: 15, fontWeight: 800, color: cc.badge }}>{context.confidence}%</div>
+        </div>
+      </div>
+
+      {/* Barre de confiance */}
+      <div style={{ height: 3, background: "#1e2a3a", borderRadius: 2, marginBottom: 12, overflow: "hidden" }}>
+        <div style={{ width: `${context.confidence}%`, height: "100%", background: cc.badge, borderRadius: 2 }}/>
+      </div>
+
+      {/* Détails — ADX / Structure / Divergence / Fondamentaux */}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 20px", marginBottom: 8, fontSize: 10, color: "#8b949e" }}>
+        {context.adx != null && (
+          <span><span style={{ color: "#556" }}>ADX</span> <strong style={{ color: "#b0bec5" }}>{context.adx.toFixed(1)}</strong> — {adxDesc}</span>
+        )}
+        <span><span style={{ color: "#556" }}>Structure</span> <strong style={{ color: "#b0bec5" }}>{structLabel}</strong></span>
+        {context.divergence.type && (
+          <span style={{ color: context.divergence.type === "bullish" ? "#22c55e" : "#ef4444" }}>
+            ⚡ Divergence RSI {context.divergence.type === "bullish" ? "haussière" : "baissière"} ({context.divergence.strength === "strong" ? "forte" : "faible"})
+          </span>
+        )}
+      </div>
+
+      {/* Confirmation fondamentale */}
+      {context.fundamentalConfirm && (
+        <div style={{
+          fontSize: 11, fontWeight: 700, marginBottom: 8,
+          color: context.fundamentalConfirm === "confirms" ? "#22c55e" : context.fundamentalConfirm === "warns" ? "#ef4444" : "#8b949e",
+        }}>
+          {context.fundamentalConfirm === "confirms" ? "✅ Fondamentaux confirment le signal technique" :
+           context.fundamentalConfirm === "warns"    ? "⚠️ Fondamentaux en contradiction avec le signal" :
+                                                       "— Fondamentaux neutres"}
+        </div>
+      )}
+
+      {/* Modificateurs (détail expandable) */}
+      {modifiers.length > 0 && (
+        <div>
+          <button
+            onClick={() => setExpanded(e => !e)}
+            style={{ fontSize: 9, color: "#556", background: "none", border: "none", cursor: "pointer", padding: 0, marginBottom: expanded ? 8 : 0 }}
+          >
+            {expanded ? "▲ réduire" : "▼ Détail des ajustements de score"}
+          </button>
+          {expanded && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 4 }}>
+              {modifiers.map((m, i) => (
+                <div key={i} style={{
+                  fontSize: 10,
+                  color: m.startsWith("+") ? "#22c55e" : "#ef4444",
+                  background: (m.startsWith("+") ? "#22c55e" : "#ef4444") + "11",
+                  borderRadius: 4, padding: "3px 8px",
+                }}>
+                  {m}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey }: {
+  metrics: any; chartData: any; ticker: string; optimalUTKey?: string;
 }) {
   if (!metrics) return null;
   const {
     name, sector, industry, currency, exchange, quoteType,
-    price, change1d, change52w, scores = {}, globalScore,
+    price, change1d, change52w, scores = {},
     gValorisation, gRentabilite, gSante, gRisque,
   } = metrics;
-  const v = getVerdict(globalScore);
 
   // État graphique interactif
-  const defaultPeriod = "1a";
+  const defaultPeriod = optimalUTKey || "1a";
   const [period,       setPeriod]    = useState(defaultPeriod);
   const [chartData,    setChartData] = useState<{ closes:(number|null)[]; timestamps:number[]; opens:(number|null)[]; highs:(number|null)[]; lows:(number|null)[]; volumes:(number|null)[] } | null>(
     initialChartData
@@ -1848,15 +2600,40 @@ function StockView({ metrics, chartData: initialChartData, ticker }: {
     },
   ];
 
-  // Synthèse technique pour l'encart résumé
+  // ── Calcul technique, contexte et score ─────────────────────
+  const closes  = chartData?.closes  ?? [];
+  const highs   = chartData?.highs   ?? [];
+  const lows    = chartData?.lows    ?? [];
+  const volumes = chartData?.volumes ?? [];
+
+  const marketCtx = (closes.length > 20 && highs.length > 20 && lows.length > 20)
+    ? classifyMarketContext(closes, highs, lows, volumes)
+    : null;
+
+  // ── Signaux techniques : calcul unique, partagé par score + badge + TechnicalPanel ──
+  // L'intervalle du graphique est déduit de l'UT sélectionnée (nécessaire pour normaliser dp sinewave)
+  const chartInterval: "1d" | "1wk" | "1mo" =
+    period === "10a" ? "1mo" : period === "3a" || period === "5a" ? "1wk" : "1d";
+  const techComputed = closes.length > 0
+    ? computeTechSignals(closes, volumes, highs, lows, chartInterval)
+    : { signals: [], sinewave: null };
+
+  const finalScoreResult = marketCtx
+    ? computeFinalScore(metrics, marketCtx, techComputed.signals)
+    : null;
+  const finalScore = finalScoreResult?.score ?? null;
+  const v = getVerdict(finalScore);
+
+  // Badge synthétique : ne compte que les signaux directionnels (exclut neutral)
   const techSummary = (() => {
-    if (!chartData || chartData.closes.length === 0) return null;
-    const { signals } = computeTechSignals(chartData.closes, chartData.volumes);
+    const { signals } = techComputed;
     const bulls = signals.filter((s: TechSignal) => s.strength === "bull").length;
     const bears = signals.filter((s: TechSignal) => s.strength === "bear").length;
-    if (bears > bulls + 1) return { label: "Baissière", color: "#ef4444" };
-    if (bulls > bears + 1) return { label: "Haussière", color: "#22c55e" };
-    return { label: "Neutre / Mitigée", color: "#f59e0b" };
+    const total = bulls + bears;
+    if (total === 0) return null;
+    const label = bears > bulls + 1 ? "Baissière" : bulls > bears + 1 ? "Haussière" : "Mitigée";
+    const color = bears > bulls + 1 ? "#ef4444" : bulls > bears + 1 ? "#22c55e" : "#f59e0b";
+    return { label, color, bulls, bears, total };
   })();
 
   return (
@@ -1881,7 +2658,7 @@ function StockView({ metrics, chartData: initialChartData, ticker }: {
         </div>
       </div>
 
-      {/* CARTE VERDICT — pleine largeur, jauge intégrée à droite */}
+      {/* CARTE VERDICT — score global visible immédiatement */}
       {v ? (
         <div style={{
           background: v.color + "0f", border: `1px solid ${v.color}33`,
@@ -1895,9 +2672,9 @@ function StockView({ metrics, chartData: initialChartData, ticker }: {
               <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
                 <span style={{
                   fontSize: 56, fontWeight: 900, lineHeight: 1,
-                  color: scoreColor(globalScore!),
+                  color: scoreColor(finalScore),
                   fontFamily: "'IBM Plex Mono',monospace",
-                }}>{globalScore}</span>
+                }}>{finalScore}</span>
                 <span style={{ fontSize: 18, color: "#556", fontFamily: "'IBM Plex Mono',monospace" }}>/10</span>
               </div>
               <div>
@@ -1920,14 +2697,17 @@ function StockView({ metrics, chartData: initialChartData, ticker }: {
                 background: techSummary.color + "15",
                 borderLeft: `3px solid ${techSummary.color}`,
               }}>
-                <span style={{ fontSize: 9, color: "#445", textTransform: "uppercase", letterSpacing: 1 }}>Technique</span>
+                <span style={{ fontSize: 9, color: "#445", textTransform: "uppercase", letterSpacing: 1 }}>Oscillateurs</span>
                 <span style={{ fontSize: 12, fontWeight: 700, color: techSummary.color }}>{techSummary.label}</span>
+                <span style={{ fontSize: 9, color: "#556" }}>
+                  {techSummary.bulls}↑ {techSummary.bears}↓ / {techSummary.total}
+                </span>
               </div>
             )}
           </div>
           {/* Jauge à droite */}
           <div style={{ flexShrink: 0 }}>
-            <ScoreGauge score={globalScore}/>
+            <ScoreGauge score={finalScore}/>
           </div>
         </div>
       ) : (
@@ -1964,11 +2744,22 @@ function StockView({ metrics, chartData: initialChartData, ticker }: {
               background: techSummary.color + "15",
               borderLeft: `3px solid ${techSummary.color}`,
             }}>
-              <span style={{ fontSize: 9, color: "#445", textTransform: "uppercase", letterSpacing: 1 }}>Technique</span>
+              <span style={{ fontSize: 9, color: "#445", textTransform: "uppercase", letterSpacing: 1 }}>Oscillateurs</span>
               <span style={{ fontSize: 12, fontWeight: 700, color: techSummary.color }}>{techSummary.label}</span>
+              <span style={{ fontSize: 9, color: "#556" }}>
+                {techSummary.bulls}↑ {techSummary.bears}↓ / {techSummary.total}
+              </span>
             </div>
           )}
         </div>
+      )}
+
+      {/* CONTEXTE DE MARCHÉ */}
+      {marketCtx && finalScoreResult && (
+        <MarketContextPanel
+          context={finalScoreResult.context}
+          modifiers={finalScoreResult.modifiers}
+        />
       )}
 
       {/* GRAPHIQUE INTERACTIF */}
@@ -1983,15 +2774,13 @@ function StockView({ metrics, chartData: initialChartData, ticker }: {
           period={period}
           onPeriodChange={handlePeriodChange}
           loading={chartLoading}
+          optimalUTKey={optimalUTKey}
         />
       </div>
 
       {/* ENCARTS ANALYSE */}
       <div style={{ marginTop:14, display:"flex", flexDirection:"column", gap:0 }}>
-        <TechnicalPanel
-          closes={chartData?.closes ?? []}
-          volumes={chartData?.volumes ?? []}
-        />
+        <TechnicalPanel precomputed={techComputed} />
         <SituationalPanel metrics={metrics} closes={chartData?.closes ?? []}/>
       </div>
 
@@ -2088,7 +2877,7 @@ function CryptoView({ data }: { data: any }) {
 // BLOC 8 — APPLICATION PRINCIPALE
 // ════════════════════════════════════════════════════════════════
 type ResultType =
-  | { type: "stock";  metrics: any; chartData: any; ticker: string }
+  | { type: "stock";  metrics: any; chartData: any; ticker: string; optimalUTKey?: string }
   | { type: "crypto"; data: any }
   | { type: "forex";  currency: string; rate: number; allRates: Record<string, number> };
 
@@ -2135,10 +2924,32 @@ export default function App() {
 
     const skipCG = mode !== "all" && mode !== "crypto";
     addLog(`⚡ Recherche ${skipCG ? "Yahoo Finance" : "parallèle Yahoo Finance + CoinGecko"}...`);
-    const [yfData, cgId] = await Promise.all([
-      yfChart(upper, addLog),
+    const [yfDataDaily, yfDataWeekly, cgId] = await Promise.all([
+      yfChart(upper, addLog, "2a"),
+      yfChart(upper, addLog, "5a"),
       skipCG ? Promise.resolve(null) : cgSearch(lower),
     ]);
+
+    // Détermination UT optimale par cycle dominant (Ehlers Sinewave)
+    let optimalUTKey = "5a";
+    const dailyC = (yfDataDaily?.closes ?? []) as (number|null)[];
+    if (dailyC.filter((v: number|null): v is number => v != null).length >= 50) {
+      const swUT = calcSinewave(dailyC);
+      const dp = swUT?.dominantPeriod ?? 30;
+      if (dp <= 10)      { optimalUTKey = "2a";  addLog(`  📊 Cycle ~${dp}j → UT: Journalier (2 ans)`); }
+      else if (dp <= 50) { optimalUTKey = "5a";  addLog(`  📊 Cycle ~${dp}j → UT: Hebdomadaire (5 ans)`); }
+      else               { optimalUTKey = "10a"; addLog(`  📊 Cycle ~${dp}j → UT: Mensuel (10 ans)`); }
+    } else {
+      addLog(`  📊 Données insuffisantes pour cycle analysis — UT défaut: Hebdomadaire`);
+    }
+
+    let yfDataMonthly: any = null;
+    if (optimalUTKey === "10a") yfDataMonthly = await yfChart(upper, addLog, "10a");
+
+    const yfData =
+      optimalUTKey === "10a" ? (yfDataMonthly || yfDataWeekly || yfDataDaily) :
+      optimalUTKey === "5a"  ? (yfDataWeekly  || yfDataDaily) :
+                               (yfDataDaily   || yfDataWeekly);
 
     if (cgId) {
       const d = await cgCoin(cgId);
@@ -2160,7 +2971,7 @@ export default function App() {
       addLog(`✅ Yahoo Finance : ${yfData.meta.quoteType || "EQUITY"}`);
       const yf = await yfFundamentals(upper, addLog);
       const metrics = buildMetrics(yf, yfData.meta);
-      setResult({ type:"stock", metrics, ticker: upper, chartData: {
+      setResult({ type:"stock", metrics, ticker: upper, optimalUTKey, chartData: {
         closes:     yfData.closes,
         timestamps: yfData.timestamps,
         opens:      yfData.opens     ?? [],
@@ -2445,7 +3256,7 @@ export default function App() {
       {result && !loading && (
         <div style={{ paddingTop:22, paddingBottom:40 }}>
           <div className="app-inner">
-            {result.type === "stock"  && <StockView metrics={result.metrics} chartData={result.chartData} ticker={result.ticker ?? ""}/>}
+            {result.type === "stock"  && <StockView metrics={result.metrics} chartData={result.chartData} ticker={result.ticker ?? ""} optimalUTKey={result.optimalUTKey}/>}
             {result.type === "crypto" && <CryptoView data={result.data}/>}
             {result.type === "forex"  && <ForexView {...result}/>}
           </div>
