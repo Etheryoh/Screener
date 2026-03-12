@@ -1324,10 +1324,10 @@ function computeTechSignals(
     const adxVal = calcADX(highs, lows, closes);
     if (adxVal != null) {
       if (adxVal >= 40) {
-        signals.push({ emoji:"💪", color:"#f59e0b",
-          plain:`Tendance très forte — ADX à ${adxVal.toFixed(0)}, marché directionnel`,
+        signals.push({ emoji:"🟢", color:"#22c55e",
+          plain:`Tendance très forte — ADX à ${adxVal.toFixed(0)}, marché fortement directionnel`,
           label:`ADX ${adxVal.toFixed(0)}`, detail:"Force de tendance · Zone forte (>40)",
-          strength:"neutral", edu: { ...adxEdu,
+          strength:"bull", edu: { ...adxEdu,
             example:`ADX de ${adxVal.toFixed(0)} : tendance très puissante. Dans ce contexte, les corrections sont souvent courtes. Mais un ADX > 50 peut aussi signaler un excès proche d'un retournement.` } });
       } else if (adxVal >= 25) {
         signals.push({ emoji:"📐", color:"#8b949e",
@@ -2231,6 +2231,7 @@ function MarketContextPanel({
   context:   MarketContext;
   modifiers: string[];
 }) {
+  const [open,     setOpen]     = useState(true);
   const [expanded, setExpanded] = useState(false);
   const isEssoufflement = context.subtype === "essoufflement";
   const isBearDir = context.structure.type === "bearish";
@@ -2284,15 +2285,42 @@ function MarketContextPanel({
     context.structure.type === "mixed"   ? "↔️ Structure mixte"   :
                                            "— Structure plate";
 
+  const eduADX: TechSignal["edu"] = {
+    concept: "L'ADX (Average Directional Index) mesure la force d'une tendance, pas sa direction. Il va de 0 à 100.",
+    howToRead: "Sous 20 : pas de tendance (range). 20–35 : tendance modérée. 35–50 : tendance forte. Au-dessus de 50 : tendance très forte ou excès.",
+    example: context.adx != null
+      ? `ADX à ${context.adx.toFixed(1)} — ${context.adx < 20 ? "marché sans direction, range probable." : context.adx < 35 ? "tendance modérée, momentum en construction." : context.adx < 50 ? "tendance forte, structure directionnelle." : "tendance très forte, possible excès."}`
+      : "ADX non calculable (données insuffisantes).",
+  };
+
+  const eduStructure: TechSignal["edu"] = {
+    concept: "La structure HH/HL (Higher Highs / Higher Lows) ou LL/LH (Lower Lows / Lower Highs) est la définition technique d'une tendance. Chaque swing est comparé au précédent.",
+    howToRead: "HH+HL = tendance haussière confirmée. LL+LH = tendance baissière. Mélange = range ou transition. Structure plate = absence de momentum directionnel.",
+    example: `Structure actuelle : ${structLabel}. ${context.structure.swings} points de retournement détectés sur la fenêtre d'analyse.`,
+  };
+
+  const eduDivergence: TechSignal["edu"] = {
+    concept: "Une divergence RSI/Prix se produit quand le prix et l'indicateur RSI ne sont pas d'accord. Le prix monte mais le RSI fait des sommets plus bas = momentum qui s'épuise.",
+    howToRead: "Divergence baissière (prix HH, RSI LH) : la tendance haussière s'essouffle, retournement possible. Divergence haussière (prix LL, RSI HL) : la baisse perd de la force, rebond probable.",
+    example: context.divergence.type
+      ? `Divergence ${context.divergence.type === "bullish" ? "haussière" : "baissière"} détectée (intensité : ${context.divergence.strength === "strong" ? "forte" : "faible"}). Signal de ${context.divergence.type === "bullish" ? "retournement à la hausse" : "retournement à la baisse"} potentiel.`
+      : "Aucune divergence RSI/Prix détectée sur la période analysée. Prix et momentum sont alignés.",
+  };
+
   return (
     <div style={{
       background: cc.bg, border: `1px solid ${cc.border}55`,
       borderRadius: 14, padding: "16px 20px", marginBottom: 14,
     }}>
-      {/* Ligne principale */}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10, flexWrap: "wrap" }}>
+      {/* En-tête avec collapse */}
+      <div
+        onClick={() => setOpen(o => !o)}
+        style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: open ? 10 : 0, flexWrap: "wrap", cursor: "pointer" }}
+      >
         <span style={{ fontSize: 20 }}>{cc.emoji}</span>
-
+        <span style={{ fontSize: 10, fontWeight: 800, color: "#445", textTransform: "uppercase", letterSpacing: 2 }}>
+          Contexte de Marché
+        </span>
         <span style={{ fontSize: 17, fontWeight: 900, color: cc.badge, textTransform: "uppercase", letterSpacing: 1 }}>
           {typeLabel}
         </span>
@@ -2309,66 +2337,91 @@ function MarketContextPanel({
           </span>
         )}
 
-        <div style={{ marginLeft: "auto", textAlign: "right", flexShrink: 0 }}>
-          <div style={{ fontSize: 9, color: "#445", textTransform: "uppercase", letterSpacing: 1, marginBottom: 2 }}>Confiance</div>
-          <div style={{ fontSize: 15, fontWeight: 800, color: cc.badge }}>{context.confidence}%</div>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 14, flexShrink: 0 }}>
+          <div style={{ textAlign: "right" }}>
+            <div style={{ fontSize: 9, color: "#445", textTransform: "uppercase", letterSpacing: 1, marginBottom: 2 }}>Confiance</div>
+            <div style={{ fontSize: 15, fontWeight: 800, color: cc.badge }}>{context.confidence}%</div>
+          </div>
+          <span style={{ fontSize: 10, color: "#334" }}>{open ? "▲" : "▼"}</span>
         </div>
       </div>
 
-      {/* Barre de confiance */}
-      <div style={{ height: 3, background: "#1e2a3a", borderRadius: 2, marginBottom: 12, overflow: "hidden" }}>
-        <div style={{ width: `${context.confidence}%`, height: "100%", background: cc.badge, borderRadius: 2 }}/>
-      </div>
+      {open && (
+        <>
+          {/* Barre de confiance */}
+          <div style={{ height: 3, background: "#1e2a3a", borderRadius: 2, marginBottom: 12, overflow: "hidden" }}>
+            <div style={{ width: `${context.confidence}%`, height: "100%", background: cc.badge, borderRadius: 2 }}/>
+          </div>
 
-      {/* Détails — ADX / Structure / Divergence / Fondamentaux */}
-      <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 20px", marginBottom: 8, fontSize: 10, color: "#8b949e" }}>
-        {context.adx != null && (
-          <span><span style={{ color: "#556" }}>ADX</span> <strong style={{ color: "#b0bec5" }}>{context.adx.toFixed(1)}</strong> — {adxDesc}</span>
-        )}
-        <span><span style={{ color: "#556" }}>Structure</span> <strong style={{ color: "#b0bec5" }}>{structLabel}</strong></span>
-        {context.divergence.type && (
-          <span style={{ color: context.divergence.type === "bullish" ? "#22c55e" : "#ef4444" }}>
-            ⚡ Divergence RSI {context.divergence.type === "bullish" ? "haussière" : "baissière"} ({context.divergence.strength === "strong" ? "forte" : "faible"})
-          </span>
-        )}
-      </div>
+          {/* Détails — ADX / Structure / Divergence avec tooltips */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
+            {context.adx != null && (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: "#111825", borderRadius: 8, fontSize: 11 }}>
+                <span style={{ color: "#556", minWidth: 34 }}>ADX</span>
+                <strong style={{ color: "#b0bec5", fontFamily: "'IBM Plex Mono',monospace" }}>{context.adx.toFixed(1)}</strong>
+                <span style={{ color: "#8b949e", flex: 1 }}>— {adxDesc}</span>
+                <EduTooltip edu={eduADX}/>
+              </div>
+            )}
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: "#111825", borderRadius: 8, fontSize: 11 }}>
+              <span style={{ color: "#556", minWidth: 34 }}>Struct.</span>
+              <strong style={{ color: "#b0bec5", flex: 1 }}>{structLabel}</strong>
+              <EduTooltip edu={eduStructure}/>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: "#111825", borderRadius: 8, fontSize: 11 }}>
+              <span style={{ color: "#556", minWidth: 34 }}>Div.</span>
+              <span style={{
+                flex: 1,
+                color: context.divergence.type === "bullish" ? "#22c55e"
+                      : context.divergence.type === "bearish" ? "#ef4444"
+                      : "#445",
+              }}>
+                {context.divergence.type
+                  ? `⚡ Divergence RSI ${context.divergence.type === "bullish" ? "haussière" : "baissière"} (${context.divergence.strength === "strong" ? "forte" : "faible"})`
+                  : "Aucune divergence détectée"}
+              </span>
+              <EduTooltip edu={eduDivergence}/>
+            </div>
+          </div>
 
-      {/* Confirmation fondamentale */}
-      {context.fundamentalConfirm && (
-        <div style={{
-          fontSize: 11, fontWeight: 700, marginBottom: 8,
-          color: context.fundamentalConfirm === "confirms" ? "#22c55e" : context.fundamentalConfirm === "warns" ? "#ef4444" : "#8b949e",
-        }}>
-          {context.fundamentalConfirm === "confirms" ? "✅ Fondamentaux confirment le signal technique" :
-           context.fundamentalConfirm === "warns"    ? "⚠️ Fondamentaux en contradiction avec le signal" :
-                                                       "— Fondamentaux neutres"}
-        </div>
-      )}
-
-      {/* Modificateurs (détail expandable) */}
-      {modifiers.length > 0 && (
-        <div>
-          <button
-            onClick={() => setExpanded(e => !e)}
-            style={{ fontSize: 9, color: "#556", background: "none", border: "none", cursor: "pointer", padding: 0, marginBottom: expanded ? 8 : 0 }}
-          >
-            {expanded ? "▲ réduire" : "▼ Détail des ajustements de score"}
-          </button>
-          {expanded && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 4 }}>
-              {modifiers.map((m, i) => (
-                <div key={i} style={{
-                  fontSize: 10,
-                  color: m.startsWith("+") ? "#22c55e" : "#ef4444",
-                  background: (m.startsWith("+") ? "#22c55e" : "#ef4444") + "11",
-                  borderRadius: 4, padding: "3px 8px",
-                }}>
-                  {m}
-                </div>
-              ))}
+          {/* Confirmation fondamentale */}
+          {context.fundamentalConfirm && (
+            <div style={{
+              fontSize: 11, fontWeight: 700, marginBottom: 8,
+              color: context.fundamentalConfirm === "confirms" ? "#22c55e" : context.fundamentalConfirm === "warns" ? "#ef4444" : "#8b949e",
+            }}>
+              {context.fundamentalConfirm === "confirms" ? "✅ Fondamentaux confirment le signal technique" :
+               context.fundamentalConfirm === "warns"    ? "⚠️ Fondamentaux en contradiction avec le signal" :
+                                                           "— Fondamentaux neutres"}
             </div>
           )}
-        </div>
+
+          {/* Modificateurs (détail expandable) */}
+          {modifiers.length > 0 && (
+            <div>
+              <button
+                onClick={e => { e.stopPropagation(); setExpanded(ex => !ex); }}
+                style={{ fontSize: 9, color: "#556", background: "none", border: "none", cursor: "pointer", padding: 0, marginBottom: expanded ? 8 : 0 }}
+              >
+                {expanded ? "▲ réduire" : "▼ Détail des ajustements de score"}
+              </button>
+              {expanded && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 4 }}>
+                  {modifiers.map((m, i) => (
+                    <div key={i} style={{
+                      fontSize: 10,
+                      color: m.startsWith("+") ? "#22c55e" : "#ef4444",
+                      background: (m.startsWith("+") ? "#22c55e" : "#ef4444") + "11",
+                      borderRadius: 4, padding: "3px 8px",
+                    }}>
+                      {m}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -2658,7 +2711,15 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey 
         </div>
       </div>
 
-      {/* CARTE VERDICT — score global visible immédiatement */}
+      {/* CONTEXTE DE MARCHÉ — EN PREMIER, avant graphique et score */}
+      {marketCtx && finalScoreResult && (
+        <MarketContextPanel
+          context={finalScoreResult.context}
+          modifiers={finalScoreResult.modifiers}
+        />
+      )}
+
+      {/* CARTE VERDICT — score global */}
       {v ? (
         <div style={{
           background: v.color + "0f", border: `1px solid ${v.color}33`,
@@ -2752,14 +2813,6 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey 
             </div>
           )}
         </div>
-      )}
-
-      {/* CONTEXTE DE MARCHÉ */}
-      {marketCtx && finalScoreResult && (
-        <MarketContextPanel
-          context={finalScoreResult.context}
-          modifiers={finalScoreResult.modifiers}
-        />
       )}
 
       {/* GRAPHIQUE INTERACTIF */}
