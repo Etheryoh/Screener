@@ -1629,8 +1629,71 @@ function EduTooltip({ edu }: { edu: TechSignal["edu"] }) {
   );
 }
 
+// ── TOOLTIP MÉTRIQUE FONDAMENTALE ────────────────────────────
+function MetricTooltip({ edu }: { edu: MetricProps["edu"] }) {
+  const [visible, setVisible] = useState(false);
+  if (!edu) return null;
+  return (
+    <div style={{ position:"relative", display:"inline-flex", alignItems:"center" }}>
+      <button
+        onClick={e => { e.stopPropagation(); setVisible(v => !v); }}
+        style={{
+          background: visible ? "#2a3548" : "#1a2235",
+          border: "1px solid #2a3548",
+          borderRadius: "50%",
+          width: 18, height: 18,
+          cursor: "pointer",
+          fontSize: 10, fontWeight: 800,
+          color: "#8b949e",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          flexShrink: 0,
+          transition: "all .15s",
+          padding: 0,
+        }}
+        title="Comprendre cet indicateur"
+      >?</button>
+      {visible && (
+        <div style={{
+          position: "absolute",
+          top: 24, right: 0,
+          background: "#0d1420",
+          border: "1px solid #2a3548",
+          borderRadius: 10,
+          padding: "14px 16px",
+          width: 300,
+          zIndex: 100,
+          boxShadow: "0 8px 32px #000a",
+          fontSize: 11,
+          lineHeight: 1.7,
+          color: "#8b949e",
+        }}>
+          <div style={{ color:"#f0a500", fontWeight:700, fontSize:12, marginBottom:8 }}>📚 Comprendre cet indicateur</div>
+          <div style={{ marginBottom:10 }}>
+            <div style={{ color:"#b0bec5", fontWeight:600, marginBottom:3 }}>C'est quoi ?</div>
+            {edu.concept}
+          </div>
+          <div style={{ marginBottom:10 }}>
+            <div style={{ color:"#b0bec5", fontWeight:600, marginBottom:3 }}>Comment le lire ?</div>
+            {edu.howToRead}
+          </div>
+          <div style={{ background:"#22c55e0d", borderLeft:"3px solid #22c55e55", padding:"7px 10px", borderRadius:4, marginBottom:6, fontSize:11, color:"#22c55e", lineHeight:1.6 }}>
+            ✅ {edu.good}
+          </div>
+          <div style={{ background:"#ef44440d", borderLeft:"3px solid #ef444455", padding:"7px 10px", borderRadius:4, fontSize:11, color:"#ef4444", lineHeight:1.6 }}>
+            ⚠️ {edu.bad}
+          </div>
+          <button
+            onClick={e => { e.stopPropagation(); setVisible(false); }}
+            style={{ marginTop:10, fontSize:9, color:"#445", background:"none", border:"none", cursor:"pointer", padding:0 }}
+          >▲ fermer</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── COMPOSANT ENCART TECHNIQUE ────────────────────────────────
-function TechnicalPanel({ precomputed }: { precomputed: { signals: TechSignal[]; sinewave: SinewaveResult | null } }) {
+function TechnicalPanel({ precomputed, context }: { precomputed: { signals: TechSignal[]; sinewave: SinewaveResult | null }; context?: MarketContext | null }) {
   const [open, setOpen] = useState(true);
   const { signals, sinewave } = precomputed;
   if (signals.length === 0) return null;
@@ -1638,6 +1701,34 @@ function TechnicalPanel({ precomputed }: { precomputed: { signals: TechSignal[];
   const bulls  = signals.filter((s: TechSignal) => s.strength === "bull").length;
   const bears  = signals.filter((s: TechSignal) => s.strength === "bear").length;
   const total  = bulls + bears;
+
+  // ── Phrase de synthèse ──────────────────────────────────────
+  const hasDeathCross  = signals.some(s => s.label === "Death Cross");
+  const hasGoldenCross = signals.some(s => s.label === "Golden Cross");
+  const hasDivBull     = context?.divergence?.type === "bullish";
+  const hasDivBear     = context?.divergence?.type === "bearish";
+  const adxVal         = context?.adx ?? null;
+
+  const synthPhrase = (() => {
+    if (total === 0) return null;
+    if (bears >= bulls * 2 && hasDeathCross)
+      return "La majorité des oscillateurs est baissière et un Death Cross est actif — pression vendeuse structurelle.";
+    if (bears >= bulls * 2 && hasDivBull)
+      return "Les oscillateurs penchent baissier mais une divergence haussière RSI signale un possible essoufflement de la baisse.";
+    if (bears > bulls)
+      return adxVal != null && adxVal > 35
+        ? "Prédominance baissière dans un contexte de tendance forte (ADX élevé) — confirme la pression vendeuse."
+        : "Plus d'oscillateurs baissiers que haussiers — prudence à court terme.";
+    if (bulls >= bears * 2 && hasGoldenCross)
+      return "Majorité d'oscillateurs haussiers et Golden Cross actif — configuration technique favorable.";
+    if (bulls >= bears * 2 && hasDivBear)
+      return "Les oscillateurs sont majoritairement haussiers mais une divergence baissière RSI tempère l'optimisme.";
+    if (bulls > bears)
+      return adxVal != null && adxVal > 35
+        ? "Prédominance haussière dans une tendance forte (ADX élevé) — momentum directionnel confirmé."
+        : "Plus d'oscillateurs haussiers que baissiers — setup technique positif.";
+    return "Signaux techniques mixtes — pas de biais directionnel clair à ce stade.";
+  })();
 
   return (
     <div style={{ background:"#0d1420", border:"1px solid #1e2a3a", borderRadius:12, padding:"14px 18px", marginBottom:10 }}>
@@ -1690,6 +1781,14 @@ function TechnicalPanel({ precomputed }: { precomputed: { signals: TechSignal[];
               <EduTooltip edu={s.edu}/>
             </div>
           ))}
+          {synthPhrase && (
+            <div style={{ marginTop:6, padding:"10px 14px", background:"#111825", borderRadius:8, borderLeft:"3px solid #4a90d9" }}>
+              <div style={{ fontSize:9, color:"#4a90d9", textTransform:"uppercase", letterSpacing:1.5, fontWeight:800, marginBottom:5 }}>
+                Synthèse — {bulls}↑ {bears}↓ / {total} signaux
+              </div>
+              <div style={{ fontSize:11, color:"#8b949e", lineHeight:1.7 }}>{synthPhrase}</div>
+            </div>
+          )}
           <div style={{ fontSize:9, color:"#334", marginTop:6 }}>
             RSI/MACD calculés sur les prix de clôture · Moyennes mobiles sur données journalières (ou hebdomadaires si insuffisant)
           </div>
@@ -1706,6 +1805,31 @@ function SituationalPanel({ metrics, closes }: { metrics: any; closes?: (number|
   const trendDev = closes && closes.length > 0 ? calcTrendDeviation(closes) : null;
   const ctx = computeSituationalContext(metrics, sw, trendDev);
   if (!ctx) return null;
+
+  const labels = ctx.signals.map(s => s.label);
+  const hasSureval  = labels.some(l => l.includes("Surévaluation"));
+  const hasBulle    = labels.some(l => l.includes("bulle") || l.includes("Bulle"));
+  const hasDecote   = labels.some(l => l.includes("Décote"));
+  const hasRestruct = labels.some(l => l.includes("restructuration") || l.includes("Restructuration"));
+  const hasShort    = labels.some(l => l.includes("Short") || l.includes("short"));
+  const hasLiquid   = labels.some(l => l.includes("Liquidité") || l.includes("liquidité"));
+  const hasFCF      = labels.some(l => l.includes("Free Cash Flow") || l.includes("FCF"));
+  const n = ctx.signals.length;
+
+  const sitPhrase = (() => {
+    if (n === 0) return null;
+    if (hasSureval && hasBulle)
+      return "Valorisation extrême associée à une dynamique de bulle — profil spéculatif à risque élevé.";
+    if (hasDecote && hasFCF)
+      return "Décote sur les actifs combinée à un Free Cash Flow positif — profil valeur avec protection relative.";
+    if (hasRestruct && hasShort)
+      return "Entreprise en restructuration avec un short ratio élevé — situation binaire à surveiller de près.";
+    if (hasLiquid)
+      return "Risque de liquidité identifié — capacité à honorer les engagements court terme à vérifier.";
+    if (hasDecote)
+      return "Décote sur les actifs détectée — potentiel de revalorisation si les fondamentaux opérationnels se confirment.";
+    return `${n} signal${n > 1 ? "s" : ""} situationnel${n > 1 ? "s" : ""} identifié${n > 1 ? "s" : ""} — consulter le détail ci-dessus.`;
+  })();
 
   return (
     <div style={{ background:"#0d1420", border:`1px solid ${ctx.profileColor}33`, borderRadius:12, padding:"14px 18px", marginBottom:10 }}>
@@ -1739,6 +1863,14 @@ function SituationalPanel({ metrics, closes }: { metrics: any; closes?: (number|
               </div>
             ))}
           </div>
+          {sitPhrase && (
+            <div style={{ marginTop:10, padding:"10px 14px", background:"#111825", borderRadius:8, borderLeft:`3px solid ${ctx.profileColor}` }}>
+              <div style={{ fontSize:9, color:ctx.profileColor, textTransform:"uppercase", letterSpacing:1.5, fontWeight:800, marginBottom:5 }}>
+                Synthèse — {n} signal{n > 1 ? "s" : ""}
+              </div>
+              <div style={{ fontSize:11, color:"#8b949e", lineHeight:1.7 }}>{sitPhrase}</div>
+            </div>
+          )}
           <div style={{ fontSize:9, color:"#334", marginTop:8 }}>
             ⚠️ Ces signaux sont informatifs et non contractuels. Tout investissement comporte un risque de perte en capital.
           </div>
@@ -2115,7 +2247,6 @@ interface MetricProps {
 // BLOC 6 — VUE ACTION / ETF
 // ════════════════════════════════════════════════════════════════
 function MetricCard({ label, value, s, edu }: MetricProps) {
-  const [open, setOpen] = useState(false);
   const bg = s == null ? "#111825"
     : s >= 7 ? "#0a2e1a"
     : s >= 4 ? "#2a1f00"
@@ -2125,59 +2256,35 @@ function MetricCard({ label, value, s, edu }: MetricProps) {
     : s >= 4 ? "#f59e0b44"
     : "#ef444444";
   return (
-    <div
-      onClick={() => edu && setOpen(o => !o)}
-      style={{
-        background: bg, border: `1px solid ${border}`,
-        borderRadius: 10, padding: "12px 14px",
-        cursor: edu ? "pointer" : "default",
-        transition: "all .15s",
-      }}
-    >
+    <div style={{
+      background: bg, border: `1px solid ${border}`,
+      borderRadius: 10, padding: "12px 14px",
+      cursor: "default",
+    }}>
       <div style={{ fontSize: 10, color: "#556", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>
         {label}
       </div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
         <span style={{
-          fontSize: 18, fontWeight: 800,
+          fontSize: 22, fontWeight: 800,
           color: s == null ? "#8b949e" : scoreColor(s),
           fontFamily: "'IBM Plex Mono',monospace",
         }}>
           {value}
         </span>
-        {s != null && (
-          <span style={{
-            fontSize: 11, fontWeight: 800,
-            color: scoreColor(s), background: scoreColor(s) + "22",
-            borderRadius: 4, padding: "2px 7px",
-          }}>
-            {scoreEmoji(s)} {s}/10
-          </span>
-        )}
+        <div style={{ display:"flex", alignItems:"center", gap:6, flexShrink:0 }}>
+          {s != null && (
+            <span style={{
+              fontSize: 11, fontWeight: 800,
+              color: scoreColor(s), background: scoreColor(s) + "22",
+              borderRadius: 4, padding: "2px 7px",
+            }}>
+              {scoreEmoji(s)} {s}/10
+            </span>
+          )}
+          <MetricTooltip edu={edu}/>
+        </div>
       </div>
-      {edu && (
-        <div style={{ fontSize: 9, color: "#445", marginTop: 4 }}>
-          {open ? "▲ réduire" : "▼ comprendre"}
-        </div>
-      )}
-      {open && edu && (
-        <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${border}` }}>
-          <div style={{ marginBottom: 10 }}>
-            <div style={{ fontSize: 9, color: "#f0a500", fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>C'est quoi ?</div>
-            <div style={{ fontSize: 11, color: "#8b949e", lineHeight: 1.7 }}>{edu.concept}</div>
-          </div>
-          <div style={{ marginBottom: 10 }}>
-            <div style={{ fontSize: 9, color: "#f0a500", fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Comment le lire ?</div>
-            <div style={{ fontSize: 11, color: "#8b949e", lineHeight: 1.7 }}>{edu.howToRead}</div>
-          </div>
-          <div style={{ background: "#22c55e0d", borderLeft: "3px solid #22c55e55", padding: "7px 10px", borderRadius: 4, marginBottom: 6, fontSize: 11, color: "#22c55e", lineHeight: 1.6 }}>
-            ✅ {edu.good}
-          </div>
-          <div style={{ background: "#ef44440d", borderLeft: "3px solid #ef444455", padding: "7px 10px", borderRadius: 4, fontSize: 11, color: "#ef4444", lineHeight: 1.6 }}>
-            ⚠️ {edu.bad}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -2231,8 +2338,7 @@ function MarketContextPanel({
   context:   MarketContext;
   modifiers: string[];
 }) {
-  const [open,     setOpen]     = useState(true);
-  const [expanded, setExpanded] = useState(false);
+  const [open, setOpen] = useState(true);
   const isEssoufflement = context.subtype === "essoufflement";
   const isBearDir = context.structure.type === "bearish";
 
@@ -2396,31 +2502,30 @@ function MarketContextPanel({
             </div>
           )}
 
-          {/* Modificateurs (détail expandable) */}
-          {modifiers.length > 0 && (
-            <div>
-              <button
-                onClick={e => { e.stopPropagation(); setExpanded(ex => !ex); }}
-                style={{ fontSize: 9, color: "#556", background: "none", border: "none", cursor: "pointer", padding: 0, marginBottom: expanded ? 8 : 0 }}
-              >
-                {expanded ? "▲ réduire" : "▼ Détail des ajustements de score"}
-              </button>
-              {expanded && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 4 }}>
-                  {modifiers.map((m, i) => (
-                    <div key={i} style={{
-                      fontSize: 10,
-                      color: m.startsWith("+") ? "#22c55e" : "#ef4444",
-                      background: (m.startsWith("+") ? "#22c55e" : "#ef4444") + "11",
-                      borderRadius: 4, padding: "3px 8px",
-                    }}>
-                      {m}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+          {/* Phrase explicative — contexte + principal modificateur */}
+          {(() => {
+            const positives = modifiers.filter(m => m.startsWith("+"));
+            const negatives = modifiers.filter(m => m.startsWith("-"));
+            const principal = negatives[0] ?? positives[0] ?? null;
+            const ctxLabel =
+              isEssoufflement             ? "Essoufflement de tendance"   :
+              context.type === "range"    ? (context.subtype === "3br" ? "Range en 3ème Borne" : "Phase de Range") :
+              context.type === "tendance" ? (isBearDir ? "Tendance Baissière" : "Tendance Haussière") :
+              context.type === "exces"    ? "Excès de marché"             : "Contexte Chaotique";
+            const modLabel = principal
+              ? principal.startsWith("+")
+                ? `Ajustement positif : ${principal.replace(/^\+[0-9.]+ /, "")}.`
+                : `Ajustement négatif : ${principal.replace(/^-[0-9.]+ /, "")}.`
+              : null;
+            const phrase = modLabel
+              ? `${ctxLabel} détecté. ${modLabel}`
+              : `${ctxLabel} détecté. Aucun ajustement fondamental significatif.`;
+            return (
+              <div style={{ fontSize:11, color:"#8b949e", lineHeight:1.7, marginTop:4, padding:"8px 12px", background:"#111825", borderRadius:8, borderLeft:`3px solid ${cc.border}55` }}>
+                {phrase}
+              </div>
+            );
+          })()}
         </>
       )}
     </div>
@@ -2711,14 +2816,6 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey 
         </div>
       </div>
 
-      {/* CONTEXTE DE MARCHÉ — EN PREMIER, avant graphique et score */}
-      {marketCtx && finalScoreResult && (
-        <MarketContextPanel
-          context={finalScoreResult.context}
-          modifiers={finalScoreResult.modifiers}
-        />
-      )}
-
       {/* CARTE VERDICT — score global */}
       {v ? (
         <div style={{
@@ -2831,9 +2928,17 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey 
         />
       </div>
 
+      {/* CONTEXTE DE MARCHÉ */}
+      {marketCtx && finalScoreResult && (
+        <MarketContextPanel
+          context={finalScoreResult.context}
+          modifiers={finalScoreResult.modifiers}
+        />
+      )}
+
       {/* ENCARTS ANALYSE */}
       <div style={{ marginTop:14, display:"flex", flexDirection:"column", gap:0 }}>
-        <TechnicalPanel precomputed={techComputed} />
+        <TechnicalPanel precomputed={techComputed} context={finalScoreResult?.context ?? null} />
         <SituationalPanel metrics={metrics} closes={chartData?.closes ?? []}/>
       </div>
 
@@ -2844,7 +2949,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey 
             <SectionTitle icon={sec.icon} label={sec.label}/>
             <span style={{ fontSize:9, color:"#334", fontStyle:"italic" }}>{sec.note}</span>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(155px, 1fr))", gap: 10 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 10 }}>
             {sec.cards.map((c, i) => <MetricCard key={i} {...c}/>)}
           </div>
         </div>
