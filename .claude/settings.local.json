@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Bash(npm run:*)",
-      "Bash(node test_classify.mjs)"
+      "Bash(node test_classify.mjs)",
+      "Bash(gh api:*)",
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:github.com)"
     ]
   }
 }
