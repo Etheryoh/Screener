@@ -2314,7 +2314,7 @@ const CONTEXT_COLORS: Record<string, { bg: string; border: string; badge: string
 
 const SUBTYPE_LABELS: Record<string, string> = {
   "3br":            "3ème Borne",
-  "neuneu":         "Range Neuneu",
+  "neuneu":         "Range à plat",
   "accumulation":   "Momentum Modéré",
   "breakout":       "Breakout",
   "suivi":          "Tendance Active",
