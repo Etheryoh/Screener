@@ -2864,7 +2864,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey 
             )}
           </div>
           {/* Jauge à droite */}
-          <div style={{ flexShrink: 0, marginLeft: "auto" }}>
+          <div className="score-gauge-wrap" style={{ flexShrink: 0 }}>
             <ScoreGauge score={finalScore}/>
           </div>
         </div>
@@ -3243,6 +3243,7 @@ export default function App() {
         ::-webkit-scrollbar{width:5px} ::-webkit-scrollbar-thumb{background:#2a3548;border-radius:3px}
         input,button{font-family:inherit}
         .app-inner { width:100%; max-width:1200px; margin:0 auto; padding:0 clamp(16px, 4vw, 40px); }
+        @media (max-width:600px) { .score-gauge-wrap { width:100%; display:flex; justify-content:center; } }
       `}</style>
 
       {/* HEADER */}
