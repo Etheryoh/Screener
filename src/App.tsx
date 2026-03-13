@@ -2821,7 +2821,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey 
         <div style={{
           background: v.color + "0f", border: `1px solid ${v.color}33`,
           borderRadius: 14, padding: "18px 22px", marginBottom: 14,
-          display: "flex", alignItems: "center", gap: 24,
+          display: "flex", alignItems: "center", gap: 24, flexWrap: "wrap",
         }}>
           {/* Contenu principal */}
           <div style={{ flex: 1 }}>
@@ -2864,7 +2864,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey 
             )}
           </div>
           {/* Jauge à droite */}
-          <div style={{ flexShrink: 0 }}>
+          <div style={{ flexShrink: 0, marginLeft: "auto" }}>
             <ScoreGauge score={finalScore}/>
           </div>
         </div>
