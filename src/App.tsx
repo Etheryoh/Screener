@@ -2926,6 +2926,358 @@ function MacroContextPanel({ macro, zone }: { macro: MacroContext | null | undef
   );
 }
 
+// ════════════════════════════════════════════════════════════════
+// COUCHE 4c — RECOMMANDATION D'ENTRÉE
+// ════════════════════════════════════════════════════════════════
+
+interface EntryRecommendation {
+  type    : "wait" | "caution" | "favorable" | "none";
+  icon    : string;
+  title   : string;
+  reasons : string[];
+  triggers: string[];
+}
+
+function computeEntryRecommendation(
+  metrics        : any,
+  context        : MarketContext | null,
+  techSignals    : TechSignal[],
+  sinewave       : SinewaveResult | null,
+  macro          : MacroContext | null | undefined,
+  finalScore     : number | null,
+  fundamentalScore: number | null,
+): EntryRecommendation {
+  const NONE: EntryRecommendation = { type: "none", icon: "", title: "", reasons: [], triggers: [] };
+  if (!context) return NONE;
+
+  // Helpers pour extraire signaux techniques
+  const hasSignalLabel = (lbl: string) => techSignals.some(s => s.label === lbl || s.label.startsWith(lbl));
+  const hasDeathCross  = hasSignalLabel("Death Cross");
+  const hasGoldenCross = hasSignalLabel("Golden Cross");
+  const rsiSignal      = techSignals.find(s => s.label.startsWith("RSI"));
+  const rsiValue       = rsiSignal ? parseFloat(rsiSignal.label.split(" ")[1]) : null;
+  const momentum14     = sinewave?.momentum14 ?? 0;
+
+  // ── BLOQUANTES (wait) ──────────────────────────────────────────
+  // W1 — Chaos
+  if (context.type === "chaos") return {
+    type: "wait", icon: "⛔",
+    title: "Attendre la stabilisation du marché",
+    reasons: ["Contexte chaotique — volatilité extrême sans direction claire"],
+    triggers: ["ADX redescend sous 20 avec structure définie", "VIX redescend sous 25"],
+  };
+
+  // W2 — Death Cross + baissier
+  if (hasDeathCross && context.structure.type === "bearish") return {
+    type: "wait", icon: "⛔",
+    title: "Attendre un signal de retournement haussier",
+    reasons: ["Death Cross actif — EMA50 sous EMA200", "Structure baissière confirmée (LL+LH)"],
+    triggers: [
+      "Croisement Golden Cross (EMA50 repasse au-dessus de EMA200)",
+      "RSI descend sous 30 (zone de survente extrême)",
+      "Creux de cycle Sinewave détecté",
+    ],
+  };
+
+  // W3 — Essoufflement baissier sans soutien fondamental
+  if (context.subtype === "essoufflement" && context.structure.type === "bearish"
+      && (fundamentalScore == null || fundamentalScore < 5)) return {
+    type: "wait", icon: "⛔",
+    title: "Attendre épuisement complet de la baisse",
+    reasons: ["Tendance baissière qui s'essouffle mais fondamentaux insuffisants pour un rebond durable"],
+    triggers: ["Creux de cycle Sinewave", "RSI < 30", "Score fondamental ≥ 5"],
+  };
+
+  // W4 — Macro très défavorable
+  if (macro && !macro.error && macro.vix != null && macro.vix > 35
+      && macro.spreadCurve != null && macro.spreadCurve < 0) return {
+    type: "wait", icon: "⛔",
+    title: "Attendre normalisation du contexte macro",
+    reasons: ["VIX > 35 — stress de marché élevé", "Courbe des taux inversée — signal de récession"],
+    triggers: ["VIX redescend sous 25", "Spread courbe redevient positif"],
+  };
+
+  // W5 — Valorisation extrême + momentum fort
+  if (metrics?.gValorisation != null && metrics.gValorisation <= 2
+      && context.structure.type === "bullish") return {
+    type: "wait", icon: "⛔",
+    title: "Attendre une correction de valorisation",
+    reasons: [
+      "Valorisation extrême (score ≤ 2/10) — le marché price la perfection",
+      "Momentum haussier fort — point d'entrée défavorable",
+    ],
+    triggers: [
+      "Correction de −20% ou plus depuis le sommet",
+      "P/E revient sous 30",
+      "RSI descend sous 40",
+    ],
+  };
+
+  // W5b — Valorisation tendue + essoufflement
+  if (context.subtype === "essoufflement"
+      && metrics?.gValorisation != null && metrics.gValorisation <= 3.5
+      && context.structure.type === "bullish") {
+    const gVal = metrics.gValorisation as number;
+    const reasons: string[] = [`Valorisation tendue (score ${gVal.toFixed(1)}/10) — prix déjà élevé`];
+    if (rsiValue != null && rsiValue < 40)
+      reasons.push(`RSI en zone de survente (${rsiValue}) — rebond technique possible mais entrée risquée`);
+    if (sinewave?.cycleTurn === "trough")
+      reasons.push("Creux de cycle détecté — signal positif mais valorisation limite l'upside");
+    reasons.push("Momentum en déclin — tendance haussière qui s'essouffle");
+    if (sinewave?.dominantPeriod != null && sinewave.dominantPeriod > 100)
+      reasons.push(`Cycle dominant long (~${sinewave.dominantPeriod}j) — l'horizon de revalorisation est pluriannuel, pas un signal court terme`);
+    const peTarget = metrics.pe != null ? Math.round(metrics.pe * 0.7) : 20;
+    const triggers: string[] = [
+      "Correction de −15% ou plus depuis le sommet récent",
+      `P/E revient sous ${peTarget}`,
+    ];
+    if (rsiValue != null && rsiValue < 40)
+      triggers.push("Confirmation du rebond avec volume supérieur à la moyenne");
+    if (sinewave?.dominantPeriod != null && sinewave.dominantPeriod > 100)
+      triggers.push("Entrée fractionnée progressive envisageable si horizon > 3 ans, indépendamment du timing court terme");
+    return { type: "wait", icon: "⛔", title: "Attendre une correction de valorisation", reasons, triggers };
+  }
+
+  // ── PRUDENTES (caution) ────────────────────────────────────────
+  // C1 — Qualité solide, timing défavorable
+  if (fundamentalScore != null && fundamentalScore >= 6.5
+      && finalScore != null && finalScore <= 4.5) {
+    const reasons: string[] = [];
+    if (hasDeathCross) reasons.push("Death Cross actif — tendance de fond baissière");
+    else if (context.subtype === "essoufflement" && context.structure.type === "bullish")
+      reasons.push("Tendance haussière qui s'essouffle — risque de pullback");
+    else if (rsiValue != null && rsiValue > 65) reasons.push("RSI en zone de surachat — entrée prématurée");
+    else if (momentum14 < -8) reasons.push("Momentum négatif à court terme");
+    else reasons.push("Timing technique défavorable");
+    const triggers: string[] = [];
+    if (hasGoldenCross) triggers.push("Pullback vers l'EMA50");
+    if (sinewave) triggers.push("Creux de cycle Sinewave");
+    if (rsiValue != null && rsiValue > 65) triggers.push("RSI redescend sous 45");
+    if (hasDeathCross) triggers.push("Golden Cross");
+    return { type: "caution", icon: "⚠️", title: "Qualité solide — attendre un meilleur timing", reasons, triggers };
+  }
+
+  // C2 — Zone de survente sur bons fondamentaux
+  if (fundamentalScore != null && fundamentalScore >= 5.5
+      && rsiValue != null && rsiValue <= 35
+      && context.structure.type !== "bearish") return {
+    type: "caution", icon: "⚠️",
+    title: "Zone de survente — opportunité tactique à confirmer",
+    reasons: [
+      "RSI en zone de survente sur fondamentaux sains",
+      "Possible rebond technique — confirmer avec volume et structure",
+    ],
+    triggers: [
+      "Stabilisation du prix sur 2-3 séances",
+      "Volume supérieur à la moyenne sur une séance haussière",
+      "Creux de cycle Sinewave confirmé",
+    ],
+  };
+
+  // C3 — Essoufflement haussier avec bons fondamentaux
+  if (context.subtype === "essoufflement" && context.structure.type === "bullish"
+      && fundamentalScore != null && fundamentalScore >= 6) {
+    const triggers = ["Creux de cycle Sinewave", "MACD recroise à la hausse sa ligne de signal"];
+    const emaSignal = techSignals.find(s => s.label.includes("EMA") || s.label === "Golden Cross");
+    if (emaSignal?.detail) {
+      const m = emaSignal.detail.match(/EMA50[^0-9]*([0-9]+[.,]?[0-9]*)/);
+      if (m) triggers.unshift(`Pullback vers l'EMA50 (${m[1]} ${metrics?.currency ?? ""})`);
+      else triggers.unshift("Pullback vers l'EMA50");
+    }
+    return {
+      type: "caution", icon: "⚠️",
+      title: "Tendance haussière qui s'essouffle — entrée fractionnée possible",
+      reasons: [
+        "Momentum déclinant mais tendance de fond haussière intacte",
+        "Fondamentaux solides — risque limité sur le long terme",
+      ],
+      triggers,
+    };
+  }
+
+  // C4 — Range avec bons fondamentaux
+  if (context.type === "range" && fundamentalScore != null && fundamentalScore >= 6.5) return {
+    type: "caution", icon: "⚠️",
+    title: "Marché en range — entrée sur support possible",
+    reasons: ["Pas de tendance directionnelle", "Fondamentaux justifient une position à long terme"],
+    triggers: [
+      "Breakout au-dessus de la résistance avec volume",
+      "ADX passe au-dessus de 25",
+      "Golden Cross",
+    ],
+  };
+
+  // ── FAVORABLES ─────────────────────────────────────────────────
+  // F1 — Configuration optimale
+  if (fundamentalScore != null && fundamentalScore >= 5.5
+      && finalScore != null && finalScore >= 5.5
+      && context.type === "tendance"
+      && context.structure.type === "bullish" && !hasDeathCross) {
+    const reasons: string[] = [];
+    if (hasGoldenCross) reasons.push("Golden Cross actif — tendance haussière confirmée");
+    if (sinewave?.cycleTurn === "trough") reasons.push("Creux de cycle détecté — timing optimal");
+    if (momentum14 > 5) reasons.push(`Momentum positif +${momentum14.toFixed(1)}% sur 14 séances`);
+    reasons.push(`Fondamentaux solides (${fundamentalScore}/10)`);
+    return {
+      type: "favorable", icon: "✅",
+      title: "Configuration favorable — entrée progressive possible",
+      reasons,
+      triggers: ["Surveiller RSI > 70 (zone de surachat) pour alléger"],
+    };
+  }
+
+  // F2 — Rebond sur fondamentaux + survente extrême
+  if (fundamentalScore != null && fundamentalScore >= 6
+      && rsiValue != null && rsiValue <= 30
+      && context.structure.type !== "bearish") return {
+    type: "favorable", icon: "✅",
+    title: "Survente extrême sur fondamentaux solides — opportunité de rebond",
+    reasons: [
+      "RSI en zone de survente extrême (<30)",
+      "Fondamentaux solides justifient un rebond vers la valeur intrinsèque",
+    ],
+    triggers: [
+      "Confirmer avec une bougie de retournement haussière",
+      "Volume supérieur à la normale sur la séance de rebond",
+    ],
+  };
+
+  // F3 — Creux de cycle confirmé
+  if (sinewave?.cycleTurn === "trough"
+      && fundamentalScore != null && fundamentalScore >= 5.5
+      && finalScore != null && finalScore >= 5) return {
+    type: "favorable", icon: "✅",
+    title: "Creux de cycle détecté — fenêtre d'entrée",
+    reasons: [
+      "Sinewave Ehlers signale un retournement cyclique haussier",
+      "Score fondamental suffisant pour justifier une position",
+    ],
+    triggers: [
+      "Surveiller confirmation RSI et volume dans les 3-5 séances",
+      "Stop suggéré : sous le dernier plus bas",
+    ],
+  };
+  // C5 — Macro modérément défavorable (après F1/F2/F3)
+  if (macro && !macro.error && finalScore != null && finalScore >= 5
+      && ((macro.vix != null && macro.vix > 25) || (macro.rate10y != null && macro.rate10y > 4.5))) {
+    const reasons: string[] = [];
+    if (macro.vix != null && macro.vix > 25) reasons.push(`VIX à ${macro.vix} — volatilité élevée`);
+    if (macro.rate10y != null && macro.rate10y > 4.5) reasons.push(`Taux à ${macro.rate10y}% — pression sur les valorisations`);
+    const triggers: string[] = [];
+    if (macro.vix != null && macro.vix > 25) triggers.push("VIX redescend sous 20");
+    if (macro.rate10y != null && macro.rate10y > 4.5) triggers.push("Taux 10 ans repassent sous 4%");
+    return {
+      type: "caution", icon: "⚠️",
+      title: "Contexte macro à surveiller — position réduite recommandée",
+      reasons, triggers,
+    };
+  }
+
+  // ── FALLBACK — context null mais données fondamentales disponibles ──
+  if (fundamentalScore != null && context === null) {
+    if (fundamentalScore >= 6.5) return {
+      type: "caution", icon: "⚠️",
+      title: "Fondamentaux solides — données techniques insuffisantes",
+      reasons: [
+        `Score fondamental ${fundamentalScore}/10 — qualité intrinsèque solide`,
+        "Données techniques insuffisantes pour évaluer le timing d'entrée",
+      ],
+      triggers: [
+        "Analyser le graphique sur une plateforme technique dédiée (TradingView...)",
+        "Surveiller RSI, structure de prix et volume avant d'entrer",
+      ],
+    };
+    if (fundamentalScore >= 4 && finalScore != null && finalScore >= 5) return {
+      type: "caution", icon: "⚠️",
+      title: "Profil correct — contexte technique à confirmer",
+      reasons: [
+        `Score fondamental ${fundamentalScore}/10`,
+        "Données techniques insuffisantes pour évaluer le timing",
+      ],
+      triggers: ["Surveiller RSI et structure de prix avant d'entrer"],
+    };
+  }
+
+  return NONE;
+}
+
+function EntryRecommendationPanel({ rec }: { rec: EntryRecommendation }) {
+  const [open, setOpen] = useState(true);
+  if (rec.type === "none") return null;
+
+  const palette = {
+    wait     : { border: "#ef4444", bg: "#1e0808", color: "#ef4444" },
+    caution  : { border: "#f59e0b", bg: "#1a1000", color: "#f59e0b" },
+    favorable: { border: "#22c55e", bg: "#0a1e0f", color: "#22c55e" },
+    none     : { border: "#334",    bg: "#0d1420", color: "#334"    },
+  }[rec.type];
+
+  const badgeLabel = { wait: "Attendre", caution: "Prudence", favorable: "Favorable", none: "" }[rec.type];
+
+  return (
+    <div style={{
+      background: palette.bg, border: `1px solid ${palette.border}`,
+      borderRadius: 12, padding: "14px 18px", marginBottom: 10,
+    }}>
+      <div
+        onClick={() => setOpen(o => !o)}
+        style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+                 cursor: "pointer", marginBottom: open ? 12 : 0 }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 10, fontWeight: 800, color: "#445",
+                         textTransform: "uppercase", letterSpacing: 2 }}>
+            🎯 Recommandation d'entrée
+          </span>
+          <span style={{
+            fontSize: 9, fontWeight: 800, color: palette.color,
+            background: palette.border + "22", borderRadius: 4,
+            padding: "1px 6px", textTransform: "uppercase", letterSpacing: 1,
+          }}>{badgeLabel}</span>
+        </div>
+        <span style={{ fontSize: 10, color: "#334" }}>{open ? "▲" : "▼"}</span>
+      </div>
+      {open && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ fontSize: 20 }}>{rec.icon}</span>
+            <span style={{ fontSize: 14, fontWeight: 800, color: palette.color }}>{rec.title}</span>
+          </div>
+          {rec.reasons.length > 0 && (
+            <div style={{ background: "#111825", borderRadius: 8, padding: "10px 12px" }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "#445",
+                            textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 6 }}>
+                Pourquoi
+              </div>
+              {rec.reasons.map((r, i) => (
+                <div key={i} style={{ fontSize: 11, color: "#8b949e", lineHeight: 1.6 }}>
+                  • {r}
+                </div>
+              ))}
+            </div>
+          )}
+          {rec.triggers.length > 0 && (
+            <div style={{ background: "#111825", borderRadius: 8, padding: "10px 12px" }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "#445",
+                            textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 6 }}>
+                Surveiller
+              </div>
+              {rec.triggers.map((t, i) => (
+                <div key={i} style={{ fontSize: 11, color: "#8b949e", lineHeight: 1.6 }}>
+                  👁 {t}
+                </div>
+              ))}
+            </div>
+          )}
+          <div style={{ fontSize: 9, color: "#334", fontStyle: "italic" }}>
+            Ces recommandations sont algorithmiques et ne constituent pas un conseil en investissement.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey, macro, zone }: {
   metrics: any; chartData: any; ticker: string; optimalUTKey?: string; macro?: MacroContext | null; zone?: MacroZone;
 }) {
@@ -3219,16 +3571,47 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
         }}>
           {/* Contenu principal */}
           <div style={{ flex: 1 }}>
-            {/* Score + verdict */}
+            {/* Double score + verdict */}
             <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 12, flexWrap: "wrap" }}>
-              <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-                <span style={{
-                  fontSize: 56, fontWeight: 900, lineHeight: 1,
-                  color: scoreColor(finalScore),
-                  fontFamily: "'IBM Plex Mono',monospace",
-                }}>{finalScore}</span>
-                <span style={{ fontSize: 18, color: "#556", fontFamily: "'IBM Plex Mono',monospace" }}>/10</span>
+              {/* Score Qualité (fondamental) */}
+              {metrics?.globalScore != null && (
+                <div style={{ textAlign: "center" }}>
+                  <div style={{ fontSize: 9, fontWeight: 800, color: "#445",
+                                textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 2 }}>
+                    Qualité
+                  </div>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 3 }}>
+                    <span style={{
+                      fontSize: 46, fontWeight: 900, lineHeight: 1,
+                      color: scoreColor(metrics.globalScore),
+                      fontFamily: "'IBM Plex Mono',monospace",
+                    }}>{metrics.globalScore}</span>
+                    <span style={{ fontSize: 14, color: "#556", fontFamily: "'IBM Plex Mono',monospace" }}>/10</span>
+                  </div>
+                  <div style={{ fontSize: 9, color: "#445", marginTop: 1 }}>Fondamentaux</div>
+                </div>
+              )}
+              {/* Séparateur */}
+              {metrics?.globalScore != null && (
+                <div style={{ fontSize: 24, color: "#223", fontWeight: 100, alignSelf: "center" }}>·</div>
+              )}
+              {/* Score Timing (technique) */}
+              <div style={{ textAlign: "center" }}>
+                <div style={{ fontSize: 9, fontWeight: 800, color: "#445",
+                              textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 2 }}>
+                  Timing
+                </div>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 3 }}>
+                  <span style={{
+                    fontSize: 46, fontWeight: 900, lineHeight: 1,
+                    color: scoreColor(finalScore),
+                    fontFamily: "'IBM Plex Mono',monospace",
+                  }}>{finalScore}</span>
+                  <span style={{ fontSize: 14, color: "#556", fontFamily: "'IBM Plex Mono',monospace" }}>/10</span>
+                </div>
+                <div style={{ fontSize: 9, color: "#445", marginTop: 1 }}>Entrée</div>
               </div>
+              {/* Verdict textuel */}
               <div>
                 <div style={{ fontSize: 20, fontWeight: 900, color: v.color }}>{v.emoji} {v.label}</div>
                 <div style={{ fontSize: 11, color: "#8b949e", lineHeight: 1.4, marginTop: 2 }}>{v.desc}</div>
@@ -3323,6 +3706,20 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
           )}
         </div>
       )}
+
+      {/* RECOMMANDATION D'ENTRÉE */}
+      {(() => {
+        const entryRec = computeEntryRecommendation(
+          metrics,
+          finalScoreResult?.context ?? null,
+          techComputed.signals,
+          techComputed.sinewave,
+          macro,
+          finalScore,
+          metrics?.globalScore ?? null,
+        );
+        return <EntryRecommendationPanel rec={entryRec}/>;
+      })()}
 
       {/* GRAPHIQUE INTERACTIF */}
       <div style={{ background: "#0d1420", border: "1px solid #1e2a3a", borderRadius: 12, padding: "14px 18px", marginBottom: 4 }}>
