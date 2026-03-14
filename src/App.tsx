@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════
-// BLOC 1 — IMPORTS & CONSTANTES
+// COUCHE 1 — CONSTANTES & TYPES COMMUNS
 // ════════════════════════════════════════════════════════════════
 import { useState, useCallback, useRef, useEffect } from "react";
 
@@ -70,7 +70,37 @@ function getVerdict(g: number | null) {
 }
 
 // ════════════════════════════════════════════════════════════════
-// BLOC 3 — COUCHE RÉSEAU
+// COUCHE 1b — TYPES NORMALISÉS
+// ════════════════════════════════════════════════════════════════
+
+interface MacroContext {
+  rate10y:       number | null;  // Taux 10 ans US (%)
+  spreadCurve:   number | null;  // Spread 2/10 ans (points de base)
+  vix:           number | null;  // VIX — volatilité implicite S&P500
+  cpi:           number | null;  // CPI annuel US (%)
+  fedFunds:      number | null;  // Taux Fed Funds (%)
+  indexRegional: number | null;  // Indice régional (STOXX50E / FTSE / N225)
+  indexLabel:    string | null;  // Libellé lisible de l'indice régional
+  fetchedAt:     number;         // timestamp Unix
+  error?:        string;
+}
+
+type MacroZone = "us" | "eur" | "gbp" | "jpy" | "other";
+
+function detectZone(ticker: string): MacroZone {
+  const eur = [".PA", ".DE", ".AS", ".MI", ".MC", ".BR", ".LS", ".HE", ".WA", ".IS"];
+  const gbp = [".L", ".IL"];
+  const jpy = [".T"];
+  const upper = ticker.toUpperCase();
+  if (eur.some(s => upper.endsWith(s))) return "eur";
+  if (gbp.some(s => upper.endsWith(s))) return "gbp";
+  if (jpy.some(s => upper.endsWith(s))) return "jpy";
+  if (!upper.includes(".")) return "us";
+  return "other";
+}
+
+// ════════════════════════════════════════════════════════════════
+// COUCHE 2 — ADAPTERS (sources de données)
 // ════════════════════════════════════════════════════════════════
 const PROXY   = "https://screener.etheryoh.workers.dev";
 const CG_BASE = "https://api.coingecko.com/api/v3";
@@ -115,6 +145,7 @@ interface SearchSuggestion {
   exchange?: string;
 }
 
+// ── Adapter Yahoo Finance ─────────────────────────────────────
 async function yfChart(ticker: string, addLog: (s: string) => void, period = "1a") {
   const { range, interval } = CHART_RANGES[period] || CHART_RANGES["1a"];
   const url = `${PROXY}?ticker=${encodeURIComponent(ticker)}&type=chart&range=${range}&interval=${interval}`;
@@ -154,6 +185,7 @@ async function yfFundamentals(ticker: string, addLog: (s: string) => void) {
   }
 }
 
+// ── Adapter CoinGecko ─────────────────────────────────────────
 async function cgSearch(q: string): Promise<string | null> {
   try {
     const d = await getJson(`${CG_BASE}/search?query=${encodeURIComponent(q)}`);
@@ -175,6 +207,7 @@ async function cgCoin(id: string): Promise<any> {
   } catch { return null; }
 }
 
+// ── Adapter ECB ───────────────────────────────────────────────
 async function ecbRates(): Promise<Record<string, number>> {
   try {
     const d = await getJson(ECB_URL);
@@ -195,6 +228,8 @@ async function ecbRates(): Promise<Record<string, number>> {
 // Nécessite proxy ?type=search → ajouter dans le Worker CF :
 //   const q = url.searchParams.get("q");
 //   const r = await fetch(`https://query1.finance.yahoo.com/v1/finance/search?q=${q}&quotesCount=10&newsCount=0`);
+
+// ── Adapter Yahoo Finance (suite) ────────────────────────────
 async function yfSearch(q: string): Promise<SearchSuggestion[]> {
   try {
     const d = await getJson(`${PROXY}?q=${encodeURIComponent(q)}&type=search`);
@@ -219,8 +254,70 @@ async function cgSearchSuggest(q: string): Promise<SearchSuggestion[]> {
   } catch { return []; }
 }
 
+// ── Adapter Macro (via Yahoo Finance) ────────────────────────
+// Utilise Yahoo Finance pour les indicateurs macro — pas de clé
+// requise, pas de CORS, passe par le proxy existant.
+// Séries :
+//   ^VIX  → volatilité implicite S&P500
+//   ^TNX  → taux 10 ans US (%)
+//   ^IRX  → taux 3 mois US (%) — spread avec TNX = courbe
+//   ^GSPC → S&P500 PE via fundamentals
+
+async function fetchMacroYahoo(symbol: string): Promise<number | null> {
+  try {
+    const url = `${PROXY}?ticker=${encodeURIComponent(symbol)}&type=chart&range=5d&interval=1d`;
+    const d = await getJson(url);
+    const price = d?.chart?.result?.[0]?.meta?.regularMarketPrice;
+    return price != null ? parseFloat(parseFloat(price).toFixed(3)) : null;
+  } catch { return null; }
+}
+
+const ZONE_INDEX: Record<string, { symbol: string; label: string }> = {
+  eur: { symbol: "^STOXX50E", label: "Euro Stoxx 50" },
+  gbp: { symbol: "^FTSE",     label: "FTSE 100"      },
+  jpy: { symbol: "^N225",     label: "Nikkei 225"    },
+};
+
+const ZONE_TICKERS: Record<MacroZone, string> = {
+  us:    "^VIX · ^TNX · ^IRX",
+  eur:   "^VIX · ^STOXX50E · ^TNX",
+  gbp:   "^VIX · ^FTSE · ^TNX",
+  jpy:   "^VIX · ^N225 · ^TNX",
+  other: "^VIX · ^TNX",
+};
+
+async function fetchMacroContext(zone: MacroZone): Promise<MacroContext> {
+  const regionalDef = ZONE_INDEX[zone] ?? null;
+
+  const [vix, rate10y, thirdVal] = await Promise.all([
+    fetchMacroYahoo("^VIX"),
+    fetchMacroYahoo("^TNX"),
+    zone === "us"    ? fetchMacroYahoo("^IRX")
+    : regionalDef   ? fetchMacroYahoo(regionalDef.symbol)
+    :                  Promise.resolve(null),
+  ]);
+
+  const spreadCurve = (zone === "us" && rate10y != null && thirdVal != null)
+    ? parseFloat((rate10y - thirdVal).toFixed(3))
+    : null;
+
+  const indexRegional = (zone !== "us" && zone !== "other") ? thirdVal : null;
+  const indexLabel    = (zone !== "us" && zone !== "other" && regionalDef) ? regionalDef.label : null;
+
+  return {
+    rate10y,
+    spreadCurve,
+    vix,
+    cpi:      null,
+    fedFunds: null,
+    indexRegional,
+    indexLabel,
+    fetchedAt: Date.now(),
+  };
+}
+
 // ════════════════════════════════════════════════════════════════
-// BLOC 4 — MOTEUR D'ANALYSE (scoring pondéré)
+// COUCHE 3 — ANALYSE (scoring & signaux)
 // ════════════════════════════════════════════════════════════════
 function buildMetrics(yf: any, meta: any) {
   if (!yf && !meta) return null;
@@ -258,6 +355,9 @@ function buildMetrics(yf: any, meta: any) {
   const name        = (pr.longName || pr.shortName || meta?.longName || meta?.shortName || "") as string;
   const sector      = (yf?.assetProfile?.sector   || "") as string;
   const industry    = (yf?.assetProfile?.industry || "") as string;
+  const isFinancial = ["Financial Services", "Banks", "Insurance", "Real Estate"]
+    .some(s => sector.toLowerCase().includes(s.toLowerCase()));
+    console.log("DEBUG sector:", sector, "| industry:", industry, "| isFinancial:", isFinancial);
   const currency    = (pr.currency || meta?.currency || "USD") as string;
   const exchange    = (pr.exchangeName || meta?.exchangeName || "") as string;
   const quoteType   = (pr.quoteType || meta?.instrumentType || "EQUITY") as string;
@@ -300,11 +400,15 @@ function buildMetrics(yf: any, meta: any) {
     }
   }
   const scoreNetMargin  = netMargin  != null ? scoreVal(netMargin,  0.03, 0.10, 0.20, false) : null;
-  const scoreOpMargin   = opMargin   != null ? scoreVal(opMargin,   0.05, 0.12, 0.20, false) : null;
+  const scoreOpMargin   = opMargin   != null
+    ? isFinancial
+      ? scoreVal(opMargin, 0.15, 0.25, 0.35, false)
+      : scoreVal(opMargin, 0.05, 0.12, 0.20, false)
+    : null;
 
   // SANTÉ FINANCIÈRE (20% du score global)
-  const scoreDebtEq      = debtEq      != null ? scoreVal(debtEq,      0.3, 0.8, 1.5, true)  : null;
-  const scoreCurrentRatio= currentRatio!= null ? scoreVal(currentRatio, 1,   1.5, 2.5, false) : null;
+  const scoreDebtEq      = (!isFinancial && debtEq       != null) ? scoreVal(debtEq,      0.3, 0.8, 1.5, true)  : null;
+  const scoreCurrentRatio= (!isFinancial && currentRatio != null) ? scoreVal(currentRatio, 1,   1.5, 2.5, false) : null;
 
   // RISQUE / MOMENTUM (10% du score global)
   const scoreBeta = beta != null
@@ -358,33 +462,43 @@ function buildMetrics(yf: any, meta: any) {
   // Une action surévaluée reste risquée même si l'entreprise est excellente.
   // C'est le PRIX payé aujourd'hui qui détermine le rendement futur.
   if (globalScore != null && gValorisation != null && gValorisation <= 2.0) {
-    globalScore = Math.min(globalScore, 4.5); // extrême (NVDA/TSLA) : spéculatif
+    console.log("DEBUG règle 1a appliquée");
+    globalScore = Math.min(globalScore, 4.5);
   } else if (globalScore != null && gValorisation != null && gValorisation <= 3.0) {
-    globalScore = Math.min(globalScore, 5.0); // tendu (AAPL/MSFT) : marge nulle
+    console.log("DEBUG règle 1b appliquée");
+    globalScore = Math.min(globalScore, 5.0);
   }
   // Règle 2 : santé financière critique → plafond 4.5
   // Liquidités insuffisantes = risque de faillite ou dilution en cas de choc.
-  if (globalScore != null && gSante != null && gSante <= 2.5) {
+  if (globalScore != null && gSante != null && gSante <= 2.5 && !isFinancial) {
+    console.log("DEBUG règle 2 appliquée");
     globalScore = Math.min(globalScore, 4.5);
   }
   // Règle 3 : combo valorisation tendue + santé faible → plafond 4.0
   if (globalScore != null && gValorisation != null && gSante != null
-      && gValorisation <= 3.5 && gSante <= 3.0) {
+      && gValorisation <= 3.5 && gSante <= 3.0 && !isFinancial) {
+    console.log("DEBUG règle 3 appliquée");
     globalScore = Math.min(globalScore, 4.0);
   }
   // Règle 4 : entreprise déficitaire + chute > 30% sur 12 mois → risque élevé
   // Un débutant ne doit pas voir "Prudence" pour une boîte qui coule.
   if (globalScore != null && netMargin != null && netMargin < 0
       && change52w != null && change52w < -0.30) {
+    console.log("DEBUG règle 4 appliquée");
     globalScore = Math.min(globalScore, 3.4);
   }
+  console.log("DEBUG scores — gVal:", gValorisation, "gRent:", gRentabilite, "gSante:", gSante, "gRisque:", gRisque, "globalScore avant plafond:", globalScore);
+  console.log("DEBUG après plafonds — globalScore:", globalScore);
   if (globalScore != null) globalScore = parseFloat(globalScore.toFixed(1));
+
 
   // ── Règle 5 : couverture fondamentale insuffisante ────────────
   // Si moins de 2 groupes ont des données réelles, le score est non significatif.
   const coveredGroups = [gValorisation, gRentabilite, gSante, gRisque]
     .filter(g => g != null).length;
   if (coveredGroups < 2) globalScore = null;
+  console.log("DEBUG règle 5 — coveredGroups:", coveredGroups, "globalScore après règle 5:", globalScore);
+  console.log("DEBUG règle 6 — quoteType:", quoteType, "globalScore après règle 6:", globalScore);
 
   // ── Règle 6 : types sans fondamentaux d'entreprise ───────────
   // INDEX, FUTURE, BOND ne se lisent pas avec des ratios PE/PB/ROE.
@@ -407,11 +521,12 @@ function buildMetrics(yf: any, meta: any) {
     sharesOut, shortRatio, beta,
     scores, globalScore,
     gValorisation, gRentabilite, gSante, gRisque,
+    isFinancial,
   };
 }
 
 // ════════════════════════════════════════════════════════════════
-// BLOC 4b — CALCULS TECHNIQUES
+// COUCHE 3b — CALCULS TECHNIQUES
 // ════════════════════════════════════════════════════════════════
 
 function calcRSI(closes: (number|null)[], period = 14): number | null {
@@ -677,8 +792,28 @@ interface TrendStructureResult {
 function detectTrendStructure(
   highs:   (number|null)[],
   lows:    (number|null)[],
-  lookback = 20
+  closes:  (number|null)[] = [],
+  _lookback = 20
 ): TrendStructureResult {
+  // Lookback adaptatif basé sur la volatilité ATR relative
+  let lookback = 30;
+  const c = closes.filter((v): v is number => v != null);
+  const h = highs.filter((v): v is number => v != null);
+  const l = lows.filter((v): v is number => v != null);
+  if (c.length >= 50 && h.length >= 50 && l.length >= 50) {
+    const n = Math.min(h.length, l.length, c.length);
+    const trs: number[] = [];
+    for (let i = 1; i < n; i++) {
+      trs.push(Math.max(h[i] - l[i], Math.abs(h[i] - c[i-1]), Math.abs(l[i] - c[i-1])));
+    }
+    const atr14   = trs.length >= 14 ? trs.slice(-14).reduce((a, b) => a + b, 0) / 14 : 0;
+    const base50  = trs.length >= 50 ? trs.slice(-50).reduce((a, b) => a + b, 0) / 50 : 0;
+    if (base50 > 0) {
+      if (atr14 > 2 * base50)   lookback = 40;
+      else if (atr14 < 0.7 * base50) lookback = 20;
+      else                           lookback = 30;
+    }
+  }
   const H = highs.filter((v): v is number => v != null).slice(-lookback);
   const L = lows.filter((v): v is number => v != null).slice(-lookback);
   const N = Math.min(H.length, L.length);
@@ -802,7 +937,7 @@ function classifyMarketContext(
   const ema50  = calcEMA(closes, 50);
   const ema200 = calcEMA(closes, 200);
   const ema20  = calcEMA(closes, 20);
-  const struct = detectTrendStructure(highs, lows);
+  const struct = detectTrendStructure(highs, lows, closes);
   const div    = detectDivergence(closes);
   const vol    = calcVolumeAnomaly(volumes);
   const c      = closes.filter((v): v is number => v != null);
@@ -966,13 +1101,26 @@ function computeFinalScore(
     const { roe, fcf, debtEq, netMargin, pb, currentRatio } = metrics;
 
     if (context.type === "exces") {
-      const hasFundamental = roe != null && roe > 0.15 && fcf != null && fcf > 0;
-      if (hasFundamental) {
+      const hasFcf    = fcf != null && fcf > 0;
+      const hasRoe    = roe != null && roe > 0.15;
+      const hasMargin = netMargin != null && netMargin > 0;
+      const isDeficit = netMargin != null && netMargin < 0;
+
+      if (hasFcf && hasRoe && hasMargin) {
         mod += 1.0;
-        modifiers.push("+1.0 Excès avec fondamental haussier (ROE>15%, FCF positif)");
-      } else {
+        modifiers.push("+1.0 Excès avec fondamentaux solides (FCF+, ROE>15%, marges positives)");
+      } else if (hasFcf && hasMargin && !isDeficit) {
+        mod -= 0.5;
+        modifiers.push("-0.5 Excès avec FCF positif mais ROE insuffisant");
+      } else if (hasFcf && isDeficit) {
+        mod -= 1.0;
+        modifiers.push("-1.0 Excès sans rentabilité nette — momentum spéculatif");
+      } else if (!hasFcf && !isDeficit) {
         mod -= 1.5;
-        modifiers.push("-1.5 Bulle spéculative — aucun fondamental ne justifie la valorisation");
+        modifiers.push("-1.5 Bulle comportementale — valorisation sans cash réel");
+      } else {
+        mod -= 2.0;
+        modifiers.push("-2.0 Bulle spéculative — déficitaire sans Free Cash Flow");
       }
     }
 
@@ -1005,10 +1153,14 @@ function computeFinalScore(
       }
     }
 
-    const isValue = pb != null && pb < 1 && netMargin != null && netMargin > 0;
+    const isValue =
+      pb != null && pb < 1.5 &&
+      fcf != null && fcf > 0 &&
+      currentRatio != null && currentRatio > 1.2 &&
+      netMargin != null && netMargin > 0;
     if (isValue) {
       mod += 0.5;
-      modifiers.push("+0.5 Value décotée (PB<1, entreprise bénéficiaire)");
+      modifiers.push("+0.5 Value structurelle (PB<1.5, FCF+, liquidités saines)");
     }
 
     if (currentRatio != null && currentRatio < 0.8) {
@@ -1345,7 +1497,7 @@ function computeTechSignals(
     }
 
     // ── Structure HH/HL ────────────────────────────────────────
-    const struct = detectTrendStructure(highs, lows);
+    const struct = detectTrendStructure(highs, lows, closes);
     const structEdu = {
       concept: "En tendance haussière, le prix fait des Hauts de Plus en Plus Hauts (HH) et des Bas de Plus en Plus Hauts (HL). C'est la définition technique d'une tendance — utilisée depuis Dow Theory (1900).",
       howToRead: "HH+HL = tendance haussière structurelle confirmée. LL+LH = tendance baissière. Mixte = indécision, possible retournement ou range. Plat = absence de structure directionnelle.",
@@ -1470,6 +1622,24 @@ function computeSituationalContext(
       detail:"Génère du cash malgré une valorisation basse — signe de solidité opérationnelle réelle." });
   }
 
+  // ── Décorrélation prix/valeur ─────────────────────────────
+  const isDecorrelation =
+    change52w != null && change52w > 0.15 &&
+    gValorisation != null && gValorisation <= 3.5 &&
+    (
+      (netMargin != null && netMargin < 0) ||
+      (debtEq != null && debtEq > 2.0)
+    ) &&
+    (sw == null || sw.sine > 0.3 || sw.cycleTurn === "peak");
+
+  if (isDecorrelation) {
+    signals.push({
+      emoji: "🔀", color: "#f97316",
+      label: "Décorrélation prix/valeur",
+      detail: `Le prix progresse (+${change52w != null ? (change52w*100).toFixed(0) : "—"}% sur 12 mois) mais les fondamentaux ne suivent pas${debtEq != null && debtEq > 2 ? ` (dette/equity ${debtEq.toFixed(1)}x)` : netMargin != null && netMargin < 0 ? " (entreprise déficitaire)" : ""}. Signal classique de fin de cycle ou de bulle spéculative.`,
+    });
+  }
+
   // ── Indice : P/E vs norme historique ─────────────────────────
   const qt = (quoteType || "").toUpperCase();
   if (qt === "INDEX" && pe != null) {
@@ -1570,12 +1740,83 @@ function computeSituationalContext(
 }
 
 // ── TOOLTIP PÉDAGOGIQUE ────────────────────────────────────────
-function EduTooltip({ edu }: { edu: TechSignal["edu"] }) {
+const _eduSubscribers = new Set<(open: boolean) => void>();
+
+function EduTooltip({ edu, id: _id }: { edu: TechSignal["edu"]; id: string }) {
   const [visible, setVisible] = useState(false);
+  const [bubblePos, setBubblePos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const [bubbleW, setBubbleW] = useState(320);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    _eduSubscribers.add(setVisible);
+    return () => { _eduSubscribers.delete(setVisible); };
+  }, []);
+
+  // Fermeture au clic extérieur
+  useEffect(() => {
+    if (!visible) return;
+    const handler = (e: MouseEvent) => {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
+        _eduSubscribers.forEach(s => s(false));
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => { document.removeEventListener("mousedown", handler); };
+  }, [visible]);
+
+  const handleOpen = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const next = !visible;
+    _eduSubscribers.forEach(s => s(false));
+    if (next) {
+      const BUBBLE_W = 320;
+      const BUBBLE_H = 320;
+      const MARGIN = 8;
+      const rect = wrapperRef.current?.getBoundingClientRect();
+      if (rect) {
+        const isMobile = window.innerWidth < 480;
+        if (isMobile) {
+          setBubbleW(window.innerWidth - MARGIN * 2);
+          setBubblePos({ top: rect.bottom + MARGIN, left: MARGIN });
+        } else {
+          let left = rect.right + MARGIN;
+          let top = rect.top;
+          if (left + BUBBLE_W > window.innerWidth - MARGIN) {
+            left = rect.left - BUBBLE_W - MARGIN;
+          }
+          if (top + BUBBLE_H > window.innerHeight) {
+            top = window.innerHeight - BUBBLE_H - MARGIN;
+          }
+          if (top < MARGIN) top = MARGIN;
+          setBubbleW(BUBBLE_W);
+          setBubblePos({ top, left });
+        }
+      }
+      setVisible(true);
+    }
+  };
+
+  const bubbleStyle: React.CSSProperties = {
+    position: "fixed",
+    top: bubblePos.top,
+    left: bubblePos.left,
+    width: bubbleW,
+    background: "#0d1420",
+    border: "1px solid #2a3548",
+    borderRadius: 10,
+    padding: "14px 16px",
+    zIndex: 1000,
+    boxShadow: "0 8px 32px #000a",
+    fontSize: 11,
+    lineHeight: 1.7,
+    color: "#8b949e",
+  };
+
   return (
-    <div style={{ position:"relative", display:"inline-flex", alignItems:"center" }}>
+    <div ref={wrapperRef} style={{ position:"relative", display:"inline-flex", alignItems:"center", zIndex: visible ? 1000 : "auto" }}>
       <button
-        onClick={e => { e.stopPropagation(); setVisible(v => !v); }}
+        onClick={handleOpen}
         style={{
           background: visible ? "#2a3548" : "#1a2235",
           border: "1px solid #2a3548",
@@ -1592,20 +1833,7 @@ function EduTooltip({ edu }: { edu: TechSignal["edu"] }) {
         title="Comprendre cet indicateur"
       >?</button>
       {visible && (
-        <div style={{
-          position: "absolute",
-          top: 24, right: 0,
-          background: "#0d1420",
-          border: "1px solid #2a3548",
-          borderRadius: 10,
-          padding: "14px 16px",
-          width: 300,
-          zIndex: 100,
-          boxShadow: "0 8px 32px #000a",
-          fontSize: 11,
-          lineHeight: 1.7,
-          color: "#8b949e",
-        }}>
+        <div style={bubbleStyle}>
           <div style={{ color:"#f0a500", fontWeight:700, fontSize:12, marginBottom:8 }}>📚 Comprendre cet indicateur</div>
           <div style={{ marginBottom:10 }}>
             <div style={{ color:"#b0bec5", fontWeight:600, marginBottom:3 }}>C'est quoi ?</div>
@@ -1620,7 +1848,7 @@ function EduTooltip({ edu }: { edu: TechSignal["edu"] }) {
             {edu.example}
           </div>
           <button
-            onClick={e => { e.stopPropagation(); setVisible(false); }}
+            onClick={e => { e.stopPropagation(); _eduSubscribers.forEach(s => s(false)); }}
             style={{ marginTop:10, fontSize:9, color:"#445", background:"none", border:"none", cursor:"pointer", padding:0 }}
           >▲ fermer</button>
         </div>
@@ -1778,7 +2006,7 @@ function TechnicalPanel({ precomputed, context }: { precomputed: { signals: Tech
                   {s.label} · {s.detail}
                 </div>
               </div>
-              <EduTooltip edu={s.edu}/>
+              <EduTooltip edu={s.edu} id={`tech-${i}`}/>
             </div>
           ))}
           {synthPhrase && (
@@ -1881,7 +2109,7 @@ function SituationalPanel({ metrics, closes }: { metrics: any; closes?: (number|
 }
 
 // ════════════════════════════════════════════════════════════════
-// BLOC 5 — COMPOSANTS UI
+// COUCHE 4 — UI (composants React)
 // ════════════════════════════════════════════════════════════════
 function TypeBadge({ type }: { type?: string }) {
   const b = getBadge(type);
@@ -2244,7 +2472,7 @@ interface MetricProps {
 }
 
 // ════════════════════════════════════════════════════════════════
-// BLOC 6 — VUE ACTION / ETF
+// COUCHE 4b — VUE ACTION / ETF
 // ════════════════════════════════════════════════════════════════
 function MetricCard({ label, value, s, edu }: MetricProps) {
   const bg = s == null ? "#111825"
@@ -2302,7 +2530,7 @@ function SectionTitle({ icon, label }: { icon: string; label: string }) {
 }
 
 // ════════════════════════════════════════════════════════════════
-// BLOC 5b — PANNEAU CONTEXTE DE MARCHÉ
+// COUCHE 4c — PANNEAU CONTEXTE DE MARCHÉ
 // ════════════════════════════════════════════════════════════════
 
 const CONTEXT_COLORS: Record<string, { bg: string; border: string; badge: string; emoji: string }> = {
@@ -2466,13 +2694,13 @@ function MarketContextPanel({
                 <span style={{ color: "#556", minWidth: 34 }}>ADX</span>
                 <strong style={{ color: "#b0bec5", fontFamily: "'IBM Plex Mono',monospace" }}>{context.adx.toFixed(1)}</strong>
                 <span style={{ color: "#8b949e", flex: 1 }}>— {adxDesc}</span>
-                <EduTooltip edu={eduADX}/>
+                <EduTooltip edu={eduADX} id="ctx-adx"/>
               </div>
             )}
             <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: "#111825", borderRadius: 8, fontSize: 11 }}>
               <span style={{ color: "#556", minWidth: 34 }}>Struct.</span>
               <strong style={{ color: "#b0bec5", flex: 1 }}>{structLabel}</strong>
-              <EduTooltip edu={eduStructure}/>
+              <EduTooltip edu={eduStructure} id="ctx-struct"/>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: "#111825", borderRadius: 8, fontSize: 11 }}>
               <span style={{ color: "#556", minWidth: 34 }}>Div.</span>
@@ -2486,7 +2714,7 @@ function MarketContextPanel({
                   ? `⚡ Divergence RSI ${context.divergence.type === "bullish" ? "haussière" : "baissière"} (${context.divergence.strength === "strong" ? "forte" : "faible"})`
                   : "Aucune divergence détectée"}
               </span>
-              <EduTooltip edu={eduDivergence}/>
+              <EduTooltip edu={eduDivergence} id="ctx-div"/>
             </div>
           </div>
 
@@ -2532,8 +2760,174 @@ function MarketContextPanel({
   );
 }
 
-function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey }: {
-  metrics: any; chartData: any; ticker: string; optimalUTKey?: string;
+function MacroContextPanel({ macro, zone }: { macro: MacroContext | null | undefined; zone?: MacroZone }) {
+  const [open, setOpen] = useState(true);
+  if (!macro || macro.error) return null;
+
+  const effectiveZone: MacroZone = zone ?? "us";
+
+  const rateEduBase = {
+    concept: "Le taux 10 ans représente le coût auquel les États empruntent sur 10 ans. C'est la référence mondiale du coût du capital — il influence directement les taux hypothécaires, les crédits entreprises et la valorisation de tous les actifs financiers.",
+    howToRead: "Au-dessus de 4.5% : environnement restrictif, les obligations deviennent compétitives face aux actions. Entre 3% et 4.5% : zone neutre. En dessous de 3% : argent bon marché, favorable aux actifs risqués et aux valorisations élevées.",
+  };
+  const rateSignal = macro.rate10y == null ? null
+    : macro.rate10y > 4.5
+      ? { label: "Taux élevés", color: "#ef4444",
+          detail: `Taux 10 ans à ${macro.rate10y}% — coût du capital élevé, pression sur les valorisations growth.`,
+          edu: { ...rateEduBase, example: `À ${macro.rate10y}%, le coût du capital est élevé — les entreprises à forte dette ou sans bénéfices sont particulièrement pénalisées.` } }
+    : macro.rate10y > 3.0
+      ? { label: "Taux modérés", color: "#f59e0b",
+          detail: `Taux 10 ans à ${macro.rate10y}% — environnement neutre pour les valorisations.`,
+          edu: { ...rateEduBase, example: `À ${macro.rate10y}%, l'environnement est neutre — ni favorable ni défavorable aux valorisations actuelles.` } }
+      : { label: "Taux bas", color: "#22c55e",
+          detail: `Taux 10 ans à ${macro.rate10y}% — environnement favorable aux actifs risqués.`,
+          edu: { ...rateEduBase, example: `À ${macro.rate10y}%, l'argent bon marché soutient les valorisations élevées et favorise la prise de risque.` } };
+
+  const curveEduBase = {
+    concept: "La courbe des taux représente la différence entre les taux longs (10 ans) et courts (3 mois). Normalement, emprunter longtemps coûte plus cher qu'emprunter court — la courbe est donc positive. Quand elle s'inverse, c'est un signal d'alarme.",
+    howToRead: "Spread positif > 0.5% : économie saine, croissance attendue. Entre 0 et 0.5% : transition, incertitude. Négatif (courbe inversée) : signal historique de récession dans 12-18 mois — s'est produit avant chaque récession US depuis 1970.",
+  };
+  const curveSignal = effectiveZone === "us" && macro.spreadCurve != null
+    ? macro.spreadCurve < 0
+      ? { label: "Courbe des taux — Inversée ⚠️", color: "#ef4444",
+          detail: `Spread 2/10 ans à ${macro.spreadCurve}% — signal historique de récession dans 12-18 mois.`,
+          edu: { ...curveEduBase, example: `Spread négatif à ${macro.spreadCurve}% — courbe inversée. Signal historiquement fiable de récession à venir.` } }
+    : macro.spreadCurve < 0.5
+      ? { label: "Courbe des taux — Plate", color: "#f59e0b",
+          detail: `Spread 2/10 ans à ${macro.spreadCurve}% — transition, incertitude sur la croissance.`,
+          edu: { ...curveEduBase, example: `Spread à ${macro.spreadCurve}% — courbe plate, transition en cours.` } }
+      : { label: "Courbe des taux — Normale", color: "#22c55e",
+          detail: `Spread 2/10 ans à ${macro.spreadCurve}% — contexte macro sain.`,
+          edu: { ...curveEduBase, example: `Spread à ${macro.spreadCurve}% — courbe normale, contexte macro sain.` } }
+    : null;
+
+  const vixEduBase = {
+    concept: "Le VIX (indice de volatilité du CBOE) mesure la volatilité implicite attendue par le marché sur les 30 prochains jours, calculée à partir des options sur le S&P500. On l'appelle 'l'indice de la peur' — il monte quand les investisseurs sont inquiets et achètent des protections.",
+    howToRead: "En dessous de 20 : marché calme, faible anxiété. Entre 20 et 30 : vigilance, volatilité au-dessus de la normale. Au-dessus de 30 : stress élevé, souvent associé à des crises ou corrections importantes. Record historique : 89.53 en mars 2020 (Covid).",
+  };
+  const vixSignal = macro.vix == null ? null
+    : macro.vix > 30
+      ? { label: "Peur élevée", color: "#ef4444",
+          detail: `VIX à ${macro.vix} — marché en stress, volatilité forte. Opportunité ou piège selon le contexte.`,
+          edu: { ...vixEduBase, example: `VIX à ${macro.vix} — stress élevé. Les options sont chères, le marché anticipe de fortes variations.` } }
+    : macro.vix > 20
+      ? { label: "Vigilance", color: "#f59e0b",
+          detail: `VIX à ${macro.vix} — volatilité au-dessus de la normale, prudence sur les entrées.`,
+          edu: { ...vixEduBase, example: `VIX à ${macro.vix} — volatilité au-dessus de la normale. Prudence sur le timing des entrées.` } }
+      : { label: "Marché calme", color: "#22c55e",
+          detail: `VIX à ${macro.vix} — faible volatilité implicite, marché sans stress apparent.`,
+          edu: { ...vixEduBase, example: `VIX à ${macro.vix} — marché serein. Faible prime de risque implicite.` } };
+
+  const cpiSignal = macro.cpi == null ? null
+    : macro.cpi > 4
+      ? { label: "Inflation élevée", color: "#ef4444",
+          detail: `CPI à ${macro.cpi}% — inflation persistante, pression sur les marges et les taux réels.`,
+          edu: undefined }
+    : macro.cpi > 2.5
+      ? { label: "Inflation modérée", color: "#f59e0b",
+          detail: `CPI à ${macro.cpi}% — légèrement au-dessus de la cible Fed (2%). Surveillance maintenue.`,
+          edu: undefined }
+      : { label: "Inflation maîtrisée", color: "#22c55e",
+          detail: `CPI à ${macro.cpi}% — proche de la cible Fed. Contexte favorable à la stabilité des taux.`,
+          edu: undefined };
+
+  const indexSignal = macro.indexRegional != null && macro.indexLabel != null ? (() => {
+    const val = macro.indexRegional!;
+    const lbl = macro.indexLabel!;
+    const fmtVal = val.toLocaleString("fr-FR", { maximumFractionDigits: 0 });
+    let example: string;
+    if (effectiveZone === "eur") {
+      example = val > 5500
+        ? `L'Euro Stoxx 50 à ${fmtVal} évolue près de ses hauts historiques récents — les valorisations européennes sont globalement tendues, ce qui peut limiter le potentiel de revalorisation même pour de bonnes entreprises.`
+        : val > 4500
+        ? `L'Euro Stoxx 50 à ${fmtVal} est en territoire intermédiaire — ni euphorie ni pessimisme, contexte neutre pour les actions européennes.`
+        : `L'Euro Stoxx 50 à ${fmtVal} est en repli marqué — vent contraire pour les actions européennes, même les fondamentaux solides peuvent être ignorés temporairement par le marché.`;
+    } else if (effectiveZone === "gbp") {
+      example = val > 8000
+        ? `Le FTSE 100 à ${fmtVal} est proche de ses sommets — marché britannique bien orienté, mais peu de marge pour les déceptions.`
+        : val > 7000
+        ? `Le FTSE 100 à ${fmtVal} en zone intermédiaire — contexte neutre pour les actions britanniques.`
+        : `Le FTSE 100 à ${fmtVal} en repli — contexte défavorable pour les actions britanniques.`;
+    } else if (effectiveZone === "jpy") {
+      example = val > 35000
+        ? `Le Nikkei 225 à ${fmtVal} évolue à des niveaux historiquement élevés — le marché japonais est bien orienté mais sensible aux fluctuations du yen.`
+        : val > 28000
+        ? `Le Nikkei 225 à ${fmtVal} en zone intermédiaire — contexte neutre pour les actions japonaises.`
+        : `Le Nikkei 225 à ${fmtVal} en repli — vent contraire pour les actions japonaises.`;
+    } else {
+      example = `Le ${lbl} est à ${fmtVal}. Contexte régional à croiser avec les fondamentaux de l'entreprise.`;
+    }
+    return {
+      label: `${lbl} : ${fmtVal}`, color: "#8b949e", detail: null,
+      edu: {
+        concept: "L'indice régional représente la santé globale du marché actions dans la zone géographique de l'entreprise analysée. Il reflète le sentiment des investisseurs locaux et le contexte économique régional.",
+        howToRead: "Un indice proche de ses plus hauts historiques indique un marché optimiste — les valorisations individuelles sont souvent tirées vers le haut. Un indice en repli crée un vent contraire même pour les bonnes entreprises.",
+        example,
+      },
+    };
+  })() : null;
+
+  const signals = [rateSignal, curveSignal, vixSignal, cpiSignal, indexSignal].filter(Boolean);
+  if (signals.length === 0) return null;
+
+  const scoredSignals = [rateSignal, curveSignal, vixSignal, cpiSignal].filter(Boolean);
+  const reds   = scoredSignals.filter(s => s!.color === "#ef4444").length;
+  const ambers = scoredSignals.filter(s => s!.color === "#f59e0b").length;
+  const panelColor = reds >= 2 ? "#ef4444" : ambers >= 2 ? "#f59e0b" : "#22c55e";
+
+  return (
+    <div style={{
+      background: "#0d1420", border: `1px solid ${panelColor}33`,
+      borderRadius: 12, padding: "14px 18px", marginBottom: 10,
+    }}>
+      <div
+        onClick={() => setOpen(o => !o)}
+        style={{ display:"flex", alignItems:"center", justifyContent:"space-between",
+                 cursor:"pointer", marginBottom: open ? 12 : 0 }}
+      >
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          <span style={{ fontSize:10, fontWeight:800, color:"#445",
+                         textTransform:"uppercase", letterSpacing:2 }}>
+            🌍 Contexte Macro
+          </span>
+          <span style={{ fontSize:10, color:"#556" }}>
+            Yahoo Finance · {ZONE_TICKERS[effectiveZone]}
+          </span>
+        </div>
+        <span style={{ fontSize:10, color:"#334" }}>{open ? "▲" : "▼"}</span>
+      </div>
+      {open && (
+        <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+          {signals.map((s, i) => s && (
+            <div key={i} style={{
+              display:"flex", alignItems:"flex-start", gap:10,
+              padding:"8px 10px", background:"#111825",
+              borderRadius:8, borderLeft:`3px solid ${s.color}`,
+            }}>
+              <div style={{ flex:1 }}>
+                <div style={{ fontSize:12, fontWeight:700, color:s.color }}>
+                  {s.label}
+                </div>
+                {s.detail && (
+                  <div style={{ fontSize:11, color:"#8b949e", marginTop:2, lineHeight:1.5 }}>
+                    {s.detail}
+                  </div>
+                )}
+              </div>
+              {s.edu && <EduTooltip edu={s.edu} id={`macro-${i}`}/>}
+            </div>
+          ))}
+          <div style={{ fontSize:9, color:"#334", marginTop:4 }}>
+            Source : Yahoo Finance · Données journalières
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey, macro, zone }: {
+  metrics: any; chartData: any; ticker: string; optimalUTKey?: string; macro?: MacroContext | null; zone?: MacroZone;
 }) {
   if (!metrics) return null;
   const {
@@ -2862,6 +3256,24 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey 
                 </span>
               </div>
             )}
+            {/* Bandeau macro défavorable */}
+            {macro && !macro.error && (() => {
+              const warnings: string[] = [];
+              if (macro.vix != null && macro.vix > 30) warnings.push(`VIX à ${macro.vix} — volatilité élevée`);
+              if (macro.rate10y != null && macro.rate10y > 4.5) warnings.push(`taux à ${macro.rate10y}% — coût du capital élevé`);
+              if (macro.spreadCurve != null && macro.spreadCurve < 0) warnings.push("courbe inversée — signal de récession historique");
+              if (warnings.length === 0) return null;
+              return (
+                <div style={{
+                  background: "#2a1500", border: "1px solid #f97316",
+                  borderRadius: 8, padding: "8px 14px",
+                  fontSize: 11, color: "#f97316",
+                  marginTop: 10, lineHeight: 1.6,
+                }}>
+                  ⚠️ Contexte macro à surveiller : {warnings.join(" · ")}. Ces facteurs sont indépendants des fondamentaux mais peuvent peser sur le titre à court terme.
+                </div>
+              );
+            })()}
           </div>
           {/* Jauge à droite */}
           <div className="score-gauge-wrap" style={{ flexShrink: 0 }}>
@@ -2938,6 +3350,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey 
 
       {/* ENCARTS ANALYSE */}
       <div style={{ marginTop:14, display:"flex", flexDirection:"column", gap:0 }}>
+        <MacroContextPanel macro={macro} zone={zone}/>
         <TechnicalPanel precomputed={techComputed} context={finalScoreResult?.context ?? null} />
         <SituationalPanel metrics={metrics} closes={chartData?.closes ?? []}/>
       </div>
@@ -2949,6 +3362,16 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey 
             <SectionTitle icon={sec.icon} label={sec.label}/>
             <span style={{ fontSize:9, color:"#334", fontStyle:"italic" }}>{sec.note}</span>
           </div>
+          {sec.label === "Santé Financière" && metrics.isFinancial && (
+            <div style={{
+              fontSize: 11, color: "#8b949e", fontStyle: "italic",
+              marginBottom: 8, padding: "6px 10px",
+              background: "#111825", borderRadius: 6,
+              borderLeft: "3px solid #f59e0b",
+            }}>
+              ⚠️ Secteur financier — Dette/Equity et Current Ratio ne sont pas des indicateurs pertinents pour ce secteur et sont exclus du scoring.
+            </div>
+          )}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 10 }}>
             {sec.cards.map((c, i) => <MetricCard key={i} {...c}/>)}
           </div>
@@ -2963,7 +3386,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey 
 }
 
 // ════════════════════════════════════════════════════════════════
-// BLOC 7 — VUE CRYPTO
+// COUCHE 4d — VUE CRYPTO
 // ════════════════════════════════════════════════════════════════
 function CryptoView({ data }: { data: any }) {
   const md     = data.market_data || {};
@@ -3032,10 +3455,10 @@ function CryptoView({ data }: { data: any }) {
 }
 
 // ════════════════════════════════════════════════════════════════
-// BLOC 8 — APPLICATION PRINCIPALE
+// COUCHE 4e — APPLICATION PRINCIPALE
 // ════════════════════════════════════════════════════════════════
 type ResultType =
-  | { type: "stock";  metrics: any; chartData: any; ticker: string; optimalUTKey?: string }
+  | { type: "stock";  metrics: any; chartData: any; ticker: string; optimalUTKey?: string; macro?: MacroContext | null; zone?: MacroZone }
   | { type: "crypto"; data: any }
   | { type: "forex";  currency: string; rate: number; allRates: Record<string, number> };
 
@@ -3082,11 +3505,14 @@ export default function App() {
 
     const skipCG = mode !== "all" && mode !== "crypto";
     addLog(`⚡ Recherche ${skipCG ? "Yahoo Finance" : "parallèle Yahoo Finance + CoinGecko"}...`);
-    const [yfDataDaily, yfDataWeekly, cgId] = await Promise.all([
+    const zone = detectZone(upper);
+    const [yfDataDaily, yfDataWeekly, cgId, macro] = await Promise.all([
       yfChart(upper, addLog, "2a"),
       yfChart(upper, addLog, "5a"),
       skipCG ? Promise.resolve(null) : cgSearch(lower),
+      fetchMacroContext(zone),
     ]);
+    addLog(`  🌍 FRED macro: rate10y=${macro?.rate10y} spread=${macro?.spreadCurve} vix=${macro?.vix} cpi=${macro?.cpi} error=${macro?.error}`);
 
     // Détermination UT optimale par cycle dominant (Ehlers Sinewave)
     let optimalUTKey = "5a";
@@ -3129,7 +3555,8 @@ export default function App() {
       addLog(`✅ Yahoo Finance : ${yfData.meta.quoteType || "EQUITY"}`);
       const yf = await yfFundamentals(upper, addLog);
       const metrics = buildMetrics(yf, yfData.meta);
-      setResult({ type:"stock", metrics, ticker: upper, optimalUTKey, chartData: {
+      console.log("DEBUG doAnalyze — globalScore:", metrics?.globalScore);
+      setResult({ type:"stock", metrics, ticker: upper, optimalUTKey, macro, zone, chartData: {
         closes:     yfData.closes,
         timestamps: yfData.timestamps,
         opens:      yfData.opens     ?? [],
@@ -3415,7 +3842,7 @@ export default function App() {
       {result && !loading && (
         <div style={{ paddingTop:22, paddingBottom:40 }}>
           <div className="app-inner">
-            {result.type === "stock"  && <StockView metrics={result.metrics} chartData={result.chartData} ticker={result.ticker ?? ""} optimalUTKey={result.optimalUTKey}/>}
+            {result.type === "stock"  && <StockView metrics={result.metrics} chartData={result.chartData} ticker={result.ticker ?? ""} optimalUTKey={result.optimalUTKey} macro={result.macro} zone={result.zone}/>}
             {result.type === "crypto" && <CryptoView data={result.data}/>}
             {result.type === "forex"  && <ForexView {...result}/>}
           </div>
