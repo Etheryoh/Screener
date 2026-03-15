@@ -357,7 +357,6 @@ function buildMetrics(yf: any, meta: any) {
   const industry    = (yf?.assetProfile?.industry || "") as string;
   const isFinancial = ["Financial Services", "Banks", "Insurance", "Real Estate"]
     .some(s => sector.toLowerCase().includes(s.toLowerCase()));
-    console.log("DEBUG sector:", sector, "| industry:", industry, "| isFinancial:", isFinancial);
   const currency    = (pr.currency || meta?.currency || "USD") as string;
   const exchange    = (pr.exchangeName || meta?.exchangeName || "") as string;
   const quoteType   = (pr.quoteType || meta?.instrumentType || "EQUITY") as string;
@@ -462,33 +461,26 @@ function buildMetrics(yf: any, meta: any) {
   // Une action surévaluée reste risquée même si l'entreprise est excellente.
   // C'est le PRIX payé aujourd'hui qui détermine le rendement futur.
   if (globalScore != null && gValorisation != null && gValorisation <= 2.0) {
-    console.log("DEBUG règle 1a appliquée");
     globalScore = Math.min(globalScore, 4.5);
   } else if (globalScore != null && gValorisation != null && gValorisation <= 3.0) {
-    console.log("DEBUG règle 1b appliquée");
     globalScore = Math.min(globalScore, 5.0);
   }
   // Règle 2 : santé financière critique → plafond 4.5
   // Liquidités insuffisantes = risque de faillite ou dilution en cas de choc.
   if (globalScore != null && gSante != null && gSante <= 2.5 && !isFinancial) {
-    console.log("DEBUG règle 2 appliquée");
     globalScore = Math.min(globalScore, 4.5);
   }
   // Règle 3 : combo valorisation tendue + santé faible → plafond 4.0
   if (globalScore != null && gValorisation != null && gSante != null
       && gValorisation <= 3.5 && gSante <= 3.0 && !isFinancial) {
-    console.log("DEBUG règle 3 appliquée");
     globalScore = Math.min(globalScore, 4.0);
   }
   // Règle 4 : entreprise déficitaire + chute > 30% sur 12 mois → risque élevé
   // Un débutant ne doit pas voir "Prudence" pour une boîte qui coule.
   if (globalScore != null && netMargin != null && netMargin < 0
       && change52w != null && change52w < -0.30) {
-    console.log("DEBUG règle 4 appliquée");
     globalScore = Math.min(globalScore, 3.4);
   }
-  console.log("DEBUG scores — gVal:", gValorisation, "gRent:", gRentabilite, "gSante:", gSante, "gRisque:", gRisque, "globalScore avant plafond:", globalScore);
-  console.log("DEBUG après plafonds — globalScore:", globalScore);
   if (globalScore != null) globalScore = parseFloat(globalScore.toFixed(1));
 
 
@@ -497,8 +489,6 @@ function buildMetrics(yf: any, meta: any) {
   const coveredGroups = [gValorisation, gRentabilite, gSante, gRisque]
     .filter(g => g != null).length;
   if (coveredGroups < 2) globalScore = null;
-  console.log("DEBUG règle 5 — coveredGroups:", coveredGroups, "globalScore après règle 5:", globalScore);
-  console.log("DEBUG règle 6 — quoteType:", quoteType, "globalScore après règle 6:", globalScore);
 
   // ── Règle 6 : types sans fondamentaux d'entreprise ───────────
   // INDEX, FUTURE, BOND ne se lisent pas avec des ratios PE/PB/ROE.
@@ -3909,7 +3899,6 @@ export default function App() {
       skipCG ? Promise.resolve(null) : cgSearch(lower),
       fetchMacroContext(zone),
     ]);
-    addLog(`  🌍 FRED macro: rate10y=${macro?.rate10y} spread=${macro?.spreadCurve} vix=${macro?.vix} cpi=${macro?.cpi} error=${macro?.error}`);
 
     // Détermination UT optimale par cycle dominant (Ehlers Sinewave)
     let optimalUTKey = "5a";
@@ -3952,7 +3941,6 @@ export default function App() {
       addLog(`✅ Yahoo Finance : ${yfData.meta.quoteType || "EQUITY"}`);
       const yf = await yfFundamentals(upper, addLog);
       const metrics = buildMetrics(yf, yfData.meta);
-      console.log("DEBUG doAnalyze — globalScore:", metrics?.globalScore);
       setResult({ type:"stock", metrics, ticker: upper, optimalUTKey, macro, zone, chartData: {
         closes:     yfData.closes,
         timestamps: yfData.timestamps,
