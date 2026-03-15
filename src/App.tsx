@@ -601,6 +601,121 @@ function calcVolumeAnomaly(volumes: (number|null)[]): { ratio: number; anomaly: 
   return { ratio, anomaly: ratio > 1.8 };
 }
 
+function calcRegressionDeviation(closes: (number|null)[]): {
+  deviation: number;
+  r2: number;
+  slope: "haussière" | "baissière" | "neutre";
+  periodYears: number;
+  trendPrice: number;
+} | null {
+  const c = closes.filter((v): v is number => v != null && v > 0);
+  if (c.length < 50) return null;
+
+  const n = c.length;
+  const logPrices = c.map(v => Math.log(v));
+
+  let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+  for (let i = 0; i < n; i++) {
+    sumX += i; sumY += logPrices[i];
+    sumXY += i * logPrices[i]; sumX2 += i * i;
+  }
+  const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+  const intercept = (sumY - slope * sumX) / n;
+
+  const trendLogPrice = slope * (n - 1) + intercept;
+  const trendPrice = Math.exp(trendLogPrice);
+  const lastPrice = c[n - 1];
+  const deviation = ((lastPrice - trendPrice) / trendPrice) * 100;
+
+  const meanY = sumY / n;
+  let ssTot = 0, ssRes = 0;
+  for (let i = 0; i < n; i++) {
+    ssTot += Math.pow(logPrices[i] - meanY, 2);
+    ssRes += Math.pow(logPrices[i] - (slope * i + intercept), 2);
+  }
+  const r2 = ssTot > 0 ? parseFloat((1 - ssRes / ssTot).toFixed(2)) : 0;
+
+  const annualizedSlope = slope * 252;
+  const slopeLabel: "haussière" | "baissière" | "neutre" =
+    annualizedSlope > 0.05 ? "haussière" :
+    annualizedSlope < -0.05 ? "baissière" : "neutre";
+
+  const periodYears = parseFloat((n / 252).toFixed(1));
+
+  return {
+    deviation: parseFloat(deviation.toFixed(1)),
+    r2,
+    slope: slopeLabel,
+    periodYears,
+    trendPrice: parseFloat(trendPrice.toFixed(2)),
+  };
+}
+
+function calcHiddenDivergence(
+  closes: (number|null)[],
+  macdData: { macd: number; signal: number; hist: number } | null
+): { type: "bull" | "bear"; strength: "strong" | "moderate" } | null {
+  if (!macdData) return null;
+  const c = closes.filter((v): v is number => v != null && v > 0);
+  if (c.length < 60) return null;
+
+  const prices = c.slice(-60);
+  const n = prices.length;
+
+  const k12 = 2/13, k26 = 2/27;
+  let e12 = prices.slice(0,12).reduce((a,b)=>a+b)/12;
+  let e26 = prices.slice(0,26).reduce((a,b)=>a+b)/26;
+  for (let i=12; i<26; i++) e12 = prices[i]*k12 + e12*(1-k12);
+
+  const macdSeries: number[] = [];
+  for (let i=26; i<n; i++) {
+    e12 = prices[i]*k12 + e12*(1-k12);
+    e26 = prices[i]*k26 + e26*(1-k26);
+    macdSeries.push(e12 - e26);
+  }
+  if (macdSeries.length < 9) return null;
+
+  const findPivots = (arr: number[], type: "low" | "high", window = 5): number[] => {
+    const pivots: number[] = [];
+    for (let i = window; i < arr.length - window; i++) {
+      const slice = arr.slice(i - window, i + window + 1);
+      const val = arr[i];
+      if (type === "low"  && val === Math.min(...slice)) pivots.push(i);
+      if (type === "high" && val === Math.max(...slice)) pivots.push(i);
+    }
+    return pivots.slice(-3);
+  };
+
+  const pricePivotsLow  = findPivots(prices, "low");
+  const pricePivotsHigh = findPivots(prices, "high");
+  const macdPivotsLow   = findPivots(macdSeries, "low");
+  const macdPivotsHigh  = findPivots(macdSeries, "high");
+
+  if (pricePivotsLow.length >= 2 && macdPivotsLow.length >= 2) {
+    const p1 = pricePivotsLow[pricePivotsLow.length - 2];
+    const p2 = pricePivotsLow[pricePivotsLow.length - 1];
+    const m1 = macdPivotsLow[macdPivotsLow.length - 2];
+    const m2 = macdPivotsLow[macdPivotsLow.length - 1];
+    if (prices[p2] > prices[p1] && macdSeries[m2] < macdSeries[m1]) {
+      const gap = Math.abs(macdSeries[m2] - macdSeries[m1]);
+      return { type: "bull", strength: gap > 0.5 ? "strong" : "moderate" };
+    }
+  }
+
+  if (pricePivotsHigh.length >= 2 && macdPivotsHigh.length >= 2) {
+    const p1 = pricePivotsHigh[pricePivotsHigh.length - 2];
+    const p2 = pricePivotsHigh[pricePivotsHigh.length - 1];
+    const m1 = macdPivotsHigh[macdPivotsHigh.length - 2];
+    const m2 = macdPivotsHigh[macdPivotsHigh.length - 1];
+    if (prices[p2] < prices[p1] && macdSeries[m2] > macdSeries[m1]) {
+      const gap = Math.abs(macdSeries[m2] - macdSeries[m1]);
+      return { type: "bear", strength: gap > 0.5 ? "strong" : "moderate" };
+    }
+  }
+
+  return null;
+}
+
 // ── ENCART SIGNAUX TECHNIQUES ─────────────────────────────────
 interface TechSignal {
   emoji: string;
@@ -1084,6 +1199,7 @@ function computeFinalScore(
   metrics: ReturnType<typeof buildMetrics>,
   context: MarketContext,
   techSignals: TechSignal[] = [],
+  closes: (number|null)[] = [],
 ): FinalScoreResult {
   // ── Score de base selon le contexte ──────────────────────────
   let base: number;
@@ -1244,6 +1360,25 @@ function computeFinalScore(
     }
   }
 
+  // ── Modificateur régression linéaire ─────────────────────────
+  const reg = calcRegressionDeviation(closes);
+  if (reg != null && reg.r2 >= 0.4) {
+    const d = reg.deviation;
+    const scoreRegression: number =
+      d > 50  ? 2 :
+      d > 30  ? 3 :
+      d > 10  ? 5 :
+      d >= -10 ? 7 :
+      d >= -20 ? 8 : 9;
+    // Poids 0.175 : delta centré sur 7 (neutre), ramené à une contribution mod
+    const regMod = parseFloat(((scoreRegression - 7) * 0.175).toFixed(2));
+    if (regMod !== 0) {
+      mod += regMod;
+      const sign = regMod > 0 ? "+" : "";
+      modifiers.push(`${sign}${regMod} Régression linéaire — prix ${d >= 0 ? "+" : ""}${d.toFixed(0)}% / tendance (R²=${reg.r2.toFixed(2)})`);
+    }
+  }
+
   const score = parseFloat(Math.max(1, Math.min(10, base + mod)).toFixed(1));
 
   // ── Mise à jour fundamentalConfirm sur le contexte ───────────
@@ -1370,6 +1505,35 @@ function computeTechSignals(
           example:`Le MACD (${macd.macd}) vient de passer sous sa ligne de signal (${macd.signal}). Premier signe d'affaiblissement du momentum — surveiller si la tendance se confirme dans les prochaines séances.` } });
   }
 
+  // DIVERGENCE CACHÉE
+  const hiddenDiv = calcHiddenDivergence(closes, macd);
+  const hiddenDivEdu = {
+    concept: "La divergence cachée se produit quand le momentum (MACD) et le prix évoluent en sens contraire lors d'une correction dans une tendance. Contrairement à la divergence classique, elle signale que la tendance de fond est mature et qu'un essoufflement est en cours.",
+    howToRead: "Divergence cachée haussière : le prix fait un creux plus haut (correction saine) mais le MACD fait un creux plus bas (momentum s'affaiblit) — tendance haussière mature, attendre un meilleur point d'entrée. Divergence cachée baissière : l'inverse — tendance baissière mature, éviter les achats.",
+  };
+  if (hiddenDiv != null) {
+    if (hiddenDiv.type === "bull")
+      signals.push({ emoji:"🟡", color:"#f59e0b",
+        plain: hiddenDiv.strength === "strong"
+          ? "Divergence cachée haussière forte — tendance mature, momentum en perte de vitesse"
+          : "Divergence cachée haussière — correction en cours dans une tendance haussière",
+        label:`Div. cachée haussière (${hiddenDiv.strength === "strong" ? "forte" : "modérée"})`,
+        detail:"Prix : creux croissants · MACD : creux décroissants · Signal de maturité de tendance",
+        strength:"neutral",
+        edu: { ...hiddenDivEdu,
+          example:`Le prix fait des creux de plus en plus hauts (correction saine) mais le MACD montre des creux de plus en plus bas. La tendance haussière reste intacte mais le momentum s'essouffle — un meilleur point d'entrée pourrait se présenter après consolidation.` } });
+    else
+      signals.push({ emoji:"🟡", color:"#f97316",
+        plain: hiddenDiv.strength === "strong"
+          ? "Divergence cachée baissière forte — rebond sur tendance baissière mature"
+          : "Divergence cachée baissière — rebond technique dans une tendance baissière",
+        label:`Div. cachée baissière (${hiddenDiv.strength === "strong" ? "forte" : "modérée"})`,
+        detail:"Prix : sommets décroissants · MACD : sommets croissants · Signal de rebond technique",
+        strength:"bear",
+        edu: { ...hiddenDivEdu,
+          example:`Le prix fait des sommets de plus en plus bas (tendance baissière confirmée) mais le MACD monte — simple rebond technique. La pression vendeuse reste dominante, éviter les achats impulsifs sur ce rebond.` } });
+  }
+
   // Volume
   const volEduBase = {
     concept: "Le volume représente le nombre de titres échangés sur une séance. Un pic de volume inhabituel indique souvent qu'un acteur important (fonds, institution) est en train d'acheter ou de vendre massivement.",
@@ -1457,38 +1621,6 @@ function computeTechSignals(
     }
   }
 
-  // ── Déviation à la tendance log-linéaire ─────────────────────
-  const trendDev = calcTrendDeviation(closes);
-  const trendEdu = {
-    concept: "La régression log-linéaire trace une droite de tendance sur toute la période analysée. Elle modélise la croissance naturelle du prix en supposant une progression exponentielle dans le temps.",
-    howToRead: "Un écart positif élevé signifie que le prix est bien au-dessus de sa tendance historique — signe de surchauffe ou de bulle. Un écart négatif indique que le prix est sous sa tendance — possible opportunité si les fondamentaux le soutiennent.",
-  };
-  if (trendDev != null && trendDev.r2 >= 0.4) {
-    const dev = trendDev.deviation;
-    if (dev > 30) {
-      signals.push({ emoji:"📈", color:"#ef4444",
-        plain:`Prix ${dev.toFixed(0)}% au-dessus de sa tendance historique — zone de surchauffe`,
-        label:`Déviation tendance +${dev.toFixed(0)}%`,
-        detail:`Régression log-linéaire · Tendance à ${trendDev.trendPrice} · R²=${trendDev.r2}`,
-        strength:"bear", edu: { ...trendEdu,
-          example:`Le prix est ${dev.toFixed(0)}% au-dessus de sa trajectoire historique. Ce niveau de déviation est souvent suivi d'un retour vers la moyenne, rapide ou progressif.` } });
-    } else if (dev > 15) {
-      signals.push({ emoji:"📊", color:"#f59e0b",
-        plain:`Prix ${dev.toFixed(0)}% au-dessus de sa tendance — vigilance`,
-        label:`Déviation tendance +${dev.toFixed(0)}%`,
-        detail:`Régression log-linéaire · Tendance à ${trendDev.trendPrice} · R²=${trendDev.r2}`,
-        strength:"neutral", edu: { ...trendEdu,
-          example:`${dev.toFixed(0)}% au-dessus de la tendance — pas encore critique mais extensible. Un retour vers la moyenne est toujours possible.` } });
-    } else if (dev < -20) {
-      signals.push({ emoji:"📉", color:"#22c55e",
-        plain:`Prix ${Math.abs(dev).toFixed(0)}% sous sa tendance — possible opportunité`,
-        label:`Déviation tendance ${dev.toFixed(0)}%`,
-        detail:`Régression log-linéaire · Tendance à ${trendDev.trendPrice} · R²=${trendDev.r2}`,
-        strength:"bull", edu: { ...trendEdu,
-          example:`Le prix est ${Math.abs(dev).toFixed(0)}% sous sa tendance de long terme. Si les fondamentaux le soutiennent, c'est souvent le signe d'une opportunité de retour à la moyenne.` } });
-    }
-  }
-
   // ── ADX ──────────────────────────────────────────────────────
   const adxEdu = {
     concept: "L'ADX (Average Directional Index) mesure la force d'une tendance, indépendamment de sa direction. Il va de 0 à 100.",
@@ -1563,6 +1695,60 @@ function computeTechSignals(
         strength:"bull", edu: { ...divEdu,
           example:`Le prix a fait de nouveaux creux mais le RSI se redresse. Cette divergence ${div.strength === "strong" ? "forte" : "modérée"} indique que les vendeurs s'épuisent — signal précurseur d'un rebond.` } });
     }
+  }
+
+  // RÉGRESSION LINÉAIRE
+  const reg = calcRegressionDeviation(closes);
+  const regEduBase = {
+    concept: "La régression linéaire trace la 'tendance de fond' des prix sur toute la période disponible. Elle permet de savoir si le prix actuel est cher ou bon marché par rapport à sa trajectoire historique normale.",
+    howToRead: "Une déviation positive = le prix est au-dessus de sa tendance normale. Négative = en dessous. Le R² indique la fiabilité : proche de 1 = tendance claire, proche de 0 = trop de bruit pour conclure.",
+  };
+  if (reg != null && reg.r2 >= 0.4) {
+    const d = reg.deviation;
+    const r2str = reg.r2.toFixed(2);
+    const periodStr = reg.periodYears > 1 ? `${reg.periodYears} ans` : `${Math.round(reg.periodYears * 12)} mois`;
+    if (d > 50)
+      signals.push({ emoji:"🔴", color:"#ef4444",
+        plain:`Prix ${d.toFixed(0)}% au-dessus de sa tendance historique — excès marqué`,
+        label:`Régression +${d.toFixed(0)}%`, detail:`R²=${r2str} · Tendance ${reg.slope} sur ${periodStr} · Prix théorique : ${fmt(reg.trendPrice)}`,
+        strength:"bear", edu: { ...regEduBase,
+          example:`Sur ${periodStr} de données, la tendance de fond indique un prix théorique de ${fmt(reg.trendPrice)}. Le prix actuel est ${d.toFixed(0)}% au-dessus — un écart de cette ampleur précède souvent un retour vers la moyenne.` } });
+    else if (d > 30)
+      signals.push({ emoji:"🔴", color:"#f97316",
+        plain:`Prix ${d.toFixed(0)}% au-dessus de sa tendance — zone de surchauffe`,
+        label:`Régression +${d.toFixed(0)}%`, detail:`R²=${r2str} · Tendance ${reg.slope} sur ${periodStr} · Prix théorique : ${fmt(reg.trendPrice)}`,
+        strength:"bear", edu: { ...regEduBase,
+          example:`Le prix actuel dépasse de ${d.toFixed(0)}% sa trajectoire historique (R²=${r2str}). Zone de surchauffe — pas forcément un signal de vente immédiat, mais la marge de sécurité est faible.` } });
+    else if (d > 10)
+      signals.push({ emoji:"🟡", color:"#f59e0b",
+        plain:`Prix légèrement au-dessus de sa tendance (+${d.toFixed(0)}%) — surveiller`,
+        label:`Régression +${d.toFixed(0)}%`, detail:`R²=${r2str} · Tendance ${reg.slope} sur ${periodStr} · Prix théorique : ${fmt(reg.trendPrice)}`,
+        strength:"neutral", edu: { ...regEduBase,
+          example:`Le prix est ${d.toFixed(0)}% au-dessus de sa tendance de fond (${periodStr}, R²=${r2str}). Légère surchauffe — tendance à surveiller mais pas encore alarmante.` } });
+    else if (d >= -10)
+      signals.push({ emoji:"⚪", color:"#8b949e",
+        plain:`Prix aligné sur sa tendance historique (${d >= 0 ? "+" : ""}${d.toFixed(0)}%) — neutre`,
+        label:`Régression ${d >= 0 ? "+" : ""}${d.toFixed(0)}%`, detail:`R²=${r2str} · Tendance ${reg.slope} sur ${periodStr} · Prix théorique : ${fmt(reg.trendPrice)}`,
+        strength:"neutral", edu: { ...regEduBase,
+          example:`Le prix actuel est proche de sa trajectoire historique normale (écart de ${d.toFixed(0)}% sur ${periodStr}, R²=${r2str}). Ni surévalué ni sous-évalué techniquement.` } });
+    else if (d >= -20)
+      signals.push({ emoji:"🟢", color:"#22c55e",
+        plain:`Prix légèrement sous sa tendance (${d.toFixed(0)}%) — opportunité potentielle`,
+        label:`Régression ${d.toFixed(0)}%`, detail:`R²=${r2str} · Tendance ${reg.slope} sur ${periodStr} · Prix théorique : ${fmt(reg.trendPrice)}`,
+        strength:"bull", edu: { ...regEduBase,
+          example:`Le prix est ${Math.abs(d).toFixed(0)}% sous sa tendance de fond (${periodStr}, R²=${r2str}). Zone historiquement favorable pour les acheteurs long terme.` } });
+    else
+      signals.push({ emoji:"🟢", color:"#22c55e",
+        plain:`Prix ${Math.abs(d).toFixed(0)}% sous sa tendance historique — décote significative`,
+        label:`Régression ${d.toFixed(0)}%`, detail:`R²=${r2str} · Tendance ${reg.slope} sur ${periodStr} · Prix théorique : ${fmt(reg.trendPrice)}`,
+        strength:"bull", edu: { ...regEduBase,
+          example:`Le prix est ${Math.abs(d).toFixed(0)}% sous sa trajectoire normale (${periodStr}, R²=${r2str}). Décote historique importante — signal d'accumulation si les fondamentaux restent solides.` } });
+  } else if (reg != null && reg.r2 < 0.4) {
+    signals.push({ emoji:"⚪", color:"#8b949e",
+      plain:`Tendance historique peu fiable — trop de volatilité pour conclure`,
+      label:`Régression R²=${reg.r2.toFixed(2)}`, detail:`R² insuffisant · Pas de signal directionnel fiable sur ${reg.periodYears > 1 ? reg.periodYears + " ans" : Math.round(reg.periodYears * 12) + " mois"}`,
+      strength:"neutral", edu: { ...regEduBase,
+        example:`Le R² est de ${reg.r2.toFixed(2)} — la trajectoire historique est trop irrégulière pour qu'une régression soit significative. Les prix évoluent sans tendance claire.` } });
   }
 
   return { signals, sinewave: sw };
@@ -1962,9 +2148,9 @@ function Panel({ icon, title, badge, badge2, badge3, rightLabel, rightValue, con
       >
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <span style={{
-            fontSize:      10,
+            fontSize:      12,
             fontWeight:    800,
-            color:         THEME.textMuted,
+            color:         THEME.textPrimary,
             textTransform: "uppercase",
             letterSpacing: 2,
           }}>
@@ -2071,16 +2257,40 @@ function TechnicalPanel({ precomputed, context }: { precomputed: { signals: Tech
     return "Signaux techniques mixtes — pas de biais directionnel clair à ce stade.";
   })();
 
+  const bullSignals    = signals.filter(s => s.strength === "bull");
+  const bearSignals    = signals.filter(s => s.strength === "bear");
+  const neutralSignals = signals.filter(s => s.strength === "neutral");
+
+  const SignalRow = ({ s, idx }: { s: TechSignal; idx: number }) => (
+    <div style={{ display:"flex", alignItems:"flex-start", gap:8, padding:"8px 10px", background:THEME.bgCardAlt, borderRadius:6, borderLeft:`2px solid ${s.color}` }}>
+      <span style={{ fontSize:12, flexShrink:0 }}>{s.emoji}</span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: s.color, lineHeight: 1.4 }}>
+          {s.plain}
+        </div>
+        <div style={{ fontSize: 9, color: THEME.textSecondary,
+                      fontFamily: "'IBM Plex Mono',monospace", marginTop: 3 }}>
+          {s.label} · {s.detail}
+        </div>
+      </div>
+      <EduTooltip edu={s.edu} id={`tech-${idx}`}/>
+    </div>
+  );
+
   return (
     <Panel
       icon="📊"
       title="Signaux oscillateurs"
-      badge2={{ label: `${bulls}↑ · ${bears}↓ / ${total}`, color: THEME.textSecondary }}
+      badge2={{ label: `${bulls} +`, color: THEME.scoreGreen }}
+      badge3={{ label: `${bears} -`, color: THEME.scoreRed }}
+      rightLabel={`/ ${total}`}
       defaultOpen={true}
     >
-      <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+      <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+
+        {/* ── Unité de temps optimale ── */}
         {sinewave && (
-          <div style={{ background:THEME.bgCard, borderRadius:8, padding:"10px 14px", borderLeft:`3px solid ${THEME.accent}`, marginBottom:2 }}>
+          <div style={{ background:THEME.bgCard, borderRadius:8, padding:"10px 14px", borderLeft:`3px solid ${THEME.accent}` }}>
             <div style={{ fontSize:9, color:THEME.accent, textTransform:"uppercase", letterSpacing:1.5, fontWeight:800, marginBottom:5 }}>
               🕐 Unité de temps optimale
             </div>
@@ -2089,33 +2299,92 @@ function TechnicalPanel({ precomputed, context }: { precomputed: { signals: Tech
                 <div style={{ fontSize:12, fontWeight:800, color:THEME.textPrimary }}>{sinewave.optimalUT.label}</div>
                 <div style={{ fontSize:10, color:THEME.textSecondary, marginTop:2 }}>{sinewave.optimalUT.horizon}</div>
               </div>
-              <div style={{ flex:1, fontSize:10, color:"#556", lineHeight:1.6, borderLeft:`1px solid ${THEME.borderMid}`, paddingLeft:14 }}>
+              <div style={{ flex:1, fontSize:10, color:THEME.textSecondary, lineHeight:1.6, borderLeft:`1px solid ${THEME.borderMid}`, paddingLeft:14 }}>
                 {sinewave.optimalUT.note}
               </div>
             </div>
           </div>
         )}
-        {signals.map((s, i) => (
-          <div key={i} style={{ display:"flex", alignItems:"flex-start", gap:10, padding:"10px 12px", background:THEME.bgCard, borderRadius:8, borderLeft:`3px solid ${s.color}` }}>
-            <span style={{ fontSize:13, flexShrink:0, marginTop:1 }}>{s.emoji}</span>
-            <div style={{ flex:1, minWidth:0 }}>
-              <div style={{ fontSize:13, fontWeight:600, color:THEME.textPrimary, lineHeight:1.4 }}>{s.plain}</div>
-              <div style={{ fontSize:10, color:s.color, fontFamily:"'IBM Plex Mono',monospace", marginTop:4, opacity:1 }}>
-                {s.label} · {s.detail}
+
+        {/* ── Grille haussier / baissier ── */}
+        {(bullSignals.length > 0 || bearSignals.length > 0) ? (
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+            {/* Colonne haussière */}
+            <div>
+              <div style={{ fontSize:10, color:THEME.scoreGreen, textTransform:"uppercase", letterSpacing:1.2, fontWeight:800, marginBottom:6 }}>
+                ✅ Points positifs ({bullSignals.length})
+              </div>
+              <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
+                {bullSignals.length === 0
+                  ? <div style={{ fontSize:10, color:THEME.textMuted, padding:"6px 0" }}>—</div>
+                  : bullSignals.map((s, i) => <SignalRow key={i} s={s} idx={i} />)
+                }
               </div>
             </div>
-            <EduTooltip edu={s.edu} id={`tech-${i}`}/>
+            {/* Colonne baissière */}
+            <div>
+              <div style={{ fontSize:10, color:THEME.scoreRed, textTransform:"uppercase", letterSpacing:1.2, fontWeight:800, marginBottom:6 }}>
+                ⚠️ Points négatifs ({bearSignals.length})
+              </div>
+              <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
+                {bearSignals.length === 0
+                  ? <div style={{ fontSize:10, color:THEME.textMuted, padding:"6px 0" }}>—</div>
+                  : bearSignals.map((s, i) => <SignalRow key={i} s={s} idx={bullSignals.length + i} />)
+                }
+              </div>
+            </div>
           </div>
-        ))}
+        ) : (
+          <div style={{ fontSize:12, color:THEME.textMuted, padding:"8px 0" }}>
+            Aucun signal directionnel fort à ce stade.
+          </div>
+        )}
+
+        {/* ── Contexte (signaux neutres) ── */}
+        {neutralSignals.length > 0 && (
+          <div style={{ borderTop:`1px solid ${THEME.borderSubtle}`, paddingTop:8 }}>
+            <div style={{ fontSize:9, color:"#a78bfa", textTransform:"uppercase", letterSpacing:1.2, fontWeight:800, marginBottom:6 }}>
+              Contexte ({neutralSignals.length})
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+              {neutralSignals.map((s, i) => (
+                <div key={i} style={{
+                  display: "flex", alignItems: "center", gap: 8,
+                  padding: "7px 10px",
+                  background: THEME.bgCard,
+                  borderRadius: 8,
+                  borderLeft: "3px solid #a78bfa",
+                }}>
+                  <span style={{ fontSize: 12, flexShrink: 0 }}>{s.emoji}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: THEME.textPrimary,
+                                  whiteSpace: "nowrap", overflow: "hidden",
+                                  textOverflow: "ellipsis" }}>
+                      {s.plain}
+                    </div>
+                    <div style={{ fontSize: 9, color: THEME.textMuted,
+                                  fontFamily: "'IBM Plex Mono',monospace", marginTop: 2 }}>
+                      {s.label}
+                    </div>
+                  </div>
+                  <EduTooltip edu={s.edu} id={`tech-ctx-${i}`}/>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ── Synthèse ── */}
         {synthPhrase && (
-          <div style={{ marginTop:6, padding:"10px 14px", background:THEME.bgCard, borderRadius:8, borderLeft:"3px solid #4a90d9" }}>
+          <div style={{ padding:"10px 14px", background:THEME.bgCard, borderRadius:8, borderLeft:"3px solid #4a90d9" }}>
             <div style={{ fontSize:9, color:"#4a90d9", textTransform:"uppercase", letterSpacing:1.5, fontWeight:800, marginBottom:5 }}>
-              Synthèse — {bulls}↑ {bears}↓ / {total} signaux
+              Synthèse — {bulls} positif{bulls > 1 ? "s" : ""} · {bears} négatif{bears > 1 ? "s" : ""} / {total}
             </div>
             <div style={{ fontSize:11, color:THEME.textSecondary, lineHeight:1.7 }}>{synthPhrase}</div>
           </div>
         )}
-        <div style={{ fontSize:9, color:THEME.textMuted, marginTop:6 }}>
+
+        <div style={{ fontSize:9, color:THEME.textMuted }}>
           RSI/MACD calculés sur les prix de clôture · Moyennes mobiles sur données journalières (ou hebdomadaires si insuffisant)
         </div>
       </div>
@@ -2152,7 +2421,7 @@ function SituationalPanel({ metrics, closes }: { metrics: any; closes?: (number|
       return "Risque de liquidité identifié — capacité à honorer les engagements court terme à vérifier.";
     if (hasDecote)
       return "Décote sur les actifs détectée — potentiel de revalorisation si les fondamentaux opérationnels se confirment.";
-    return `${n} signal${n > 1 ? "s" : ""} situationnel${n > 1 ? "s" : ""} identifié${n > 1 ? "s" : ""} — consulter le détail ci-dessus.`;
+    return `${n > 1 ? "signaux" : "signal"} situationnel${n > 1 ? "s" : ""} identifié${n > 1 ? "s" : ""} — consulter le détail ci-dessus.`;
   })();
 
   return (
@@ -2181,7 +2450,7 @@ function SituationalPanel({ metrics, closes }: { metrics: any; closes?: (number|
         {sitPhrase && (
           <div style={{ marginTop:10, padding:"10px 14px", background:THEME.bgCard, borderRadius:8, borderLeft:`3px solid ${ctx.profileColor}` }}>
             <div style={{ fontSize:9, color:ctx.profileColor, textTransform:"uppercase", letterSpacing:1.5, fontWeight:800, marginBottom:5 }}>
-              Synthèse — {n} signal{n > 1 ? "s" : ""}
+              Synthèse — {n} {n > 1 ? "signaux" : "signal"}
             </div>
             <div style={{ fontSize:11, color:THEME.textSecondary, lineHeight:1.7 }}>{sitPhrase}</div>
           </div>
@@ -3546,7 +3815,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
     : { signals: [], sinewave: null };
 
   const finalScoreResult = marketCtx
-    ? computeFinalScore(metrics, marketCtx, techComputed.signals)
+    ? computeFinalScore(metrics, marketCtx, techComputed.signals, closes)
     : null;
   const finalScore = finalScoreResult?.score ?? null;
   const v = getVerdict(finalScore);
