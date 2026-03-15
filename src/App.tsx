@@ -3,6 +3,34 @@
 // ════════════════════════════════════════════════════════════════
 import { useState, useCallback, useRef, useEffect } from "react";
 
+const THEME = {
+  // Fonds
+  bgPage:       "#080d14",
+  bgHeader:     "#090f1a",
+  bgPanel:      "#0d1420",
+  bgCard:       "#111825",
+  bgCardAlt:    "#151f30",
+
+  // Bordures
+  borderSubtle: "#141e2e",
+  borderPanel:  "#1e2a3a",
+  borderMid:    "#2a3548",
+
+  // Texte — hiérarchie 3 niveaux
+  textPrimary:   "#e6edf3",
+  textSecondary: "#94a3b8",
+  textMuted:     "#64748b",
+
+  // Accent
+  accent:  "#f0a500",
+
+  // Scores
+  scoreGreen:  "#22c55e",
+  scoreAmber:  "#f59e0b",
+  scoreRed:    "#ef4444",
+  scoreOrange: "#f97316",
+} as const;
+
 const EXCHANGE_CURRENCY: Record<string, string> = {
   ".PA":"EUR",".DE":"EUR",".AS":"EUR",".MI":"EUR",".MC":"EUR",
   ".BR":"EUR",".LS":"EUR",".L":"GBP",".IL":"GBX",".T":"JPY",
@@ -24,7 +52,7 @@ const TYPE_BADGE: Record<string, { label: string; color: string; bg: string }> =
   CURRENCY:       { label:"Forex",  color:"#34d399", bg:"#0a2e1a" },
 };
 const getBadge = (t?: string) =>
-  TYPE_BADGE[t?.toUpperCase() ?? ""] || { label: t || "—", color: "#8b949e", bg: "#1a2235" };
+  TYPE_BADGE[t?.toUpperCase() ?? ""] || { label: t || "—", color: "#94a3b8", bg: "#1a2235" };
 
 // ════════════════════════════════════════════════════════════════
 // BLOC 2 — HELPERS
@@ -85,16 +113,18 @@ interface MacroContext {
   error?:        string;
 }
 
-type MacroZone = "us" | "eur" | "gbp" | "jpy" | "other";
+type MacroZone = "us" | "eur" | "gbp" | "jpy" | "hkd" | "other";
 
 function detectZone(ticker: string): MacroZone {
   const eur = [".PA", ".DE", ".AS", ".MI", ".MC", ".BR", ".LS", ".HE", ".WA", ".IS"];
   const gbp = [".L", ".IL"];
   const jpy = [".T"];
+  const hkd = [".HK"];
   const upper = ticker.toUpperCase();
   if (eur.some(s => upper.endsWith(s))) return "eur";
   if (gbp.some(s => upper.endsWith(s))) return "gbp";
   if (jpy.some(s => upper.endsWith(s))) return "jpy";
+  if (hkd.some(s => upper.endsWith(s))) return "hkd";
   if (!upper.includes(".")) return "us";
   return "other";
 }
@@ -128,7 +158,7 @@ const CHART_RANGES: Record<string, { range: string; interval: string; label: str
 type SearchMode = "all" | "equity" | "etf" | "futures" | "forex" | "crypto" | "index" | "bond";
 
 const SEARCH_MODES: { key: SearchMode; label: string; yfTypes?: string[]; color: string }[] = [
-  { key: "all",     label: "Tout",             color: "#8b949e" },
+  { key: "all",     label: "Tout",             color: "#94a3b8" },
   { key: "equity",  label: "Actions",          color: "#60a5fa", yfTypes: ["EQUITY"] },
   { key: "etf",     label: "Fonds",            color: "#a78bfa", yfTypes: ["ETF", "MUTUALFUND"] },
   { key: "futures", label: "Contrats à terme", color: "#fb923c", yfTypes: ["FUTURE"] },
@@ -276,6 +306,7 @@ const ZONE_INDEX: Record<string, { symbol: string; label: string }> = {
   eur: { symbol: "^STOXX50E", label: "Euro Stoxx 50" },
   gbp: { symbol: "^FTSE",     label: "FTSE 100"      },
   jpy: { symbol: "^N225",     label: "Nikkei 225"    },
+  hkd: { symbol: "^HSI",      label: "Hang Seng"     },
 };
 
 const ZONE_TICKERS: Record<MacroZone, string> = {
@@ -283,6 +314,7 @@ const ZONE_TICKERS: Record<MacroZone, string> = {
   eur:   "^VIX · ^STOXX50E · ^TNX",
   gbp:   "^VIX · ^FTSE · ^TNX",
   jpy:   "^VIX · ^N225 · ^TNX",
+  hkd:   "^VIX · ^HSI · ^TNX",
   other: "^VIX · ^TNX",
 };
 
@@ -1732,27 +1764,35 @@ function computeSituationalContext(
 // ── TOOLTIP PÉDAGOGIQUE ────────────────────────────────────────
 const _eduSubscribers = new Set<(open: boolean) => void>();
 
-function EduTooltip({ edu, id: _id }: { edu: TechSignal["edu"]; id: string }) {
-  const [visible, setVisible] = useState(false);
-  const [bubblePos, setBubblePos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
-  const [bubbleW, setBubbleW] = useState(320);
-  const wrapperRef = useRef<HTMLDivElement>(null);
+interface TooltipContent {
+  title?: string;
+  sections: {
+    label: string;
+    text: string;
+    variant?: "default" | "good" | "bad" | "highlight";
+  }[];
+}
+
+function Tooltip({ content, id: _id }: { content: TooltipContent; id: string }) {
+  const [visible, setVisible]   = useState(false);
+  const [pos, setPos]           = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const [width, setWidth]       = useState(320);
+  const wrapperRef              = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    _eduSubscribers.add(setVisible);
-    return () => { _eduSubscribers.delete(setVisible); };
+    const sub = (open: boolean) => { if (!open) setVisible(false); };
+    _eduSubscribers.add(sub);
+    return () => { _eduSubscribers.delete(sub); };
   }, []);
 
-  // Fermeture au clic extérieur
   useEffect(() => {
     if (!visible) return;
     const handler = (e: MouseEvent) => {
-      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node))
         _eduSubscribers.forEach(s => s(false));
-      }
     };
     document.addEventListener("mousedown", handler);
-    return () => { document.removeEventListener("mousedown", handler); };
+    return () => document.removeEventListener("mousedown", handler);
   }, [visible]);
 
   const handleOpen = (e: React.MouseEvent) => {
@@ -1760,86 +1800,92 @@ function EduTooltip({ edu, id: _id }: { edu: TechSignal["edu"]; id: string }) {
     const next = !visible;
     _eduSubscribers.forEach(s => s(false));
     if (next) {
-      const BUBBLE_W = 320;
-      const BUBBLE_H = 320;
-      const MARGIN = 8;
+      const BUBBLE_W = 320, BUBBLE_H = 340, MARGIN = 8;
       const rect = wrapperRef.current?.getBoundingClientRect();
       if (rect) {
         const isMobile = window.innerWidth < 480;
         if (isMobile) {
-          setBubbleW(window.innerWidth - MARGIN * 2);
-          setBubblePos({ top: rect.bottom + MARGIN, left: MARGIN });
+          setWidth(window.innerWidth - MARGIN * 2);
+          setPos({ top: rect.bottom + MARGIN, left: MARGIN });
         } else {
           let left = rect.right + MARGIN;
-          let top = rect.top;
-          if (left + BUBBLE_W > window.innerWidth - MARGIN) {
-            left = rect.left - BUBBLE_W - MARGIN;
-          }
-          if (top + BUBBLE_H > window.innerHeight) {
-            top = window.innerHeight - BUBBLE_H - MARGIN;
-          }
+          let top  = rect.top;
+          if (left + BUBBLE_W > window.innerWidth - MARGIN) left = rect.left - BUBBLE_W - MARGIN;
+          if (top + BUBBLE_H > window.innerHeight) top = window.innerHeight - BUBBLE_H - MARGIN;
           if (top < MARGIN) top = MARGIN;
-          setBubbleW(BUBBLE_W);
-          setBubblePos({ top, left });
+          setWidth(BUBBLE_W);
+          setPos({ top, left });
         }
       }
       setVisible(true);
     }
   };
 
-  const bubbleStyle: React.CSSProperties = {
-    position: "fixed",
-    top: bubblePos.top,
-    left: bubblePos.left,
-    width: bubbleW,
-    background: "#0d1420",
-    border: "1px solid #2a3548",
-    borderRadius: 10,
-    padding: "14px 16px",
-    zIndex: 1000,
-    boxShadow: "0 8px 32px #000a",
-    fontSize: 11,
-    lineHeight: 1.7,
-    color: "#8b949e",
-  };
+  const variantColor = (v?: string) =>
+    v === "good"      ? THEME.scoreGreen  :
+    v === "bad"       ? THEME.scoreRed    :
+    v === "highlight" ? THEME.accent      :
+                        THEME.textSecondary;
 
   return (
-    <div ref={wrapperRef} style={{ position:"relative", display:"inline-flex", alignItems:"center", zIndex: visible ? 1000 : "auto" }}>
+    <div ref={wrapperRef} style={{ position: "relative", display: "inline-flex", alignItems: "center", zIndex: visible ? 1000 : "auto" }}>
       <button
         onClick={handleOpen}
         style={{
-          background: visible ? "#2a3548" : "#1a2235",
-          border: "1px solid #2a3548",
-          borderRadius: "50%",
+          background:    visible ? THEME.borderMid : THEME.bgCard,
+          border:        `1px solid ${THEME.borderMid}`,
+          borderRadius:  "50%",
           width: 18, height: 18,
-          cursor: "pointer",
-          fontSize: 10, fontWeight: 800,
-          color: "#8b949e",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          flexShrink: 0,
-          transition: "all .15s",
-          padding: 0,
+          cursor:        "pointer",
+          fontSize:      10, fontWeight: 800,
+          color:         THEME.textMuted,
+          display:       "flex", alignItems: "center", justifyContent: "center",
+          flexShrink:    0,
+          transition:    "all .15s",
+          padding:       0,
         }}
-        title="Comprendre cet indicateur"
+        title="En savoir plus"
       >?</button>
       {visible && (
-        <div style={bubbleStyle}>
-          <div style={{ color:"#f0a500", fontWeight:700, fontSize:12, marginBottom:8 }}>📚 Comprendre cet indicateur</div>
-          <div style={{ marginBottom:10 }}>
-            <div style={{ color:"#b0bec5", fontWeight:600, marginBottom:3 }}>C'est quoi ?</div>
-            {edu.concept}
-          </div>
-          <div style={{ marginBottom:10 }}>
-            <div style={{ color:"#b0bec5", fontWeight:600, marginBottom:3 }}>Comment le lire ?</div>
-            {edu.howToRead}
-          </div>
-          <div style={{ background:"#111825", borderRadius:6, padding:"8px 10px", borderLeft:"3px solid #f0a500" }}>
-            <div style={{ color:"#f0a500", fontWeight:600, marginBottom:3 }}>Dans ce cas précis</div>
-            {edu.example}
-          </div>
+        <div style={{
+          position:     "fixed",
+          top:          pos.top,
+          left:         pos.left,
+          width,
+          background:   THEME.bgPanel,
+          border:       `1px solid ${THEME.borderMid}`,
+          borderRadius: 10,
+          padding:      "14px 16px",
+          zIndex:       1000,
+          boxShadow:    "0 8px 32px #000a",
+          fontSize:     11,
+          lineHeight:   1.7,
+          color:        THEME.textSecondary,
+        }}>
+          {content.title && (
+            <div style={{ color: THEME.accent, fontWeight: 700, fontSize: 12, marginBottom: 8 }}>
+              📚 {content.title}
+            </div>
+          )}
+          {content.sections.map((sec, i) => (
+            <div key={i} style={{
+              marginBottom: i < content.sections.length - 1 ? 10 : 0,
+              background:   sec.variant === "highlight" ? THEME.bgCard : "transparent",
+              borderLeft:   sec.variant === "highlight" ? `3px solid ${THEME.accent}` : "none",
+              padding:      sec.variant === "highlight" ? "8px 10px" : "0",
+              borderRadius: sec.variant === "highlight" ? 6 : 0,
+            }}>
+              <div style={{ color: variantColor(sec.variant), fontWeight: 600, marginBottom: 3 }}>
+                {sec.label}
+              </div>
+              <div style={{ color: sec.variant === "highlight" ? THEME.textSecondary : THEME.textSecondary }}>
+                {sec.text}
+              </div>
+            </div>
+          ))}
           <button
             onClick={e => { e.stopPropagation(); _eduSubscribers.forEach(s => s(false)); }}
-            style={{ marginTop:10, fontSize:9, color:"#445", background:"none", border:"none", cursor:"pointer", padding:0 }}
+            style={{ marginTop: 10, fontSize: 9, color: THEME.textMuted, background: "none", border: "none", cursor: "pointer", padding: 0 }}
           >▲ fermer</button>
         </div>
       )}
@@ -1847,72 +1893,115 @@ function EduTooltip({ edu, id: _id }: { edu: TechSignal["edu"]; id: string }) {
   );
 }
 
+function EduTooltip({ edu, id }: { edu: TechSignal["edu"]; id: string }) {
+  const content: TooltipContent = {
+    title: "Comprendre cet indicateur",
+    sections: [
+      { label: "C'est quoi ?",      text: edu.concept,   variant: "default"   },
+      { label: "Comment le lire ?", text: edu.howToRead, variant: "default"   },
+      { label: "Dans ce cas précis", text: edu.example,  variant: "highlight" },
+    ],
+  };
+  return <Tooltip content={content} id={id} />;
+}
+
 // ── TOOLTIP MÉTRIQUE FONDAMENTALE ────────────────────────────
 function MetricTooltip({ edu }: { edu: MetricProps["edu"] }) {
-  const [visible, setVisible] = useState(false);
   if (!edu) return null;
+  const content: TooltipContent = {
+    title: "Comprendre cet indicateur",
+    sections: [
+      { label: "C'est quoi ?",      text: edu.concept,  variant: "default" },
+      { label: "Comment le lire ?", text: edu.howToRead, variant: "default" },
+      { label: "✅ Bon signe",      text: edu.good,     variant: "good"    },
+      { label: "⚠️ Mauvais signe", text: edu.bad,       variant: "bad"     },
+    ],
+  };
+  return <Tooltip content={content} id="metric" />;
+}
+
+// ── COMPOSANT PANEL RÉUTILISABLE ──────────────────────────────
+interface PanelProps {
+  icon:         string;
+  title:        string;
+  badge?:       { label: string; color: string };
+  badge2?:      { label: string; color: string };
+  rightLabel?:  string;
+  borderColor?: string;
+  children:     React.ReactNode;
+  defaultOpen?: boolean;
+}
+
+function Panel({ icon, title, badge, badge2, rightLabel, borderColor, children, defaultOpen = true }: PanelProps) {
+  const [open, setOpen] = useState(defaultOpen);
+  const border = borderColor ? `1px solid ${borderColor}33` : `1px solid ${THEME.borderPanel}`;
   return (
-    <div style={{ position:"relative", display:"inline-flex", alignItems:"center" }}>
-      <button
-        onClick={e => { e.stopPropagation(); setVisible(v => !v); }}
+    <div style={{
+      background:   THEME.bgPanel,
+      border,
+      borderRadius: 12,
+      padding:      "14px 18px",
+      marginBottom: 10,
+    }}>
+      <div
+        onClick={() => setOpen(o => !o)}
         style={{
-          background: visible ? "#2a3548" : "#1a2235",
-          border: "1px solid #2a3548",
-          borderRadius: "50%",
-          width: 18, height: 18,
-          cursor: "pointer",
-          fontSize: 10, fontWeight: 800,
-          color: "#8b949e",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          flexShrink: 0,
-          transition: "all .15s",
-          padding: 0,
+          display:        "flex",
+          alignItems:     "center",
+          justifyContent: "space-between",
+          cursor:         "pointer",
+          marginBottom:   open ? 12 : 0,
         }}
-        title="Comprendre cet indicateur"
-      >?</button>
-      {visible && (
-        <div style={{
-          position: "absolute",
-          top: 24, right: 0,
-          background: "#0d1420",
-          border: "1px solid #2a3548",
-          borderRadius: 10,
-          padding: "14px 16px",
-          width: 300,
-          zIndex: 100,
-          boxShadow: "0 8px 32px #000a",
-          fontSize: 11,
-          lineHeight: 1.7,
-          color: "#8b949e",
-        }}>
-          <div style={{ color:"#f0a500", fontWeight:700, fontSize:12, marginBottom:8 }}>📚 Comprendre cet indicateur</div>
-          <div style={{ marginBottom:10 }}>
-            <div style={{ color:"#b0bec5", fontWeight:600, marginBottom:3 }}>C'est quoi ?</div>
-            {edu.concept}
-          </div>
-          <div style={{ marginBottom:10 }}>
-            <div style={{ color:"#b0bec5", fontWeight:600, marginBottom:3 }}>Comment le lire ?</div>
-            {edu.howToRead}
-          </div>
-          <div style={{ background:"#22c55e0d", borderLeft:"3px solid #22c55e55", padding:"7px 10px", borderRadius:4, marginBottom:6, fontSize:11, color:"#22c55e", lineHeight:1.6 }}>
-            ✅ {edu.good}
-          </div>
-          <div style={{ background:"#ef44440d", borderLeft:"3px solid #ef444455", padding:"7px 10px", borderRadius:4, fontSize:11, color:"#ef4444", lineHeight:1.6 }}>
-            ⚠️ {edu.bad}
-          </div>
-          <button
-            onClick={e => { e.stopPropagation(); setVisible(false); }}
-            style={{ marginTop:10, fontSize:9, color:"#445", background:"none", border:"none", cursor:"pointer", padding:0 }}
-          >▲ fermer</button>
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <span style={{
+            fontSize:      10,
+            fontWeight:    800,
+            color:         THEME.textMuted,
+            textTransform: "uppercase",
+            letterSpacing: 2,
+          }}>
+            {icon} {title}
+          </span>
+          {badge && (
+            <span style={{
+              fontSize:     11,
+              fontWeight:   800,
+              color:        badge.color,
+              background:   badge.color + "22",
+              borderRadius: 4,
+              padding:      "2px 8px",
+            }}>
+              {badge.label}
+            </span>
+          )}
+          {badge2 && (
+            <span style={{
+              fontSize:     10,
+              fontWeight:   700,
+              color:        badge2.color,
+              background:   badge2.color + "15",
+              borderRadius: 4,
+              padding:      "2px 8px",
+            }}>
+              {badge2.label}
+            </span>
+          )}
         </div>
-      )}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+          {rightLabel && (
+            <span style={{ fontSize: 10, color: THEME.textMuted }}>{rightLabel}</span>
+          )}
+          <span style={{ fontSize: 10, color: THEME.textMuted }}>{open ? "▲" : "▼"}</span>
+        </div>
+      </div>
+      {open && children}
     </div>
   );
 }
 
 // ── COMPOSANT ENCART TECHNIQUE ────────────────────────────────
 function TechnicalPanel({ precomputed, context }: { precomputed: { signals: TechSignal[]; sinewave: SinewaveResult | null }; context?: MarketContext | null }) {
-  const [open, setOpen] = useState(true);
   const { signals, sinewave } = precomputed;
   if (signals.length === 0) return null;
 
@@ -1949,76 +2038,59 @@ function TechnicalPanel({ precomputed, context }: { precomputed: { signals: Tech
   })();
 
   return (
-    <div style={{ background:"#0d1420", border:"1px solid #1e2a3a", borderRadius:12, padding:"14px 18px", marginBottom:10 }}>
-      <div
-        onClick={() => setOpen(o => !o)}
-        style={{ display:"flex", alignItems:"center", justifyContent:"space-between", cursor:"pointer", marginBottom: open ? 12 : 0 }}
-      >
-        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-          <span style={{ fontSize:10, fontWeight:800, color:"#445", textTransform:"uppercase", letterSpacing:2 }}>
-            📊 Signaux oscillateurs
-          </span>
-          {total > 0 && (
-            <span style={{ fontSize:10, color:"#556" }}>
-              <span style={{ color:"#22c55e", fontWeight:700 }}>{bulls}↑</span>
-              {" · "}
-              <span style={{ color:"#ef4444", fontWeight:700 }}>{bears}↓</span>
-              {" / "}{total}
-            </span>
-          )}
-        </div>
-        <span style={{ fontSize:10, color:"#334" }}>{open ? "▲" : "▼"}</span>
-      </div>
-      {open && (
-        <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
-          {sinewave && (
-            <div style={{ background:"#111825", borderRadius:8, padding:"10px 14px", borderLeft:"3px solid #f0a500", marginBottom:2 }}>
-              <div style={{ fontSize:9, color:"#f0a500", textTransform:"uppercase", letterSpacing:1.5, fontWeight:800, marginBottom:5 }}>
-                🕐 Unité de temps optimale
+    <Panel
+      icon="📊"
+      title="Signaux oscillateurs"
+      badge2={{ label: `${bulls}↑ · ${bears}↓ / ${total}`, color: THEME.textSecondary }}
+      defaultOpen={true}
+    >
+      <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+        {sinewave && (
+          <div style={{ background:THEME.bgCard, borderRadius:8, padding:"10px 14px", borderLeft:`3px solid ${THEME.accent}`, marginBottom:2 }}>
+            <div style={{ fontSize:9, color:THEME.accent, textTransform:"uppercase", letterSpacing:1.5, fontWeight:800, marginBottom:5 }}>
+              🕐 Unité de temps optimale
+            </div>
+            <div style={{ display:"flex", gap:16, flexWrap:"wrap", alignItems:"flex-start" }}>
+              <div style={{ minWidth:130 }}>
+                <div style={{ fontSize:12, fontWeight:800, color:THEME.textPrimary }}>{sinewave.optimalUT.label}</div>
+                <div style={{ fontSize:10, color:THEME.textSecondary, marginTop:2 }}>{sinewave.optimalUT.horizon}</div>
               </div>
-              <div style={{ display:"flex", gap:16, flexWrap:"wrap", alignItems:"flex-start" }}>
-                <div style={{ minWidth:130 }}>
-                  <div style={{ fontSize:12, fontWeight:800, color:"#e6edf3" }}>{sinewave.optimalUT.label}</div>
-                  <div style={{ fontSize:10, color:"#8b949e", marginTop:2 }}>{sinewave.optimalUT.horizon}</div>
-                </div>
-                <div style={{ flex:1, fontSize:10, color:"#556", lineHeight:1.6, borderLeft:"1px solid #2a3548", paddingLeft:14 }}>
-                  {sinewave.optimalUT.note}
-                </div>
+              <div style={{ flex:1, fontSize:10, color:"#556", lineHeight:1.6, borderLeft:`1px solid ${THEME.borderMid}`, paddingLeft:14 }}>
+                {sinewave.optimalUT.note}
               </div>
             </div>
-          )}
-          {signals.map((s, i) => (
-            <div key={i} style={{ display:"flex", alignItems:"flex-start", gap:10, padding:"10px 12px", background:"#111825", borderRadius:8, borderLeft:`3px solid ${s.color}` }}>
-              <span style={{ fontSize:13, flexShrink:0, marginTop:1 }}>{s.emoji}</span>
-              <div style={{ flex:1, minWidth:0 }}>
-                <div style={{ fontSize:13, fontWeight:600, color:"#e6edf3", lineHeight:1.4 }}>{s.plain}</div>
-                <div style={{ fontSize:10, color:s.color, fontFamily:"'IBM Plex Mono',monospace", marginTop:4, opacity:0.85 }}>
-                  {s.label} · {s.detail}
-                </div>
-              </div>
-              <EduTooltip edu={s.edu} id={`tech-${i}`}/>
-            </div>
-          ))}
-          {synthPhrase && (
-            <div style={{ marginTop:6, padding:"10px 14px", background:"#111825", borderRadius:8, borderLeft:"3px solid #4a90d9" }}>
-              <div style={{ fontSize:9, color:"#4a90d9", textTransform:"uppercase", letterSpacing:1.5, fontWeight:800, marginBottom:5 }}>
-                Synthèse — {bulls}↑ {bears}↓ / {total} signaux
-              </div>
-              <div style={{ fontSize:11, color:"#8b949e", lineHeight:1.7 }}>{synthPhrase}</div>
-            </div>
-          )}
-          <div style={{ fontSize:9, color:"#334", marginTop:6 }}>
-            RSI/MACD calculés sur les prix de clôture · Moyennes mobiles sur données journalières (ou hebdomadaires si insuffisant)
           </div>
+        )}
+        {signals.map((s, i) => (
+          <div key={i} style={{ display:"flex", alignItems:"flex-start", gap:10, padding:"10px 12px", background:THEME.bgCard, borderRadius:8, borderLeft:`3px solid ${s.color}` }}>
+            <span style={{ fontSize:13, flexShrink:0, marginTop:1 }}>{s.emoji}</span>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontSize:13, fontWeight:600, color:THEME.textPrimary, lineHeight:1.4 }}>{s.plain}</div>
+              <div style={{ fontSize:10, color:s.color, fontFamily:"'IBM Plex Mono',monospace", marginTop:4, opacity:1 }}>
+                {s.label} · {s.detail}
+              </div>
+            </div>
+            <EduTooltip edu={s.edu} id={`tech-${i}`}/>
+          </div>
+        ))}
+        {synthPhrase && (
+          <div style={{ marginTop:6, padding:"10px 14px", background:THEME.bgCard, borderRadius:8, borderLeft:"3px solid #4a90d9" }}>
+            <div style={{ fontSize:9, color:"#4a90d9", textTransform:"uppercase", letterSpacing:1.5, fontWeight:800, marginBottom:5 }}>
+              Synthèse — {bulls}↑ {bears}↓ / {total} signaux
+            </div>
+            <div style={{ fontSize:11, color:THEME.textSecondary, lineHeight:1.7 }}>{synthPhrase}</div>
+          </div>
+        )}
+        <div style={{ fontSize:9, color:THEME.textMuted, marginTop:6 }}>
+          RSI/MACD calculés sur les prix de clôture · Moyennes mobiles sur données journalières (ou hebdomadaires si insuffisant)
         </div>
-      )}
-    </div>
+      </div>
+    </Panel>
   );
 }
 
 // ── COMPOSANT ENCART SITUATIONNEL ────────────────────────────
 function SituationalPanel({ metrics, closes }: { metrics: any; closes?: (number|null)[] }) {
-  const [open, setOpen] = useState(true);
   const sw       = closes && closes.length > 0 ? calcSinewave(closes) : null;
   const trendDev = closes && closes.length > 0 ? calcTrendDeviation(closes) : null;
   const ctx = computeSituationalContext(metrics, sw, trendDev);
@@ -2050,51 +2122,41 @@ function SituationalPanel({ metrics, closes }: { metrics: any; closes?: (number|
   })();
 
   return (
-    <div style={{ background:"#0d1420", border:`1px solid ${ctx.profileColor}33`, borderRadius:12, padding:"14px 18px", marginBottom:10 }}>
-      <div
-        onClick={() => setOpen(o => !o)}
-        style={{ display:"flex", alignItems:"center", justifyContent:"space-between", cursor:"pointer", marginBottom: open ? 12 : 0 }}
-      >
-        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-          <span style={{ fontSize:10, fontWeight:800, color:"#445", textTransform:"uppercase", letterSpacing:2 }}>
-            ⚡ Contexte d'investissement
-          </span>
-          <span style={{ fontSize:11, fontWeight:800, color:ctx.profileColor, background:ctx.profileColor+"22", borderRadius:4, padding:"2px 8px" }}>
-            {ctx.profileEmoji} {ctx.profile}
-          </span>
+    <Panel
+      icon="⚡"
+      title="Contexte d'investissement"
+      badge={{ label: `${ctx.profileEmoji} ${ctx.profile}`, color: ctx.profileColor }}
+      borderColor={ctx.profileColor}
+      defaultOpen={true}
+    >
+      <div>
+        <div style={{ fontSize:11, color:ctx.profileColor, fontWeight:600, marginBottom:10, padding:"6px 10px", background:ctx.profileColor+"11", borderRadius:6 }}>
+          🕐 {ctx.horizon}
         </div>
-        <span style={{ fontSize:10, color:"#334" }}>{open ? "▲" : "▼"}</span>
-      </div>
-      {open && (
-        <div>
-          <div style={{ fontSize:11, color:ctx.profileColor, fontWeight:600, marginBottom:10, padding:"6px 10px", background:ctx.profileColor+"11", borderRadius:6 }}>
-            🕐 {ctx.horizon}
-          </div>
-          <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
-            {ctx.signals.map((s, i) => (
-              <div key={i} style={{ display:"flex", alignItems:"flex-start", gap:10, padding:"8px 10px", background:"#111825", borderRadius:8, borderLeft:`3px solid ${s.color}` }}>
-                <span style={{ fontSize:13, flexShrink:0 }}>{s.emoji}</span>
-                <div>
-                  <div style={{ fontSize:12, fontWeight:700, color:s.color }}>{s.label}</div>
-                  <div style={{ fontSize:11, color:"#8b949e", marginTop:2, lineHeight:1.5 }}>{s.detail}</div>
-                </div>
+        <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+          {ctx.signals.map((s, i) => (
+            <div key={i} style={{ display:"flex", alignItems:"flex-start", gap:10, padding:"8px 10px", background:THEME.bgCard, borderRadius:8, borderLeft:`3px solid ${s.color}` }}>
+              <span style={{ fontSize:13, flexShrink:0 }}>{s.emoji}</span>
+              <div>
+                <div style={{ fontSize:12, fontWeight:700, color:s.color }}>{s.label}</div>
+                <div style={{ fontSize:11, color:THEME.textSecondary, marginTop:2, lineHeight:1.5 }}>{s.detail}</div>
               </div>
-            ))}
-          </div>
-          {sitPhrase && (
-            <div style={{ marginTop:10, padding:"10px 14px", background:"#111825", borderRadius:8, borderLeft:`3px solid ${ctx.profileColor}` }}>
-              <div style={{ fontSize:9, color:ctx.profileColor, textTransform:"uppercase", letterSpacing:1.5, fontWeight:800, marginBottom:5 }}>
-                Synthèse — {n} signal{n > 1 ? "s" : ""}
-              </div>
-              <div style={{ fontSize:11, color:"#8b949e", lineHeight:1.7 }}>{sitPhrase}</div>
             </div>
-          )}
-          <div style={{ fontSize:9, color:"#334", marginTop:8 }}>
-            ⚠️ Ces signaux sont informatifs et non contractuels. Tout investissement comporte un risque de perte en capital.
-          </div>
+          ))}
         </div>
-      )}
-    </div>
+        {sitPhrase && (
+          <div style={{ marginTop:10, padding:"10px 14px", background:THEME.bgCard, borderRadius:8, borderLeft:`3px solid ${ctx.profileColor}` }}>
+            <div style={{ fontSize:9, color:ctx.profileColor, textTransform:"uppercase", letterSpacing:1.5, fontWeight:800, marginBottom:5 }}>
+              Synthèse — {n} signal{n > 1 ? "s" : ""}
+            </div>
+            <div style={{ fontSize:11, color:THEME.textSecondary, lineHeight:1.7 }}>{sitPhrase}</div>
+          </div>
+        )}
+        <div style={{ fontSize:9, color:THEME.textMuted, marginTop:8 }}>
+          ⚠️ Ces signaux sont informatifs et non contractuels. Tout investissement comporte un risque de perte en capital.
+        </div>
+      </div>
+    </Panel>
   );
 }
 
@@ -2269,7 +2331,7 @@ function InteractiveChart({
           <span style={{ fontSize:11, color:c, fontWeight:700 }}>
             {up ? "▲" : "▼"} {Math.abs(parseFloat(chgPct))}% sur {CHART_RANGES[period]?.label ?? period}
           </span>
-          <span style={{ fontSize:10, color:"#334" }}>
+          <span style={{ fontSize:10, color:THEME.textSecondary }}>
             {fmtPrice(displayPts[0].price)} → {fmtPrice(displayPts[displayPts.length-1].price)} {currency}
 
           </span>
@@ -2282,7 +2344,7 @@ function InteractiveChart({
               disabled={loading}
               style={{
                 background: period === p.key ? c + "22" : "transparent",
-                border: `1px solid ${period === p.key ? c : "#2a3548"}`,
+                border: `1px solid ${period === p.key ? c : THEME.borderMid}`,
                 color:  period === p.key ? c : "#556",
                 borderRadius: 5, padding: "3px 9px",
                 fontSize: 10, fontWeight: 700, cursor: "pointer",
@@ -2290,7 +2352,7 @@ function InteractiveChart({
               }}
             >
               {p.label}
-              {p.key === optimalUTKey && <span style={{ fontSize:6, marginLeft:3, color:"#f0a500", verticalAlign:"super" }}>●</span>}
+              {p.key === optimalUTKey && <span style={{ fontSize:6, marginLeft:3, color:THEME.accent, verticalAlign:"super" }}>●</span>}
             </button>
           ))}
         </div>
@@ -2316,7 +2378,7 @@ function InteractiveChart({
           {yTicks.map((t, i) => (
             <g key={i}>
               <line x1={PAD_L} y1={t.y} x2={W - PAD_R} y2={t.y}
-                stroke="#1e2a3a" strokeWidth="1" strokeDasharray="3,4"/>
+                stroke={THEME.borderPanel} strokeWidth="1" strokeDasharray="3,4"/>
               <text x={PAD_L - 6} y={t.y + 4} textAnchor="end"
                 fontSize="9" fill="#445" fontFamily="'IBM Plex Mono',monospace">
                 {t.val >= 1 ? Math.round(t.val) : ""}
@@ -2358,7 +2420,7 @@ function InteractiveChart({
           {/* Point tooltip */}
           {tooltip && (
             <circle cx={tooltip.x} cy={tooltip.y} r="4"
-              fill={c} stroke="#080d14" strokeWidth="2"/>
+              fill={c} stroke={THEME.bgPage} strokeWidth="2"/>
           )}
         </svg>
 
@@ -2374,7 +2436,7 @@ function InteractiveChart({
               : tooltip.x / W < 0.15
               ? "translateX(8px)"
               : "translateX(-50%)",
-            background: "#111825",
+            background: THEME.bgCard,
             border: `1px solid ${c}55`,
             borderRadius: 7,
             padding: "6px 11px",
@@ -2388,7 +2450,7 @@ function InteractiveChart({
               {((tooltip.price / base0 - 1) * 100).toFixed(2)}%
             </div>
             {/* Prix réel — comme TradingView */}
-            <div style={{ fontSize:10, color:"#8b949e", fontFamily:"'IBM Plex Mono',monospace", marginTop:1 }}>
+            <div style={{ fontSize:10, color:THEME.textSecondary, fontFamily:"'IBM Plex Mono',monospace", marginTop:1 }}>
               {fmtPrice(tooltip.price)} {currency}
             </div>
             <div style={{ fontSize:9, color:"#445", marginTop:2 }}>{tooltip.date}</div>
@@ -2419,10 +2481,10 @@ function ScoreGauge({ score }: { score: number | null }) {
     <svg width="182" height="92" viewBox="0 0 182 92" style={{ overflow: "visible" }}>
       <g transform={`translate(0, ${cy * 2}) scale(1, -1)`}>
         <path d={`M${px(0)},${py(0)} A${r},${r} 0 0 0 ${px(180)},${py(180)}`}
-          stroke="#1e2a3a" strokeWidth="14" fill="none" strokeLinecap="butt"/>
-        {arc(  2,  58, "#ef4444")}
-        {arc( 62, 118, "#f59e0b")}
-        {arc(122, 178, "#22c55e")}
+          stroke={THEME.borderPanel} strokeWidth="14" fill="none" strokeLinecap="butt"/>
+        {arc(  2,  58, THEME.scoreRed)}
+        {arc( 62, 118, THEME.scoreAmber)}
+        {arc(122, 178, THEME.scoreGreen)}
         <line x1={cx} y1={cy} x2={nx} y2={ny} stroke="white" strokeWidth="3" strokeLinecap="round"/>
         <circle cx={cx} cy={cy} r="5" fill="white"/>
       </g>
@@ -2439,12 +2501,12 @@ function MiniGauge({ label, score, weight }: { label: string; score: number | nu
     <div style={{ flex:1, minWidth: 80 }}>
       <div style={{ fontSize:9, color:"#445", textTransform:"uppercase", letterSpacing:1, marginBottom:4 }}>{label}</div>
       <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-        <div style={{ flex:1, height:4, background:"#1e2a3a", borderRadius:2, overflow:"hidden" }}>
+        <div style={{ flex:1, height:4, background:THEME.borderPanel, borderRadius:2, overflow:"hidden" }}>
           <div style={{ width:`${pct}%`, height:"100%", background:color, borderRadius:2, transition:"width .5s" }}/>
         </div>
         <span style={{ fontSize:10, fontWeight:700, color, minWidth:24 }}>{score}</span>
       </div>
-      <div style={{ fontSize:8, color:"#334", marginTop:2 }}>poids {Math.round(weight*100)}%</div>
+      <div style={{ fontSize:8, color:"#556", marginTop:2 }}>poids {Math.round(weight*100)}%</div>
     </div>
   );
 }
@@ -2465,11 +2527,11 @@ interface MetricProps {
 // COUCHE 4b — VUE ACTION / ETF
 // ════════════════════════════════════════════════════════════════
 function MetricCard({ label, value, s, edu }: MetricProps) {
-  const bg = s == null ? "#111825"
+  const bg = s == null ? THEME.bgCard
     : s >= 7 ? "#0a2e1a"
     : s >= 4 ? "#2a1f00"
     : "#2a0a0a";
-  const border = s == null ? "#1e2a3a"
+  const border = s == null ? THEME.borderPanel
     : s >= 7 ? "#22c55e44"
     : s >= 4 ? "#f59e0b44"
     : "#ef444444";
@@ -2479,13 +2541,13 @@ function MetricCard({ label, value, s, edu }: MetricProps) {
       borderRadius: 10, padding: "12px 14px",
       cursor: "default",
     }}>
-      <div style={{ fontSize: 10, color: "#556", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>
+      <div style={{ fontSize: 10, color: THEME.textSecondary, textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>
         {label}
       </div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
         <span style={{
           fontSize: 22, fontWeight: 800,
-          color: s == null ? "#8b949e" : scoreColor(s),
+          color: s == null ? THEME.textPrimary : scoreColor(s),
           fontFamily: "'IBM Plex Mono',monospace",
         }}>
           {value}
@@ -2510,7 +2572,7 @@ function MetricCard({ label, value, s, edu }: MetricProps) {
 function SectionTitle({ icon, label }: { icon: string; label: string }) {
   return (
     <div style={{
-      fontSize: 10, fontWeight: 800, color: "#445",
+      fontSize: 10, fontWeight: 800, color: THEME.textMuted,
       textTransform: "uppercase", letterSpacing: 2,
       margin: "20px 0 10px", display: "flex", alignItems: "center", gap: 6,
     }}>
@@ -2524,10 +2586,10 @@ function SectionTitle({ icon, label }: { icon: string; label: string }) {
 // ════════════════════════════════════════════════════════════════
 
 const CONTEXT_COLORS: Record<string, { bg: string; border: string; badge: string; emoji: string }> = {
-  range:    { bg: "#111d30", border: "#4a90d9", badge: "#4a90d9", emoji: "🔵" },
-  tendance: { bg: "#0a2212", border: "#22c55e", badge: "#22c55e", emoji: "📈" },
-  exces:    { bg: "#221500", border: "#f59e0b", badge: "#f59e0b", emoji: "🚀" },
-  chaos:    { bg: "#1e0808", border: "#ef4444", badge: "#ef4444", emoji: "❌" },
+  range:    { bg: "#111d30", border: "#4a90d9",        badge: "#4a90d9",        emoji: "🔵" },
+  tendance: { bg: "#0a2212", border: THEME.scoreGreen, badge: THEME.scoreGreen, emoji: "📈" },
+  exces:    { bg: "#221500", border: THEME.scoreAmber, badge: THEME.scoreAmber, emoji: "🚀" },
+  chaos:    { bg: "#1e0808", border: THEME.scoreRed,   badge: THEME.scoreRed,   emoji: "❌" },
 };
 
 const SUBTYPE_LABELS: Record<string, string> = {
@@ -2561,9 +2623,9 @@ function MarketContextPanel({
   const isBearDir = context.structure.type === "bearish";
 
   const cc = isEssoufflement
-    ? { bg: "#1a1000", border: "#d97706", badge: "#f59e0b", emoji: "⚠️" }
+    ? { bg: "#1a1000", border: "#d97706", badge: THEME.scoreAmber, emoji: "⚠️" }
     : context.type === "tendance" && isBearDir
-    ? { bg: "#1e0808", border: "#ef4444", badge: "#ef4444", emoji: "📉" }
+    ? { bg: "#1e0808", border: THEME.scoreRed, badge: THEME.scoreRed, emoji: "📉" }
     : CONTEXT_COLORS[context.type] || CONTEXT_COLORS["range"];
 
   const typeLabel =
@@ -2642,7 +2704,7 @@ function MarketContextPanel({
         style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: open ? 10 : 0, flexWrap: "wrap", cursor: "pointer" }}
       >
         <span style={{ fontSize: 20 }}>{cc.emoji}</span>
-        <span style={{ fontSize: 10, fontWeight: 800, color: "#445", textTransform: "uppercase", letterSpacing: 2 }}>
+        <span style={{ fontSize: 10, fontWeight: 800, color: THEME.textMuted, textTransform: "uppercase", letterSpacing: 2 }}>
           Contexte de Marché
         </span>
         <span style={{ fontSize: 17, fontWeight: 900, color: cc.badge, textTransform: "uppercase", letterSpacing: 1 }}>
@@ -2663,42 +2725,42 @@ function MarketContextPanel({
 
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 14, flexShrink: 0 }}>
           <div style={{ textAlign: "right" }}>
-            <div style={{ fontSize: 9, color: "#445", textTransform: "uppercase", letterSpacing: 1, marginBottom: 2 }}>Confiance</div>
+            <div style={{ fontSize: 9, color: THEME.textMuted, textTransform: "uppercase", letterSpacing: 1, marginBottom: 2 }}>Confiance</div>
             <div style={{ fontSize: 15, fontWeight: 800, color: cc.badge }}>{context.confidence}%</div>
           </div>
-          <span style={{ fontSize: 10, color: "#334" }}>{open ? "▲" : "▼"}</span>
+          <span style={{ fontSize: 10, color: THEME.textMuted }}>{open ? "▲" : "▼"}</span>
         </div>
       </div>
 
       {open && (
         <>
           {/* Barre de confiance */}
-          <div style={{ height: 3, background: "#1e2a3a", borderRadius: 2, marginBottom: 12, overflow: "hidden" }}>
+          <div style={{ height: 3, background: THEME.borderPanel, borderRadius: 2, marginBottom: 12, overflow: "hidden" }}>
             <div style={{ width: `${context.confidence}%`, height: "100%", background: cc.badge, borderRadius: 2 }}/>
           </div>
 
           {/* Détails — ADX / Structure / Divergence avec tooltips */}
           <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
             {context.adx != null && (
-              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: "#111825", borderRadius: 8, fontSize: 11 }}>
-                <span style={{ color: "#556", minWidth: 34 }}>ADX</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: THEME.bgCard, borderRadius: 8, fontSize: 11 }}>
+                <span style={{ color: THEME.textSecondary, minWidth: 34 }}>ADX</span>
                 <strong style={{ color: "#b0bec5", fontFamily: "'IBM Plex Mono',monospace" }}>{context.adx.toFixed(1)}</strong>
-                <span style={{ color: "#8b949e", flex: 1 }}>— {adxDesc}</span>
+                <span style={{ color: THEME.textSecondary, flex: 1 }}>— {adxDesc}</span>
                 <EduTooltip edu={eduADX} id="ctx-adx"/>
               </div>
             )}
-            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: "#111825", borderRadius: 8, fontSize: 11 }}>
-              <span style={{ color: "#556", minWidth: 34 }}>Struct.</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: THEME.bgCard, borderRadius: 8, fontSize: 11 }}>
+              <span style={{ color: THEME.textSecondary, minWidth: 34 }}>Struct.</span>
               <strong style={{ color: "#b0bec5", flex: 1 }}>{structLabel}</strong>
               <EduTooltip edu={eduStructure} id="ctx-struct"/>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: "#111825", borderRadius: 8, fontSize: 11 }}>
-              <span style={{ color: "#556", minWidth: 34 }}>Div.</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: THEME.bgCard, borderRadius: 8, fontSize: 11 }}>
+              <span style={{ color: THEME.textSecondary, minWidth: 34 }}>Div.</span>
               <span style={{
                 flex: 1,
-                color: context.divergence.type === "bullish" ? "#22c55e"
-                      : context.divergence.type === "bearish" ? "#ef4444"
-                      : "#445",
+                color: context.divergence.type === "bullish" ? THEME.scoreGreen
+                      : context.divergence.type === "bearish" ? THEME.scoreRed
+                      : THEME.textMuted,
               }}>
                 {context.divergence.type
                   ? `⚡ Divergence RSI ${context.divergence.type === "bullish" ? "haussière" : "baissière"} (${context.divergence.strength === "strong" ? "forte" : "faible"})`
@@ -2712,7 +2774,7 @@ function MarketContextPanel({
           {context.fundamentalConfirm && (
             <div style={{
               fontSize: 11, fontWeight: 700, marginBottom: 8,
-              color: context.fundamentalConfirm === "confirms" ? "#22c55e" : context.fundamentalConfirm === "warns" ? "#ef4444" : "#8b949e",
+              color: context.fundamentalConfirm === "confirms" ? THEME.scoreGreen : context.fundamentalConfirm === "warns" ? THEME.scoreRed : THEME.textSecondary,
             }}>
               {context.fundamentalConfirm === "confirms" ? "✅ Fondamentaux confirment le signal technique" :
                context.fundamentalConfirm === "warns"    ? "⚠️ Fondamentaux en contradiction avec le signal" :
@@ -2739,7 +2801,7 @@ function MarketContextPanel({
               ? `${ctxLabel} détecté. ${modLabel}`
               : `${ctxLabel} détecté. Aucun ajustement fondamental significatif.`;
             return (
-              <div style={{ fontSize:11, color:"#8b949e", lineHeight:1.7, marginTop:4, padding:"8px 12px", background:"#111825", borderRadius:8, borderLeft:`3px solid ${cc.border}55` }}>
+              <div style={{ fontSize:11, color:THEME.textSecondary, lineHeight:1.7, marginTop:4, padding:"8px 12px", background:THEME.bgCard, borderRadius:8, borderLeft:`3px solid ${cc.border}55` }}>
                 {phrase}
               </div>
             );
@@ -2751,7 +2813,6 @@ function MarketContextPanel({
 }
 
 function MacroContextPanel({ macro, zone }: { macro: MacroContext | null | undefined; zone?: MacroZone }) {
-  const [open, setOpen] = useState(true);
   if (!macro || macro.error) return null;
 
   const effectiveZone: MacroZone = zone ?? "us";
@@ -2762,14 +2823,14 @@ function MacroContextPanel({ macro, zone }: { macro: MacroContext | null | undef
   };
   const rateSignal = macro.rate10y == null ? null
     : macro.rate10y > 4.5
-      ? { label: "Taux élevés", color: "#ef4444",
+      ? { label: "Taux 10 ans US — Élevés", color: "#ef4444",
           detail: `Taux 10 ans à ${macro.rate10y}% — coût du capital élevé, pression sur les valorisations growth.`,
           edu: { ...rateEduBase, example: `À ${macro.rate10y}%, le coût du capital est élevé — les entreprises à forte dette ou sans bénéfices sont particulièrement pénalisées.` } }
     : macro.rate10y > 3.0
-      ? { label: "Taux modérés", color: "#f59e0b",
+      ? { label: "Taux 10 ans US — Modérés", color: "#f59e0b",
           detail: `Taux 10 ans à ${macro.rate10y}% — environnement neutre pour les valorisations.`,
           edu: { ...rateEduBase, example: `À ${macro.rate10y}%, l'environnement est neutre — ni favorable ni défavorable aux valorisations actuelles.` } }
-      : { label: "Taux bas", color: "#22c55e",
+      : { label: "Taux 10 ans US — Bas", color: "#22c55e",
           detail: `Taux 10 ans à ${macro.rate10y}% — environnement favorable aux actifs risqués.`,
           edu: { ...rateEduBase, example: `À ${macro.rate10y}%, l'argent bon marché soutient les valorisations élevées et favorise la prise de risque.` } };
 
@@ -2848,7 +2909,7 @@ function MacroContextPanel({ macro, zone }: { macro: MacroContext | null | undef
       example = `Le ${lbl} est à ${fmtVal}. Contexte régional à croiser avec les fondamentaux de l'entreprise.`;
     }
     return {
-      label: `${lbl} : ${fmtVal}`, color: "#8b949e", detail: null,
+      label: `${lbl} : ${fmtVal}`, color: "#94a3b8", detail: null,
       edu: {
         concept: "L'indice régional représente la santé globale du marché actions dans la zone géographique de l'entreprise analysée. Il reflète le sentiment des investisseurs locaux et le contexte économique régional.",
         howToRead: "Un indice proche de ses plus hauts historiques indique un marché optimiste — les valorisations individuelles sont souvent tirées vers le haut. Un indice en repli crée un vent contraire même pour les bonnes entreprises.",
@@ -2866,53 +2927,38 @@ function MacroContextPanel({ macro, zone }: { macro: MacroContext | null | undef
   const panelColor = reds >= 2 ? "#ef4444" : ambers >= 2 ? "#f59e0b" : "#22c55e";
 
   return (
-    <div style={{
-      background: "#0d1420", border: `1px solid ${panelColor}33`,
-      borderRadius: 12, padding: "14px 18px", marginBottom: 10,
-    }}>
-      <div
-        onClick={() => setOpen(o => !o)}
-        style={{ display:"flex", alignItems:"center", justifyContent:"space-between",
-                 cursor:"pointer", marginBottom: open ? 12 : 0 }}
-      >
-        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-          <span style={{ fontSize:10, fontWeight:800, color:"#445",
-                         textTransform:"uppercase", letterSpacing:2 }}>
-            🌍 Contexte Macro
-          </span>
-          <span style={{ fontSize:10, color:"#556" }}>
-            Yahoo Finance · {ZONE_TICKERS[effectiveZone]}
-          </span>
-        </div>
-        <span style={{ fontSize:10, color:"#334" }}>{open ? "▲" : "▼"}</span>
-      </div>
-      {open && (
-        <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
-          {signals.map((s, i) => s && (
-            <div key={i} style={{
-              display:"flex", alignItems:"flex-start", gap:10,
-              padding:"8px 10px", background:"#111825",
-              borderRadius:8, borderLeft:`3px solid ${s.color}`,
-            }}>
-              <div style={{ flex:1 }}>
-                <div style={{ fontSize:12, fontWeight:700, color:s.color }}>
-                  {s.label}
-                </div>
-                {s.detail && (
-                  <div style={{ fontSize:11, color:"#8b949e", marginTop:2, lineHeight:1.5 }}>
-                    {s.detail}
-                  </div>
-                )}
+    <Panel
+      icon="🌍"
+      title="Contexte Macro"
+      badge2={{ label: `Yahoo Finance · ${ZONE_TICKERS[effectiveZone]}`, color: THEME.textMuted }}
+      borderColor={panelColor}
+      defaultOpen={true}
+    >
+      <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+        {signals.map((s, i) => s && (
+          <div key={i} style={{
+            display:"flex", alignItems:"flex-start", gap:10,
+            padding:"8px 10px", background:THEME.bgCard,
+            borderRadius:8, borderLeft:`3px solid ${s.color}`,
+          }}>
+            <div style={{ flex:1 }}>
+              <div style={{ fontSize:12, fontWeight:700, color:s.color }}>
+                {s.label}
               </div>
-              {s.edu && <EduTooltip edu={s.edu} id={`macro-${i}`}/>}
+              {s.detail && (
+                <div style={{ fontSize:11, color:THEME.textSecondary, marginTop:2, lineHeight:1.5 }}>
+                  {s.detail}
+                </div>
+              )}
             </div>
-          ))}
-          <div style={{ fontSize:9, color:"#334", marginTop:4 }}>
-            Source : Yahoo Finance · Données journalières
+            {s.edu && <EduTooltip edu={s.edu} id={`macro-${i}`}/>}
           </div>
+        ))}
+        <div style={{ fontSize:9, color:THEME.textMuted, marginTop:4 }}>
+          Source : Yahoo Finance · Données journalières
         </div>
-      )}
-    </div>
+      </div>
+    </Panel>
   );
 }
 
@@ -3192,79 +3238,61 @@ function computeEntryRecommendation(
 }
 
 function EntryRecommendationPanel({ rec }: { rec: EntryRecommendation }) {
-  const [open, setOpen] = useState(true);
   if (rec.type === "none") return null;
 
   const palette = {
-    wait     : { border: "#ef4444", bg: "#1e0808", color: "#ef4444" },
-    caution  : { border: "#f59e0b", bg: "#1a1000", color: "#f59e0b" },
-    favorable: { border: "#22c55e", bg: "#0a1e0f", color: "#22c55e" },
-    none     : { border: "#334",    bg: "#0d1420", color: "#334"    },
+    wait     : { border: THEME.scoreRed,   bg: "#1e0808", color: THEME.scoreRed   },
+    caution  : { border: THEME.scoreAmber, bg: "#1a1000", color: THEME.scoreAmber },
+    favorable: { border: THEME.scoreGreen, bg: "#0a1e0f", color: THEME.scoreGreen },
+    none     : { border: "#334",           bg: THEME.bgPanel, color: THEME.textMuted },
   }[rec.type];
 
   const badgeLabel = { wait: "Attendre", caution: "Prudence", favorable: "Favorable", none: "" }[rec.type];
 
   return (
-    <div style={{
-      background: palette.bg, border: `1px solid ${palette.border}`,
-      borderRadius: 12, padding: "14px 18px", marginBottom: 10,
-    }}>
-      <div
-        onClick={() => setOpen(o => !o)}
-        style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
-                 cursor: "pointer", marginBottom: open ? 12 : 0 }}
-      >
+    <Panel
+      icon="🎯"
+      title="Recommandation d'entrée"
+      badge={{ label: badgeLabel, color: palette.color }}
+      borderColor={palette.border}
+      defaultOpen={true}
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ fontSize: 10, fontWeight: 800, color: "#445",
-                         textTransform: "uppercase", letterSpacing: 2 }}>
-            🎯 Recommandation d'entrée
-          </span>
-          <span style={{
-            fontSize: 9, fontWeight: 800, color: palette.color,
-            background: palette.border + "22", borderRadius: 4,
-            padding: "1px 6px", textTransform: "uppercase", letterSpacing: 1,
-          }}>{badgeLabel}</span>
+          <span style={{ fontSize: 20 }}>{rec.icon}</span>
+          <span style={{ fontSize: 14, fontWeight: 800, color: palette.color }}>{rec.title}</span>
         </div>
-        <span style={{ fontSize: 10, color: "#334" }}>{open ? "▲" : "▼"}</span>
+        {rec.reasons.length > 0 && (
+          <div style={{ background: THEME.bgCard, borderRadius: 8, padding: "10px 12px" }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: "#6b7280",
+                          textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 6 }}>
+              Pourquoi
+            </div>
+            {rec.reasons.map((r, i) => (
+              <div key={i} style={{ fontSize: 11, color: THEME.textSecondary, lineHeight: 1.6 }}>
+                • {r}
+              </div>
+            ))}
+          </div>
+        )}
+        {rec.triggers.length > 0 && (
+          <div style={{ background: THEME.bgCard, borderRadius: 8, padding: "10px 12px" }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: "#6b7280",
+                          textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 6 }}>
+              Surveiller
+            </div>
+            {rec.triggers.map((t, i) => (
+              <div key={i} style={{ fontSize: 11, color: THEME.textSecondary, lineHeight: 1.6 }}>
+                👁 {t}
+              </div>
+            ))}
+          </div>
+        )}
+        <div style={{ fontSize: 9, color: THEME.textMuted, fontStyle: "italic" }}>
+          Ces recommandations sont algorithmiques et ne constituent pas un conseil en investissement.
+        </div>
       </div>
-      {open && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ fontSize: 20 }}>{rec.icon}</span>
-            <span style={{ fontSize: 14, fontWeight: 800, color: palette.color }}>{rec.title}</span>
-          </div>
-          {rec.reasons.length > 0 && (
-            <div style={{ background: "#111825", borderRadius: 8, padding: "10px 12px" }}>
-              <div style={{ fontSize: 10, fontWeight: 700, color: "#445",
-                            textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 6 }}>
-                Pourquoi
-              </div>
-              {rec.reasons.map((r, i) => (
-                <div key={i} style={{ fontSize: 11, color: "#8b949e", lineHeight: 1.6 }}>
-                  • {r}
-                </div>
-              ))}
-            </div>
-          )}
-          {rec.triggers.length > 0 && (
-            <div style={{ background: "#111825", borderRadius: 8, padding: "10px 12px" }}>
-              <div style={{ fontSize: 10, fontWeight: 700, color: "#445",
-                            textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 6 }}>
-                Surveiller
-              </div>
-              {rec.triggers.map((t, i) => (
-                <div key={i} style={{ fontSize: 11, color: "#8b949e", lineHeight: 1.6 }}>
-                  👁 {t}
-                </div>
-              ))}
-            </div>
-          )}
-          <div style={{ fontSize: 9, color: "#334", fontStyle: "italic" }}>
-            Ces recommandations sont algorithmiques et ne constituent pas un conseil en investissement.
-          </div>
-        </div>
-      )}
-    </div>
+    </Panel>
   );
 }
 
@@ -3534,18 +3562,18 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
     <div style={{ animation: "fadeIn .4s ease" }}>
       {/* HEADER */}
       <div style={{ marginBottom: 14 }}>
-        <div style={{ fontSize: 11, color: "#445", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 4 }}>
+        <div style={{ fontSize: 11, color: THEME.textMuted, textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 4 }}>
           {[exchange, sector, industry].filter(Boolean).join(" · ")}
         </div>
-        <div style={{ fontSize: 22, fontWeight: 800, color: "#e6edf3", marginBottom: 8, lineHeight: 1.3 }}>
+        <div style={{ fontSize: 22, fontWeight: 800, color: THEME.textPrimary, marginBottom: 8, lineHeight: 1.3 }}>
           {name}<TypeBadge type={quoteType}/>
         </div>
         <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
-          <span style={{ fontSize: 34, fontWeight: 900, color: "#f0a500", fontFamily: "'IBM Plex Mono',monospace" }}>
+          <span style={{ fontSize: 34, fontWeight: 900, color: THEME.accent, fontFamily: "'IBM Plex Mono',monospace" }}>
             {currency} {fmt(price)}
           </span>
           {change1d != null && (
-            <span style={{ fontSize: 15, fontWeight: 700, color: change1d >= 0 ? "#22c55e" : "#ef4444" }}>
+            <span style={{ fontSize: 15, fontWeight: 700, color: change1d >= 0 ? THEME.scoreGreen : THEME.scoreRed }}>
               {change1d >= 0 ? "▲" : "▼"} {Math.abs(change1d * 100).toFixed(2)}%
             </span>
           )}
@@ -3566,7 +3594,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
               {/* Score Qualité (fondamental) */}
               {metrics?.globalScore != null && (
                 <div style={{ textAlign: "center" }}>
-                  <div style={{ fontSize: 9, fontWeight: 800, color: "#445",
+                  <div style={{ fontSize: 9, fontWeight: 800, color: THEME.textMuted,
                                 textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 2 }}>
                     Qualité
                   </div>
@@ -3576,9 +3604,9 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
                       color: scoreColor(metrics.globalScore),
                       fontFamily: "'IBM Plex Mono',monospace",
                     }}>{metrics.globalScore}</span>
-                    <span style={{ fontSize: 14, color: "#556", fontFamily: "'IBM Plex Mono',monospace" }}>/10</span>
+                    <span style={{ fontSize: 14, color: THEME.textSecondary, fontFamily: "'IBM Plex Mono',monospace" }}>/10</span>
                   </div>
-                  <div style={{ fontSize: 9, color: "#445", marginTop: 1 }}>Fondamentaux</div>
+                  <div style={{ fontSize: 9, color: THEME.textMuted, marginTop: 1 }}>Fondamentaux</div>
                 </div>
               )}
               {/* Séparateur */}
@@ -3587,7 +3615,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
               )}
               {/* Score Timing (technique) */}
               <div style={{ textAlign: "center" }}>
-                <div style={{ fontSize: 9, fontWeight: 800, color: "#445",
+                <div style={{ fontSize: 9, fontWeight: 800, color: THEME.textMuted,
                               textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 2 }}>
                   Timing
                 </div>
@@ -3597,14 +3625,14 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
                     color: scoreColor(finalScore),
                     fontFamily: "'IBM Plex Mono',monospace",
                   }}>{finalScore}</span>
-                  <span style={{ fontSize: 14, color: "#556", fontFamily: "'IBM Plex Mono',monospace" }}>/10</span>
+                  <span style={{ fontSize: 14, color: THEME.textSecondary, fontFamily: "'IBM Plex Mono',monospace" }}>/10</span>
                 </div>
-                <div style={{ fontSize: 9, color: "#445", marginTop: 1 }}>Entrée</div>
+                <div style={{ fontSize: 9, color: THEME.textMuted, marginTop: 1 }}>Entrée</div>
               </div>
               {/* Verdict textuel */}
               <div>
                 <div style={{ fontSize: 20, fontWeight: 900, color: v.color }}>{v.emoji} {v.label}</div>
-                <div style={{ fontSize: 11, color: "#8b949e", lineHeight: 1.4, marginTop: 2 }}>{v.desc}</div>
+                <div style={{ fontSize: 11, color: THEME.textSecondary, lineHeight: 1.4, marginTop: 2 }}>{v.desc}</div>
               </div>
             </div>
             {/* Mini-jauges */}
@@ -3622,11 +3650,21 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
                 background: techSummary.color + "15",
                 borderLeft: `3px solid ${techSummary.color}`,
               }}>
-                <span style={{ fontSize: 9, color: "#445", textTransform: "uppercase", letterSpacing: 1 }}>Oscillateurs</span>
+                <span style={{ fontSize: 9, color: THEME.textSecondary, textTransform: "uppercase", letterSpacing: 1 }}>Oscillateurs</span>
                 <span style={{ fontSize: 12, fontWeight: 700, color: techSummary.color }}>{techSummary.label}</span>
-                <span style={{ fontSize: 9, color: "#556" }}>
+                <span style={{ fontSize: 9, color: THEME.textSecondary }}>
                   {techSummary.bulls}↑ {techSummary.bears}↓ / {techSummary.total}
                 </span>
+              </div>
+            )}
+            {techSummary && (
+              <div style={{ fontSize: 10, color: THEME.textSecondary, marginTop: 5, lineHeight: 1.5 }}>
+                Synthèse des indicateurs techniques directionnels (RSI, MACD, EMA, structure, volume).
+                {techSummary.bulls > techSummary.bears
+                  ? " Majorité de signaux haussiers."
+                  : techSummary.bears > techSummary.bulls
+                  ? " Majorité de signaux baissiers."
+                  : " Signaux équilibrés — pas de biais directionnel clair."}
               </div>
             )}
             {/* Bandeau macro défavorable */}
@@ -3638,9 +3676,9 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
               if (warnings.length === 0) return null;
               return (
                 <div style={{
-                  background: "#2a1500", border: "1px solid #f97316",
+                  background: "#2a1500", border: `1px solid ${THEME.scoreOrange}`,
                   borderRadius: 8, padding: "8px 14px",
-                  fontSize: 11, color: "#f97316",
+                  fontSize: 11, color: THEME.scoreOrange,
                   marginTop: 10, lineHeight: 1.6,
                 }}>
                   ⚠️ Contexte macro à surveiller : {warnings.join(" · ")}. Ces facteurs sont indépendants des fondamentaux mais peuvent peser sur le titre à court terme.
@@ -3655,15 +3693,15 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
         </div>
       ) : (
         <div style={{
-          background: "#090f1a", border: "1px solid #2a3548",
+          background: THEME.bgHeader, border: `1px solid ${THEME.borderMid}`,
           borderRadius: 14, padding: "18px 22px", marginBottom: 14,
         }}>
-          <div style={{ fontSize: 18, fontWeight: 900, color: "#556", marginBottom: 6 }}>
+          <div style={{ fontSize: 18, fontWeight: 900, color: THEME.textSecondary, marginBottom: 6 }}>
             {["INDEX","FUTURE","BOND","MUTUALFUND"].indexOf((quoteType||"").toUpperCase()) !== -1
               ? "Analyse technique uniquement"
               : "Données insuffisantes"}
           </div>
-          <div style={{ fontSize: 11, color: "#445", lineHeight: 1.6, marginBottom: 10 }}>
+          <div style={{ fontSize: 11, color: THEME.textMuted, lineHeight: 1.6, marginBottom: 10 }}>
             {quoteType === "INDEX"      ? "Les ratios PE / PB / ROE ne s'appliquent pas aux indices de marché." :
              quoteType === "FUTURE"     ? "Les contrats à terme n'ont pas de fondamentaux d'entreprise." :
              quoteType === "BOND"       ? "Les obligations se lisent par le taux et la maturité, pas par le PE." :
@@ -3671,11 +3709,11 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
              "Données fondamentales insuffisantes pour calculer un score fiable."}
           </div>
           {change52w != null && (
-            <div style={{ background: "#111825", borderRadius: 8, padding: "8px 12px", marginBottom: 10, display: "inline-block" }}>
-              <div style={{ fontSize: 9, color: "#445", textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 4 }}>
+            <div style={{ background: THEME.bgCard, borderRadius: 8, padding: "8px 12px", marginBottom: 10, display: "inline-block" }}>
+              <div style={{ fontSize: 9, color: THEME.textMuted, textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 4 }}>
                 Perf. 52 semaines
               </div>
-              <div style={{ fontSize: 26, fontWeight: 900, color: change52w >= 0 ? "#22c55e" : "#ef4444", fontFamily: "'IBM Plex Mono',monospace" }}>
+              <div style={{ fontSize: 26, fontWeight: 900, color: change52w >= 0 ? THEME.scoreGreen : THEME.scoreRed, fontFamily: "'IBM Plex Mono',monospace" }}>
                 {change52w >= 0 ? "+" : ""}{(change52w * 100).toFixed(1)}%
               </div>
             </div>
@@ -3687,9 +3725,9 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
               background: techSummary.color + "15",
               borderLeft: `3px solid ${techSummary.color}`,
             }}>
-              <span style={{ fontSize: 9, color: "#445", textTransform: "uppercase", letterSpacing: 1 }}>Oscillateurs</span>
+              <span style={{ fontSize: 9, color: THEME.textSecondary, textTransform: "uppercase", letterSpacing: 1 }}>Oscillateurs</span>
               <span style={{ fontSize: 12, fontWeight: 700, color: techSummary.color }}>{techSummary.label}</span>
-              <span style={{ fontSize: 9, color: "#556" }}>
+              <span style={{ fontSize: 9, color: THEME.textSecondary }}>
                 {techSummary.bulls}↑ {techSummary.bears}↓ / {techSummary.total}
               </span>
             </div>
@@ -3712,8 +3750,8 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
       })()}
 
       {/* GRAPHIQUE INTERACTIF */}
-      <div style={{ background: "#0d1420", border: "1px solid #1e2a3a", borderRadius: 12, padding: "14px 18px", marginBottom: 4 }}>
-        <div style={{ fontSize: 10, color: "#445", textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 8 }}>
+      <div style={{ background: THEME.bgPanel, border: `1px solid ${THEME.borderPanel}`, borderRadius: 12, padding: "14px 18px", marginBottom: 4 }}>
+        <div style={{ fontSize: 10, color: THEME.textMuted, textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 8 }}>
           Performance historique
         </div>
         <InteractiveChart
@@ -3751,10 +3789,10 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
           </div>
           {sec.label === "Santé Financière" && metrics.isFinancial && (
             <div style={{
-              fontSize: 11, color: "#8b949e", fontStyle: "italic",
+              fontSize: 11, color: THEME.textSecondary, fontStyle: "italic",
               marginBottom: 8, padding: "6px 10px",
-              background: "#111825", borderRadius: 6,
-              borderLeft: "3px solid #f59e0b",
+              background: THEME.bgCard, borderRadius: 6,
+              borderLeft: `3px solid ${THEME.scoreAmber}`,
             }}>
               ⚠️ Secteur financier — Dette/Equity et Current Ratio ne sont pas des indicateurs pertinents pour ce secteur et sont exclus du scoring.
             </div>
@@ -3793,27 +3831,27 @@ function CryptoView({ data }: { data: any }) {
       <div style={{ display:"flex", alignItems:"flex-start", gap:16, marginBottom:20, flexWrap:"wrap" }}>
         {data.image?.small && <img src={data.image.small} alt="" style={{ width:52, height:52, borderRadius:"50%", marginTop:4 }}/>}
         <div style={{ flex:1 }}>
-          <div style={{ fontSize:22, fontWeight:800, color:"#e6edf3", marginBottom:6 }}>
+          <div style={{ fontSize:22, fontWeight:800, color:THEME.textPrimary, marginBottom:6 }}>
             {data.name}<TypeBadge type="CRYPTOCURRENCY"/>
             <span style={{ color:"#445", fontSize:13, fontWeight:400, marginLeft:8 }}>{data.symbol?.toUpperCase()}</span>
           </div>
           <div style={{ display:"flex", alignItems:"baseline", gap:14, flexWrap:"wrap" }}>
-            <span style={{ fontSize:34, fontWeight:900, color:"#f0a500", fontFamily:"'IBM Plex Mono',monospace" }}>
+            <span style={{ fontSize:34, fontWeight:900, color:THEME.accent, fontFamily:"'IBM Plex Mono',monospace" }}>
               ${fmt(price)}
             </span>
-            <span style={{ fontSize:14, fontWeight:700, color: up24?"#22c55e":"#ef4444" }}>
+            <span style={{ fontSize:14, fontWeight:700, color: up24?THEME.scoreGreen:THEME.scoreRed }}>
               {up24?"▲":"▼"} {Math.abs(chg24h||0).toFixed(2)}% 24h
             </span>
             {chg7d != null && (
-              <span style={{ fontSize:12, color: chg7d>=0?"#22c55e":"#ef4444" }}>
+              <span style={{ fontSize:12, color: chg7d>=0?THEME.scoreGreen:THEME.scoreRed }}>
                 {chg7d>=0?"▲":"▼"} {Math.abs(chg7d).toFixed(2)}% 7j
               </span>
             )}
           </div>
         </div>
-        <div style={{ background:"#151f30", border:"1px solid #2a3548", borderRadius:12, padding:"12px 20px", textAlign:"center" }}>
+        <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:12, padding:"12px 20px", textAlign:"center" }}>
           <div style={{ fontSize:10, color:"#445", marginBottom:3 }}>Rang CoinGecko</div>
-          <div style={{ fontSize:24, fontWeight:800, color:"#f0a500" }}>#{data.market_cap_rank}</div>
+          <div style={{ fontSize:24, fontWeight:800, color:THEME.accent }}>#{data.market_cap_rank}</div>
         </div>
       </div>
       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))", gap:10, marginBottom:18 }}>
@@ -3825,15 +3863,15 @@ function CryptoView({ data }: { data: any }) {
           ["ATH",              ath ? "$"+fmt(ath) : "—"],
           ["Depuis ATH",       athPct != null ? athPct.toFixed(1)+"%" : "—"],
         ].map(([k,v]) => (
-          <div key={k} style={{ background:"#151f30", border:"1px solid #2a3548", borderRadius:10, padding:"11px 14px" }}>
+          <div key={k} style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
             <div style={{ fontSize:10, color:"#445", marginBottom:3 }}>{k}</div>
-            <div style={{ fontSize:14, fontWeight:700, color:"#e6edf3", fontFamily:"'IBM Plex Mono',monospace" }}>{v}</div>
+            <div style={{ fontSize:14, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>{v}</div>
           </div>
         ))}
       </div>
       {data.description?.en && (
-        <div style={{ background:"#151f30", border:"1px solid #2a3548", borderRadius:10, padding:16, fontSize:12, color:"#8b949e", lineHeight:1.8 }}>
-          <div style={{ color:"#f0a500", fontWeight:700, marginBottom:8 }}>📖 À propos</div>
+        <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:16, fontSize:12, color:THEME.textSecondary, lineHeight:1.8 }}>
+          <div style={{ color:THEME.accent, fontWeight:700, marginBottom:8 }}>📖 À propos</div>
           {data.description.en.replace(/<[^>]+>/g,"").slice(0,600)}…
         </div>
       )}
@@ -4017,10 +4055,10 @@ export default function App() {
         <div style={{ fontSize:11, color:"#445", textTransform:"uppercase", letterSpacing:1.5, marginBottom:4 }}>
           Banque Centrale Européenne · Officiel
         </div>
-        <div style={{ fontSize:22, fontWeight:800, color:"#e6edf3", marginBottom:8 }}>
+        <div style={{ fontSize:22, fontWeight:800, color:THEME.textPrimary, marginBottom:8 }}>
           EUR / {currency}<TypeBadge type="CURRENCY"/>
         </div>
-        <span style={{ fontSize:38, fontWeight:900, color:"#f0a500", fontFamily:"'IBM Plex Mono',monospace" }}>
+        <span style={{ fontSize:38, fontWeight:900, color:THEME.accent, fontFamily:"'IBM Plex Mono',monospace" }}>
           {parseFloat(String(rate)).toFixed(4)}
         </span>
         <span style={{ fontSize:13, color:"#556", marginLeft:8 }}>1 EUR = {rate} {currency}</span>
@@ -4028,8 +4066,8 @@ export default function App() {
       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(120px,1fr))", gap:7 }}>
         {Object.entries(allRates).sort().map(([cur, r]) => (
           <div key={cur} style={{
-            background:"#151f30",
-            border:`1px solid ${cur === currency ? "#f0a500" : "#2a3548"}`,
+            background:THEME.bgCardAlt,
+            border:`1px solid ${cur === currency ? THEME.accent : THEME.borderMid}`,
             borderRadius:8, padding:"8px 12px"
           }}>
             <div style={{ fontSize:9, color:"#445" }}>EUR / {cur}</div>
@@ -4046,7 +4084,7 @@ export default function App() {
   );
 
   return (
-    <div style={{ minHeight:"100vh", background:"#080d14", fontFamily:"'IBM Plex Sans','Segoe UI',sans-serif", color:"#e6edf3" }}>
+    <div style={{ minHeight:"100vh", background:THEME.bgPage, fontFamily:"'IBM Plex Sans','Segoe UI',sans-serif", color:THEME.textPrimary }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;700&family=IBM+Plex+Sans:wght@400;600;700;800&display=swap');
         @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:none} }
@@ -4059,14 +4097,14 @@ export default function App() {
       `}</style>
 
       {/* HEADER */}
-      <div style={{ borderBottom:"1px solid #141e2e", background:"#090f1a", padding:"10px 0" }}>
+      <div style={{ borderBottom:`1px solid ${THEME.borderSubtle}`, background:THEME.bgHeader, padding:"10px 0" }}>
         <div className="app-inner">
           <div style={{ fontSize:9, color:"#445", letterSpacing:2.5, textTransform:"uppercase", marginBottom:2 }}>
             Multi-sources · Gratuit · Mondial
           </div>
-          <div style={{ fontSize:19, fontWeight:800, color:"#e6edf3" }}>
-            Stock Screener <span style={{ color:"#2a3548" }}>—</span>{" "}
-            <span style={{ color:"#f0a500" }}>Méthodologie d'Investissement</span>
+          <div style={{ fontSize:19, fontWeight:800, color:THEME.textPrimary }}>
+            Stock Screener <span style={{ color:THEME.borderMid }}>—</span>{" "}
+            <span style={{ color:THEME.accent }}>Méthodologie d'Investissement</span>
           </div>
           <div style={{ display:"flex", gap:14, marginTop:4 }}>
             {[["Yahoo Finance","#22c55e"],["CoinGecko","#f59e0b"],["ECB","#60a5fa"]].map(([l,c]) => (
@@ -4092,7 +4130,7 @@ export default function App() {
                   onClick={() => handleModeChange(m.key)}
                   style={{
                     background:  active ? m.color + "22" : "transparent",
-                    border:     `1px solid ${active ? m.color : "#2a3548"}`,
+                    border:     `1px solid ${active ? m.color : THEME.borderMid}`,
                     color:       active ? m.color : "#556",
                     borderRadius: 6, padding: "5px 13px",
                     fontSize: 11, fontWeight: active ? 800 : 600,
@@ -4128,8 +4166,8 @@ export default function App() {
                   "Ticker : AAPL · MC.PA · BTC · bitcoin · USD · EUR/GBP..."
                 }
                 style={{
-                  width:"100%", background:"#0d1420", border:"1px solid #2a3548",
-                  borderRadius:10, color:"#e6edf3", padding:"14px 18px",
+                  width:"100%", background:THEME.bgPanel, border:`1px solid ${THEME.borderMid}`,
+                  borderRadius:10, color:THEME.textPrimary, padding:"14px 18px",
                   fontSize:15, fontWeight:600, outline:"none",
                 }}
               />
@@ -4138,7 +4176,7 @@ export default function App() {
               {showSuggestions && suggestions.length > 0 && (
                 <div style={{
                   position:"absolute", top:"calc(100% + 6px)", left:0, right:0,
-                  background:"#0d1420", border:"1px solid #2a3548",
+                  background:THEME.bgPanel, border:`1px solid ${THEME.borderMid}`,
                   borderRadius:10, overflow:"hidden",
                   zIndex:50, boxShadow:"0 8px 32px #000d",
                 }}>
@@ -4151,16 +4189,16 @@ export default function App() {
                         style={{
                           display:"flex", alignItems:"center", gap:10,
                           padding:"9px 16px", cursor:"pointer",
-                          borderBottom: i < suggestions.length - 1 ? "1px solid #141e2e" : "none",
+                          borderBottom: i < suggestions.length - 1 ? `1px solid ${THEME.borderSubtle}` : "none",
                           background:"transparent", transition:"background .1s",
                         }}
-                        onMouseEnter={e => (e.currentTarget.style.background = "#141e2e")}
+                        onMouseEnter={e => (e.currentTarget.style.background = THEME.borderSubtle)}
                         onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
                       >
-                        <span style={{ fontFamily:"'IBM Plex Mono',monospace", fontWeight:800, color:"#e6edf3", fontSize:13, minWidth:70, flexShrink:0 }}>
+                        <span style={{ fontFamily:"'IBM Plex Mono',monospace", fontWeight:800, color:THEME.textPrimary, fontSize:13, minWidth:70, flexShrink:0 }}>
                           {s.symbol}
                         </span>
-                        <span style={{ flex:1, fontSize:12, color:"#8b949e", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                        <span style={{ flex:1, fontSize:12, color:THEME.textSecondary, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
                           {s.name}
                         </span>
                         <span style={{ fontSize:9, fontWeight:800, color:b.color, background:b.bg, borderRadius:4, padding:"2px 6px", letterSpacing:1, textTransform:"uppercase", flexShrink:0 }}>
@@ -4177,7 +4215,7 @@ export default function App() {
             </div>
 
             <button onClick={() => { setShowSuggestions(false); doAnalyze(); }} disabled={loading} style={{
-              background: loading ? "#141e2e" : "#f0a500",
+              background: loading ? THEME.borderSubtle : THEME.accent,
               color: loading ? "#445" : "#000",
               border:"none", borderRadius:10, padding:"14px 26px",
               fontSize:14, fontWeight:800,
@@ -4195,10 +4233,10 @@ export default function App() {
       {log.length > 0 && (
         <div style={{ marginTop:14 }}>
           <div className="app-inner">
-            <div style={{ background:"#090f1a", border:"1px solid #141e2e", borderRadius:8, padding:"8px 14px" }}>
+            <div style={{ background:THEME.bgHeader, border:`1px solid ${THEME.borderSubtle}`, borderRadius:8, padding:"8px 14px" }}>
               <div style={{ fontSize:9, color:"#445", textTransform:"uppercase", letterSpacing:1.5, marginBottom:5 }}>Journal</div>
               {log.map((l,i) => (
-                <div key={i} style={{ fontSize:11, color:"#556", fontFamily:"'IBM Plex Mono',monospace" }}>{l}</div>
+                <div key={i} style={{ fontSize:11, color:THEME.textSecondary, fontFamily:"'IBM Plex Mono',monospace" }}>{l}</div>
               ))}
             </div>
           </div>
@@ -4209,7 +4247,7 @@ export default function App() {
       {error && (
         <div style={{ marginTop:14 }}>
           <div className="app-inner">
-            <div style={{ background:"#1e0a0a", border:"1px solid #5a1a1a", borderRadius:8, padding:"12px 16px", color:"#ef4444", fontSize:13 }}>
+            <div style={{ background:"#1e0a0a", border:"1px solid #5a1a1a", borderRadius:8, padding:"12px 16px", color:THEME.scoreRed, fontSize:13 }}>
               ⚠️ {error}
             </div>
           </div>
@@ -4219,7 +4257,7 @@ export default function App() {
       {/* LOADING */}
       {loading && (
         <div style={{ display:"flex", justifyContent:"center", padding:60 }}>
-          <div style={{ width:34, height:34, border:"3px solid #141e2e", borderTopColor:"#f0a500", borderRadius:"50%", animation:"spin 1s linear infinite" }}/>
+          <div style={{ width:34, height:34, border:`3px solid ${THEME.borderSubtle}`, borderTopColor:THEME.accent, borderRadius:"50%", animation:"spin 1s linear infinite" }}/>
         </div>
       )}
 
@@ -4235,23 +4273,23 @@ export default function App() {
       )}
 
       {/* DISCLAIMER LÉGAL */}
-      <div style={{ borderTop:"1px solid #141e2e", background:"#090f1a", marginTop:"auto", padding:"20px 0" }}>
+      <div style={{ borderTop:`1px solid ${THEME.borderSubtle}`, background:THEME.bgHeader, marginTop:"auto", padding:"20px 0" }}>
         <div className="app-inner">
           <div style={{
-            background:"#0d1420", border:"1px solid #1e2a3a", borderRadius:10,
+            background:THEME.bgPanel, border:`1px solid ${THEME.borderPanel}`, borderRadius:10,
             padding:"16px 20px", display:"flex", gap:14, alignItems:"flex-start",
           }}>
             <span style={{ fontSize:18, flexShrink:0 }}>⚖️</span>
             <div>
-              <div style={{ fontSize:11, fontWeight:800, color:"#8b949e", textTransform:"uppercase", letterSpacing:1.2, marginBottom:6 }}>
+              <div style={{ fontSize:11, fontWeight:800, color:THEME.textSecondary, textTransform:"uppercase", letterSpacing:1.2, marginBottom:6 }}>
                 Avertissement — Pas de conseil en investissement
               </div>
-              <div style={{ fontSize:11, color:"#556", lineHeight:1.8 }}>
-                Les informations, analyses et signaux présentés sur ce screener sont fournis à titre <strong style={{ color:"#8b949e" }}>purement informatif et éducatif</strong>.
+              <div style={{ fontSize:11, color:THEME.textSecondary, lineHeight:1.8 }}>
+                Les informations, analyses et signaux présentés sur ce screener sont fournis à titre <strong style={{ color:THEME.textPrimary }}>purement informatif et éducatif</strong>.
                 Ils ne constituent en aucun cas un conseil en investissement, une recommandation d'achat ou de vente, ni une incitation à investir.
-                Tout investissement comporte un <strong style={{ color:"#8b949e" }}>risque de perte partielle ou totale du capital</strong>.
+                Tout investissement comporte un <strong style={{ color:THEME.textPrimary }}>risque de perte partielle ou totale du capital</strong>.
                 Les performances passées ne préjugent pas des performances futures.
-                L'auteur de cet outil <strong style={{ color:"#8b949e" }}>décline toute responsabilité</strong> quant aux décisions prises sur la base de ces données
+                L'auteur de cet outil <strong style={{ color:THEME.textPrimary }}>décline toute responsabilité</strong> quant aux décisions prises sur la base de ces données
                 et aux pertes éventuelles qui pourraient en résulter.
                 Consultez un conseiller financier agréé avant toute décision d'investissement.
               </div>
