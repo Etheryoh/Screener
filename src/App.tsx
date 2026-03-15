@@ -1906,7 +1906,7 @@ function EduTooltip({ edu, id }: { edu: TechSignal["edu"]; id: string }) {
 }
 
 // ── TOOLTIP MÉTRIQUE FONDAMENTALE ────────────────────────────
-function MetricTooltip({ edu }: { edu: MetricProps["edu"] }) {
+function MetricTooltip({ edu, id }: { edu: MetricProps["edu"]; id?: string }) {
   if (!edu) return null;
   const content: TooltipContent = {
     title: "Comprendre cet indicateur",
@@ -1917,7 +1917,7 @@ function MetricTooltip({ edu }: { edu: MetricProps["edu"] }) {
       { label: "⚠️ Mauvais signe", text: edu.bad,       variant: "bad"     },
     ],
   };
-  return <Tooltip content={content} id="metric" />;
+  return <Tooltip content={content} id={id ?? "metric"} />;
 }
 
 // ── COMPOSANT PANEL RÉUTILISABLE ──────────────────────────────
@@ -1926,18 +1926,23 @@ interface PanelProps {
   title:        string;
   badge?:       { label: string; color: string };
   badge2?:      { label: string; color: string };
+  badge3?:      { label: string; color: string };
   rightLabel?:  string;
+  rightValue?:  { label: string; value: string; color: string };
+  confidence?:  number;
   borderColor?: string;
+  bgColor?:     string;
   children:     React.ReactNode;
   defaultOpen?: boolean;
 }
 
-function Panel({ icon, title, badge, badge2, rightLabel, borderColor, children, defaultOpen = true }: PanelProps) {
+function Panel({ icon, title, badge, badge2, badge3, rightLabel, rightValue, confidence, borderColor, bgColor, children, defaultOpen = true }: PanelProps) {
   const [open, setOpen] = useState(defaultOpen);
-  const border = borderColor ? `1px solid ${borderColor}33` : `1px solid ${THEME.borderPanel}`;
+  const border = borderColor ? `1px solid ${borderColor}55` : `1px solid ${THEME.borderPanel}`;
+  const bg     = bgColor ?? THEME.bgPanel;
   return (
     <div style={{
-      background:   THEME.bgPanel,
+      background:   bg,
       border,
       borderRadius: 12,
       padding:      "14px 18px",
@@ -1950,7 +1955,9 @@ function Panel({ icon, title, badge, badge2, rightLabel, borderColor, children, 
           alignItems:     "center",
           justifyContent: "space-between",
           cursor:         "pointer",
-          marginBottom:   open ? 12 : 0,
+          marginBottom:   open ? (confidence != null ? 0 : 12) : 0,
+          flexWrap:       "wrap",
+          gap:            8,
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
@@ -1977,24 +1984,51 @@ function Panel({ icon, title, badge, badge2, rightLabel, borderColor, children, 
           )}
           {badge2 && (
             <span style={{
-              fontSize:     10,
+              fontSize:     11,
               fontWeight:   700,
               color:        badge2.color,
-              background:   badge2.color + "15",
+              background:   badge2.color + "22",
               borderRadius: 4,
               padding:      "2px 8px",
             }}>
               {badge2.label}
             </span>
           )}
+          {badge3 && (
+            <span style={{
+              fontSize:     11,
+              fontWeight:   700,
+              color:        badge3.color,
+              background:   badge3.color + "22",
+              borderRadius: 4,
+              padding:      "2px 8px",
+            }}>
+              {badge3.label}
+            </span>
+          )}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, flexShrink: 0 }}>
+          {rightValue && (
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: 9, color: THEME.textMuted, textTransform: "uppercase", letterSpacing: 1, marginBottom: 2 }}>
+                {rightValue.label}
+              </div>
+              <div style={{ fontSize: 15, fontWeight: 800, color: rightValue.color }}>
+                {rightValue.value}
+              </div>
+            </div>
+          )}
           {rightLabel && (
             <span style={{ fontSize: 10, color: THEME.textMuted }}>{rightLabel}</span>
           )}
           <span style={{ fontSize: 10, color: THEME.textMuted }}>{open ? "▲" : "▼"}</span>
         </div>
       </div>
+      {confidence != null && (
+        <div style={{ height: 3, background: THEME.borderPanel, borderRadius: 2, margin: open ? "10px 0 12px" : "10px 0 0", overflow: "hidden" }}>
+          <div style={{ width: `${confidence}%`, height: "100%", background: borderColor ?? THEME.accent, borderRadius: 2 }}/>
+        </div>
+      )}
       {open && children}
     </div>
   );
@@ -2538,15 +2572,16 @@ function MetricCard({ label, value, s, edu }: MetricProps) {
   return (
     <div style={{
       background: bg, border: `1px solid ${border}`,
-      borderRadius: 10, padding: "12px 14px",
+      borderRadius: 10, padding: "14px 16px",
       cursor: "default",
+      transition: "border-color .15s",
     }}>
-      <div style={{ fontSize: 10, color: THEME.textSecondary, textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>
+      <div style={{ fontSize: 10, color: THEME.textSecondary, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>
         {label}
       </div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
         <span style={{
-          fontSize: 22, fontWeight: 800,
+          fontSize: 24, fontWeight: 800,
           color: s == null ? THEME.textPrimary : scoreColor(s),
           fontFamily: "'IBM Plex Mono',monospace",
         }}>
@@ -2562,7 +2597,7 @@ function MetricCard({ label, value, s, edu }: MetricProps) {
               {scoreEmoji(s)} {s}/10
             </span>
           )}
-          <MetricTooltip edu={edu}/>
+          <MetricTooltip edu={edu} id={label}/>
         </div>
       </div>
     </div>
@@ -2572,9 +2607,12 @@ function MetricCard({ label, value, s, edu }: MetricProps) {
 function SectionTitle({ icon, label }: { icon: string; label: string }) {
   return (
     <div style={{
-      fontSize: 10, fontWeight: 800, color: THEME.textMuted,
+      fontSize: 11, fontWeight: 800, color: THEME.textSecondary,
       textTransform: "uppercase", letterSpacing: 2,
-      margin: "20px 0 10px", display: "flex", alignItems: "center", gap: 6,
+      margin: "24px 0 12px",
+      display: "flex", alignItems: "center", gap: 8,
+      paddingBottom: 8,
+      borderBottom: `1px solid ${THEME.borderSubtle}`,
     }}>
       <span>{icon}</span> {label}
     </div>
@@ -2618,7 +2656,6 @@ function MarketContextPanel({
   context:   MarketContext;
   modifiers: string[];
 }) {
-  const [open, setOpen] = useState(true);
   const isEssoufflement = context.subtype === "essoufflement";
   const isBearDir = context.structure.type === "bearish";
 
@@ -2694,51 +2731,19 @@ function MarketContextPanel({
   };
 
   return (
-    <div style={{
-      background: cc.bg, border: `1px solid ${cc.border}55`,
-      borderRadius: 14, padding: "16px 20px", marginBottom: 14,
-    }}>
-      {/* En-tête avec collapse */}
-      <div
-        onClick={() => setOpen(o => !o)}
-        style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: open ? 10 : 0, flexWrap: "wrap", cursor: "pointer" }}
-      >
-        <span style={{ fontSize: 20 }}>{cc.emoji}</span>
-        <span style={{ fontSize: 10, fontWeight: 800, color: THEME.textMuted, textTransform: "uppercase", letterSpacing: 2 }}>
-          Contexte de Marché
-        </span>
-        <span style={{ fontSize: 17, fontWeight: 900, color: cc.badge, textTransform: "uppercase", letterSpacing: 1 }}>
-          {typeLabel}
-        </span>
-
-        {subtypeLabel && (
-          <span style={{ fontSize: 11, fontWeight: 700, color: cc.badge, background: cc.badge+"22", borderRadius: 4, padding: "2px 8px" }}>
-            {subtypeLabel}
-          </span>
-        )}
-
-        {maturityEntry && (
-          <span style={{ fontSize: 11, fontWeight: 700, color: maturityEntry.color, background: maturityEntry.color+"22", borderRadius: 4, padding: "2px 8px" }}>
-            {maturityEntry.label}
-          </span>
-        )}
-
-        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 14, flexShrink: 0 }}>
-          <div style={{ textAlign: "right" }}>
-            <div style={{ fontSize: 9, color: THEME.textMuted, textTransform: "uppercase", letterSpacing: 1, marginBottom: 2 }}>Confiance</div>
-            <div style={{ fontSize: 15, fontWeight: 800, color: cc.badge }}>{context.confidence}%</div>
-          </div>
-          <span style={{ fontSize: 10, color: THEME.textMuted }}>{open ? "▲" : "▼"}</span>
-        </div>
-      </div>
-
-      {open && (
-        <>
-          {/* Barre de confiance */}
-          <div style={{ height: 3, background: THEME.borderPanel, borderRadius: 2, marginBottom: 12, overflow: "hidden" }}>
-            <div style={{ width: `${context.confidence}%`, height: "100%", background: cc.badge, borderRadius: 2 }}/>
-          </div>
-
+    <Panel
+      icon={cc.emoji}
+      title="Contexte de Marché"
+      badge={{ label: typeLabel, color: cc.badge }}
+      badge2={subtypeLabel ? { label: subtypeLabel, color: cc.badge } : undefined}
+      badge3={maturityEntry ? { label: maturityEntry.label, color: maturityEntry.color } : undefined}
+      rightValue={{ label: "Confiance", value: `${context.confidence}%`, color: cc.badge }}
+      confidence={context.confidence}
+      borderColor={cc.border}
+      bgColor={cc.bg}
+      defaultOpen={true}
+    >
+      <>
           {/* Détails — ADX / Structure / Divergence avec tooltips */}
           <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
             {context.adx != null && (
@@ -2806,9 +2811,8 @@ function MarketContextPanel({
               </div>
             );
           })()}
-        </>
-      )}
-    </div>
+      </>
+    </Panel>
   );
 }
 
@@ -3296,8 +3300,8 @@ function EntryRecommendationPanel({ rec }: { rec: EntryRecommendation }) {
   );
 }
 
-function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey, macro, zone }: {
-  metrics: any; chartData: any; ticker: string; optimalUTKey?: string; macro?: MacroContext | null; zone?: MacroZone;
+function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey, macro, zone, eurRate }: {
+  metrics: any; chartData: any; ticker: string; optimalUTKey?: string; macro?: MacroContext | null; zone?: MacroZone; eurRate?: number | null;
 }) {
   if (!metrics) return null;
   const {
@@ -3313,6 +3317,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
     initialChartData
   );
   const [chartLoading, setChartLoading] = useState(false);
+  const [showEur,      setShowEur]      = useState(false);
 
   // Sync chartData quand initialChartData change (nouvelle recherche)
   useEffect(() => {
@@ -3570,12 +3575,39 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
         </div>
         <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
           <span style={{ fontSize: 34, fontWeight: 900, color: THEME.accent, fontFamily: "'IBM Plex Mono',monospace" }}>
-            {currency} {fmt(price)}
+            {showEur && eurRate != null && eurRate !== 1 && metrics.price != null
+              ? `${(metrics.price * eurRate).toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} EUR`
+              : `${currency} ${fmt(price)}`
+            }
           </span>
           {change1d != null && (
             <span style={{ fontSize: 15, fontWeight: 700, color: change1d >= 0 ? THEME.scoreGreen : THEME.scoreRed }}>
               {change1d >= 0 ? "▲" : "▼"} {Math.abs(change1d * 100).toFixed(2)}%
             </span>
+          )}
+          {eurRate != null && eurRate !== 1 && metrics.price != null && (
+            <button
+              onClick={() => setShowEur(v => !v)}
+              style={{
+                background: showEur ? THEME.accent + "33" : THEME.bgCard,
+                border: `1px solid ${showEur ? THEME.accent : THEME.borderMid}`,
+                borderRadius: 8,
+                padding: "5px 14px",
+                fontSize: 13,
+                fontWeight: 800,
+                color: showEur ? THEME.accent : THEME.textSecondary,
+                cursor: "pointer",
+                transition: "all .15s",
+                fontFamily: "'IBM Plex Mono',monospace",
+                letterSpacing: 0.5,
+                alignSelf: "center",
+              }}
+            >
+              {showEur
+                ? `↩ ${currency}`
+                : `≈ ${(metrics.price * eurRate).toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} EUR`
+              }
+            </button>
           )}
         </div>
       </div>
@@ -3785,7 +3817,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
         <div key={sec.label}>
           <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", margin:"20px 0 10px" }}>
             <SectionTitle icon={sec.icon} label={sec.label}/>
-            <span style={{ fontSize:9, color:"#334", fontStyle:"italic" }}>{sec.note}</span>
+            <span style={{ fontSize:9, color:THEME.textMuted, fontStyle:"italic" }}>{sec.note}</span>
           </div>
           {sec.label === "Santé Financière" && metrics.isFinancial && (
             <div style={{
@@ -3797,13 +3829,13 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
               ⚠️ Secteur financier — Dette/Equity et Current Ratio ne sont pas des indicateurs pertinents pour ce secteur et sont exclus du scoring.
             </div>
           )}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 10 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12 }}>
             {sec.cards.map((c, i) => <MetricCard key={i} {...c}/>)}
           </div>
         </div>
       ))}
 
-      <div style={{ fontSize: 10, color: "#333", textAlign: "right", marginTop: 16 }}>
+      <div style={{ fontSize: 10, color: THEME.textMuted, textAlign: "right", marginTop: 16 }}>
         Source : Yahoo Finance via proxy · Données indicatives, non contractuelles
       </div>
     </div>
@@ -3883,7 +3915,7 @@ function CryptoView({ data }: { data: any }) {
 // COUCHE 4e — APPLICATION PRINCIPALE
 // ════════════════════════════════════════════════════════════════
 type ResultType =
-  | { type: "stock";  metrics: any; chartData: any; ticker: string; optimalUTKey?: string; macro?: MacroContext | null; zone?: MacroZone }
+  | { type: "stock";  metrics: any; chartData: any; ticker: string; optimalUTKey?: string; macro?: MacroContext | null; zone?: MacroZone; eurRate?: number | null }
   | { type: "crypto"; data: any }
   | { type: "forex";  currency: string; rate: number; allRates: Record<string, number> };
 
@@ -3938,6 +3970,14 @@ export default function App() {
       fetchMacroContext(zone),
     ]);
 
+    const ecbRatesData = await ecbRates();
+    const currency = yfDataDaily?.meta?.currency || "USD";
+    const eurRate = (() => {
+      if (currency === "EUR") return 1;
+      if (currency === "USD") return ecbRatesData["USD"] ? 1 / ecbRatesData["USD"] : null;
+      return ecbRatesData[currency] ? 1 / ecbRatesData[currency] : null;
+    })();
+
     // Détermination UT optimale par cycle dominant (Ehlers Sinewave)
     let optimalUTKey = "5a";
     const dailyC = (yfDataDaily?.closes ?? []) as (number|null)[];
@@ -3979,7 +4019,7 @@ export default function App() {
       addLog(`✅ Yahoo Finance : ${yfData.meta.quoteType || "EQUITY"}`);
       const yf = await yfFundamentals(upper, addLog);
       const metrics = buildMetrics(yf, yfData.meta);
-      setResult({ type:"stock", metrics, ticker: upper, optimalUTKey, macro, zone, chartData: {
+      setResult({ type:"stock", metrics, ticker: upper, optimalUTKey, macro, zone, eurRate, chartData: {
         closes:     yfData.closes,
         timestamps: yfData.timestamps,
         opens:      yfData.opens     ?? [],
@@ -4265,7 +4305,7 @@ export default function App() {
       {result && !loading && (
         <div style={{ paddingTop:22, paddingBottom:40 }}>
           <div className="app-inner">
-            {result.type === "stock"  && <StockView metrics={result.metrics} chartData={result.chartData} ticker={result.ticker ?? ""} optimalUTKey={result.optimalUTKey} macro={result.macro} zone={result.zone}/>}
+            {result.type === "stock"  && <StockView metrics={result.metrics} chartData={result.chartData} ticker={result.ticker ?? ""} optimalUTKey={result.optimalUTKey} macro={result.macro} zone={result.zone} eurRate={result.eurRate}/>}
             {result.type === "crypto" && <CryptoView data={result.data}/>}
             {result.type === "forex"  && <ForexView {...result}/>}
           </div>
