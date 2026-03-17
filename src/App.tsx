@@ -524,7 +524,7 @@ function buildMetrics(yf: any, meta: any) {
 
   // ── Règle 6 : types sans fondamentaux d'entreprise ───────────
   // INDEX, FUTURE, BOND ne se lisent pas avec des ratios PE/PB/ROE.
-  const noFundaTypes = ["INDEX", "FUTURE", "BOND", "MUTUALFUND"];
+  const noFundaTypes = ["INDEX", "FUTURE", "BOND", "MUTUALFUND", "ETF", "CURRENCY"];
   if (noFundaTypes.indexOf((quoteType || "").toUpperCase()) !== -1) globalScore = null;
 
   const scores: Record<string, number | null> = {
@@ -1404,7 +1404,11 @@ function computeTechSignals(
   const rsi   = calcRSI(closes);
   const ema50  = calcEMA(closes, 50);
   const ema200 = calcEMA(closes, 200);
-  const macd   = calcMACD(closes);
+  const macdRaw = calcMACD(closes);
+  const macd = (macdRaw != null &&
+    !isNaN(macdRaw.macd) &&
+    !isNaN(macdRaw.signal) &&
+    !isNaN(macdRaw.hist)) ? macdRaw : null;
   const vol    = calcVolumeAnomaly(volumes);
   const last   = closes.filter((v): v is number => v != null).slice(-1)[0];
 
@@ -2308,9 +2312,9 @@ function TechnicalPanel({ precomputed, context }: { precomputed: { signals: Tech
 
         {/* ── Grille haussier / baissier ── */}
         {(bullSignals.length > 0 || bearSignals.length > 0) ? (
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+          <div style={{ display:"flex", flexDirection:"column", gap:12, overflow:"hidden" }}>
             {/* Colonne haussière */}
-            <div>
+            <div style={{ width:"100%" }}>
               <div style={{ fontSize:10, color:THEME.scoreGreen, textTransform:"uppercase", letterSpacing:1.2, fontWeight:800, marginBottom:6 }}>
                 ✅ Points positifs ({bullSignals.length})
               </div>
@@ -2322,7 +2326,7 @@ function TechnicalPanel({ precomputed, context }: { precomputed: { signals: Tech
               </div>
             </div>
             {/* Colonne baissière */}
-            <div>
+            <div style={{ width:"100%" }}>
               <div style={{ fontSize:10, color:THEME.scoreRed, textTransform:"uppercase", letterSpacing:1.2, fontWeight:800, marginBottom:6 }}>
                 ⚠️ Points négatifs ({bearSignals.length})
               </div>
@@ -2361,7 +2365,7 @@ function TechnicalPanel({ precomputed, context }: { precomputed: { signals: Tech
                   <span style={{ fontSize: 12, flexShrink: 0 }}>{s.emoji}</span>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 11, fontWeight: 600, color: THEME.textPrimary,
-                                  whiteSpace: "nowrap", overflow: "hidden",
+                                  overflow: "hidden",
                                   textOverflow: "ellipsis" }}>
                       {s.plain}
                     </div>
@@ -2381,7 +2385,11 @@ function TechnicalPanel({ precomputed, context }: { precomputed: { signals: Tech
         {synthPhrase && (
           <div style={{ padding:"10px 14px", background:THEME.bgCard, borderRadius:8, borderLeft:"3px solid #4a90d9" }}>
             <div style={{ fontSize:9, color:"#4a90d9", textTransform:"uppercase", letterSpacing:1.5, fontWeight:800, marginBottom:5 }}>
-              Synthèse — {bulls} positif{bulls > 1 ? "s" : ""} · {bears} négatif{bears > 1 ? "s" : ""} / {total}
+              Synthèse —{" "}
+              <span style={{ color: THEME.scoreGreen, fontWeight: 800 }}>{bulls}+</span>
+              <span style={{ color: THEME.textMuted }}> · </span>
+              <span style={{ color: THEME.scoreRed, fontWeight: 800 }}>{bears}-</span>
+              <span style={{ color: THEME.textMuted }}> / {total}</span>
             </div>
             <div style={{ fontSize:11, color:THEME.textSecondary, lineHeight:1.7 }}>{synthPhrase}</div>
           </div>
@@ -2747,6 +2755,7 @@ function InteractiveChart({
             borderRadius: 7,
             padding: "6px 11px",
             pointerEvents: "none",
+            maxWidth: "200px",
             whiteSpace: "nowrap",
             zIndex: 10,
           }}>
@@ -2851,11 +2860,12 @@ function MetricCard({ label, value, s, edu }: MetricProps) {
       <div style={{ fontSize: 10, color: THEME.textSecondary, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>
         {label}
       </div>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, minWidth: 0 }}>
         <span style={{
           fontSize: 24, fontWeight: 800,
           color: s == null ? THEME.textPrimary : scoreColor(s),
           fontFamily: "'IBM Plex Mono',monospace",
+          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%",
         }}>
           {value}
         </span>
@@ -3891,38 +3901,36 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
           borderRadius: 14, padding: "18px 22px", marginBottom: 14,
           display: "flex", alignItems: "center", gap: 24, flexWrap: "wrap",
         }}>
-          {/* Contenu principal */}
-          <div style={{ flex: 1 }}>
-            {/* Double score + verdict */}
-            <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 12, flexWrap: "wrap" }}>
-              {/* Score Qualité (fondamental) */}
-              {metrics?.globalScore != null && (
-                <div style={{ textAlign: "center" }}>
-                  <div style={{ fontSize: 9, fontWeight: 800, color: THEME.textMuted,
-                                textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 2 }}>
-                    Qualité
-                  </div>
-                  <div style={{ display: "flex", alignItems: "baseline", gap: 3 }}>
-                    <span style={{
-                      fontSize: 46, fontWeight: 900, lineHeight: 1,
-                      color: scoreColor(metrics.globalScore),
-                      fontFamily: "'IBM Plex Mono',monospace",
-                    }}>{metrics.globalScore}</span>
-                    <span style={{ fontSize: 14, color: THEME.textSecondary, fontFamily: "'IBM Plex Mono',monospace" }}>/10</span>
-                  </div>
-                  <div style={{ fontSize: 9, color: THEME.textMuted, marginTop: 1 }}>Fondamentaux</div>
+          {/* Jauges */}
+          <div className="score-gauge-wrap" style={{
+            display: "flex",
+            flexDirection: "row",
+            justifyContent: "space-evenly",
+            alignItems: "center",
+            width: "100%",
+            gap: 24,
+            flexWrap: "wrap",
+          }}>
+            {metrics?.globalScore != null && (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                <ScoreGauge score={metrics.globalScore}/>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 3 }}>
+                  <span style={{
+                    fontSize: 46, fontWeight: 900, lineHeight: 1,
+                    color: scoreColor(metrics.globalScore),
+                    fontFamily: "'IBM Plex Mono',monospace",
+                  }}>{metrics.globalScore}</span>
+                  <span style={{ fontSize: 14, color: THEME.textSecondary, fontFamily: "'IBM Plex Mono',monospace" }}>/10</span>
                 </div>
-              )}
-              {/* Séparateur */}
-              {metrics?.globalScore != null && (
-                <div style={{ fontSize: 24, color: "#223", fontWeight: 100, alignSelf: "center" }}>·</div>
-              )}
-              {/* Score Timing (technique) */}
-              <div style={{ textAlign: "center" }}>
-                <div style={{ fontSize: 9, fontWeight: 800, color: THEME.textMuted,
-                              textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 2 }}>
-                  Timing
-                </div>
+                <div style={{
+                  fontSize: 9, color: THEME.textMuted,
+                  textTransform: "uppercase", letterSpacing: 1.5,
+                }}>Qualité — Fondamentaux</div>
+              </div>
+            )}
+            {finalScore != null && (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                <ScoreGauge score={finalScore}/>
                 <div style={{ display: "flex", alignItems: "baseline", gap: 3 }}>
                   <span style={{
                     fontSize: 46, fontWeight: 900, lineHeight: 1,
@@ -3931,13 +3939,19 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
                   }}>{finalScore}</span>
                   <span style={{ fontSize: 14, color: THEME.textSecondary, fontFamily: "'IBM Plex Mono',monospace" }}>/10</span>
                 </div>
-                <div style={{ fontSize: 9, color: THEME.textMuted, marginTop: 1 }}>Entrée</div>
+                <div style={{
+                  fontSize: 9, color: THEME.textMuted,
+                  textTransform: "uppercase", letterSpacing: 1.5,
+                }}>Timing — Entrée</div>
               </div>
-              {/* Verdict textuel */}
-              <div>
-                <div style={{ fontSize: 20, fontWeight: 900, color: v.color }}>{v.emoji} {v.label}</div>
-                <div style={{ fontSize: 11, color: THEME.textSecondary, lineHeight: 1.4, marginTop: 2 }}>{v.desc}</div>
-              </div>
+            )}
+          </div>
+          {/* Contenu principal */}
+          <div style={{ flex: 1 }}>
+            {/* Verdict textuel */}
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 20, fontWeight: 900, color: v.color }}>{v.emoji} {v.label}</div>
+              <div style={{ fontSize: 11, color: THEME.textSecondary, lineHeight: 1.4, marginTop: 2 }}>{v.desc}</div>
             </div>
             {/* Mini-jauges */}
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
@@ -3956,8 +3970,14 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
               }}>
                 <span style={{ fontSize: 9, color: THEME.textSecondary, textTransform: "uppercase", letterSpacing: 1 }}>Oscillateurs</span>
                 <span style={{ fontSize: 12, fontWeight: 700, color: techSummary.color }}>{techSummary.label}</span>
+                <span style={{ fontSize: 9, color: THEME.scoreGreen, fontWeight: 700 }}>
+                  {techSummary.bulls}+
+                </span>
+                <span style={{ fontSize: 9, color: THEME.scoreRed, fontWeight: 700 }}>
+                  {techSummary.bears}-
+                </span>
                 <span style={{ fontSize: 9, color: THEME.textSecondary }}>
-                  {techSummary.bulls}↑ {techSummary.bears}↓ / {techSummary.total}
+                  {" "}/ {techSummary.total}
                 </span>
               </div>
             )}
@@ -3989,10 +4009,6 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
                 </div>
               );
             })()}
-          </div>
-          {/* Jauge à droite */}
-          <div className="score-gauge-wrap" style={{ flexShrink: 0 }}>
-            <ScoreGauge score={finalScore}/>
           </div>
         </div>
       ) : (
@@ -4031,8 +4047,15 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
             }}>
               <span style={{ fontSize: 9, color: THEME.textSecondary, textTransform: "uppercase", letterSpacing: 1 }}>Oscillateurs</span>
               <span style={{ fontSize: 12, fontWeight: 700, color: techSummary.color }}>{techSummary.label}</span>
+              <span style={{ fontSize: 9, color: THEME.scoreGreen, fontWeight: 700 }}>
+                {techSummary.bulls}+
+              </span>
+              <span style={{ fontSize: 9, color: THEME.textSecondary }}> / </span>
+              <span style={{ fontSize: 9, color: THEME.scoreRed, fontWeight: 700 }}>
+                {techSummary.bears}-
+              </span>
               <span style={{ fontSize: 9, color: THEME.textSecondary }}>
-                {techSummary.bulls}↑ {techSummary.bears}↓ / {techSummary.total}
+                {" "}/ {techSummary.total}
               </span>
             </div>
           )}
@@ -4085,7 +4108,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
       </div>
 
       {/* SECTIONS — masquées pour les types sans fondamentaux d'entreprise */}
-      {["INDEX","FUTURE","BOND"].indexOf((quoteType||"").toUpperCase()) === -1 && SECTIONS.map(sec => (
+      {["INDEX","FUTURE","BOND","ETF","MUTUALFUND","CURRENCY"].indexOf((quoteType||"").toUpperCase()) === -1 && SECTIONS.map(sec => (
         <div key={sec.label}>
           <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", margin:"20px 0 10px" }}>
             <SectionTitle icon={sec.icon} label={sec.label}/>
@@ -4309,6 +4332,32 @@ export default function App() {
 
   // ── Suggestions ──────────────────────────────────────────────
   const fetchSuggestions = async (q: string, m: SearchMode) => {
+    const q_upper = q.trim().toUpperCase();
+    const CURRENCY_CODES = new Set([
+      "USD","EUR","GBP","JPY","CHF","CAD","AUD","NZD","SEK","NOK",
+      "DKK","PLN","HUF","CZK","TRY","ZAR","SGD","HKD","MXN","BRL",
+      "CNY","INR","KRW","THB","IDR","MYR","PHP","AED","SAR","ILS"
+    ]);
+    if (CURRENCY_CODES.has(q_upper)) {
+      setSuggestions([{
+        symbol: q_upper,
+        name: `${q_upper} — Taux de change (ECB)`,
+        type: "CURRENCY",
+        exchange: "ECB",
+      }]);
+      setShowSuggestions(true);
+      return;
+    }
+    const isForexPattern =
+      q_upper.includes("=") ||
+      /^[A-Z]{3}[\/][A-Z]{3}$/.test(q_upper) ||
+      CURRENCY_CODES.has(q_upper) ||
+      (m === "forex");
+    if (isForexPattern) {
+      setSuggestions([]);
+      setShowSuggestions(false);
+      return;
+    }
     if (q.trim().length < 1) { setSuggestions([]); setShowSuggestions(false); return; }
     const all: SearchSuggestion[] = [];
     if (m === "crypto") {
@@ -4325,8 +4374,35 @@ export default function App() {
     );
     const seen   = new Set<string>();
     const unique = filtered.filter(r => { if (seen.has(r.symbol)) return false; seen.add(r.symbol); return true; });
-    setSuggestions(unique.slice(0, 10));
-    setShowSuggestions(unique.length > 0);
+    const sorted = unique.sort((a, b) => {
+      const aSym = a.symbol.toUpperCase();
+      const bSym = b.symbol.toUpperCase();
+
+      // 1. Correspondance exacte Yahoo avant correspondance exacte CoinGecko
+      const aExactYF = aSym === q_upper && a.exchange !== "CoinGecko" ? 0 : 1;
+      const bExactYF = bSym === q_upper && b.exchange !== "CoinGecko" ? 0 : 1;
+      if (aExactYF !== bExactYF) return aExactYF - bExactYF;
+
+      // 2. Correspondance exacte (toutes sources)
+      const aExact = aSym === q_upper ? 0 : 1;
+      const bExact = bSym === q_upper ? 0 : 1;
+      if (aExact !== bExact) return aExact - bExact;
+
+      // 3. Symbole commence par la saisie
+      const aStarts = aSym.startsWith(q_upper) ? 0 : 1;
+      const bStarts = bSym.startsWith(q_upper) ? 0 : 1;
+      if (aStarts !== bStarts) return aStarts - bStarts;
+
+      // 4. Yahoo Finance avant CoinGecko (résultats par nom plus fiables)
+      const aYF = a.exchange !== "CoinGecko" ? 0 : 1;
+      const bYF = b.exchange !== "CoinGecko" ? 0 : 1;
+      if (aYF !== bYF) return aYF - bYF;
+
+      // 5. Symbole le plus court en premier
+      return aSym.length - bSym.length;
+    });
+    setSuggestions(sorted.slice(0, 10));
+    setShowSuggestions(sorted.length > 0);
   };
 
   const handleQueryChange = (val: string) => {
