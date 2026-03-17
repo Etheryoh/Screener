@@ -2346,7 +2346,7 @@ function TechnicalPanel({ precomputed, context }: { precomputed: { signals: Tech
             <div style={{ fontSize:9, color:"#a78bfa", textTransform:"uppercase", letterSpacing:1.2, fontWeight:800, marginBottom:6 }}>
               Contexte ({neutralSignals.length})
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, width: "100%" }}>
               {neutralSignals.map((s, i) => (
                 <div key={i} style={{
                   display: "flex", alignItems: "center", gap: 8,
@@ -2354,6 +2354,9 @@ function TechnicalPanel({ precomputed, context }: { precomputed: { signals: Tech
                   background: THEME.bgCard,
                   borderRadius: 8,
                   borderLeft: "3px solid #a78bfa",
+                  flex: "1 1 200px",
+                  minWidth: 0,
+                  boxSizing: "border-box",
                 }}>
                   <span style={{ fontSize: 12, flexShrink: 0 }}>{s.emoji}</span>
                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -4393,7 +4396,7 @@ export default function App() {
   );
 
   return (
-    <div style={{ minHeight:"100vh", background:THEME.bgPage, fontFamily:"'IBM Plex Sans','Segoe UI',sans-serif", color:THEME.textPrimary }}>
+    <div style={{ minHeight:"100vh", background:THEME.bgPage, fontFamily:"'IBM Plex Sans','Segoe UI',sans-serif", color:THEME.textPrimary, overflowX:"hidden", maxWidth:"100vw" }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;700&family=IBM+Plex+Sans:wght@400;600;700;800&display=swap');
         @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:none} }
