@@ -351,6 +351,226 @@ async function fetchMacroContext(zone: MacroZone): Promise<MacroContext> {
 // ════════════════════════════════════════════════════════════════
 // COUCHE 3 — ANALYSE (scoring & signaux)
 // ════════════════════════════════════════════════════════════════
+type SentSignal = { color: string; label: string; detail: string; edu: TechSignal["edu"] };
+
+function scoreSentimentInstitutional(
+  heldInsiders:      number | undefined,
+  heldInstitutions:  number | undefined,
+  shortPercentFloat: number | undefined,
+  shortRatio:        number | undefined,
+  mktCap:            number | undefined,
+): { score: number; signals: SentSignal[] } {
+  let score = 5;
+  const signals: SentSignal[] = [];
+
+  const eduInstitutions: TechSignal["edu"] = {
+    concept: "Les investisseurs institutionnels (fonds de pension, hedge funds, ETF) représentent les 'mains fortes' du marché. Une forte présence institutionnelle signifie que des équipes d'analystes professionnels ont validé le dossier.",
+    howToRead: "Plus de 70% : forte validation institutionnelle. Entre 40% et 70% : présence modérée. Sous 40% : peu suivi par les grands fonds — liquidité potentiellement réduite.",
+    example: heldInstitutions != null
+      ? `${(heldInstitutions*100).toFixed(1)}% du capital est détenu par des institutionnels. ${heldInstitutions > 0.70 ? "Forte validation — les grands fonds ont fait leur due diligence." : heldInstitutions > 0.40 ? "Présence modérée." : "Faible intérêt institutionnel — couverture analytique limitée."}`
+      : "Données institutionnelles non disponibles.",
+  };
+
+  const eduShortFloat: TechSignal["edu"] = {
+    concept: "Le short float mesure la part du flottant (actions disponibles à la vente) vendue à découvert. Les vendeurs à découvert sont généralement des hedge funds qui ont fait une analyse approfondie et parient sur la baisse.",
+    howToRead: "Sous 3% : quasi-absence de conviction baissière professionnelle. Entre 3% et 8% : pression modérée. Entre 8% et 15% : forte conviction baissière. Au-dessus de 15% : signal extrême — soit le marché a raison, soit un short squeeze est possible.",
+    example: shortPercentFloat != null
+      ? `${(shortPercentFloat*100).toFixed(1)}% du flottant est vendu à découvert. ${shortPercentFloat < 0.03 ? "Très faible pression short — les professionnels ne voient pas de catalyseur baissier évident." : shortPercentFloat < 0.08 ? "Pression modérée — surveillance recommandée." : "Forte conviction baissière des professionnels."}`
+      : "Données short float non disponibles.",
+  };
+
+  const eduShortRatio: TechSignal["edu"] = {
+    concept: "Le Days to Cover (ou short ratio) = positions short totales / volume quotidien moyen. Il indique combien de jours il faudrait aux vendeurs à découvert pour racheter toutes leurs positions sans perturber le marché.",
+    howToRead: "Sous 3 jours : positions short légères, faciles à dénouer. Au-dessus de 8 jours : positions lourdes — si le titre monte, les vendeurs sont piégés et doivent racheter en urgence, ce qui amplifie la hausse (short squeeze).",
+    example: shortRatio != null
+      ? `Days to cover : ${shortRatio.toFixed(1)} jours. ${shortRatio < 3 ? "Positions short légères — peu de risque de squeeze, pression vendeuse structurellement faible." : "Positions importantes — surveiller tout catalyseur positif qui pourrait déclencher un squeeze."}`
+      : "Données days to cover non disponibles.",
+  };
+
+  // Insiders — contextualisé par la taille de l'entreprise
+  if (heldInsiders != null) {
+    const isMegaCap  = mktCap != null && mktCap > 100e9;
+    const isLargeCap = mktCap != null && mktCap > 10e9;
+
+    if (heldInsiders > 0.10) {
+      score += 1.5;
+      signals.push({
+        color: "#22c55e",
+        label: `Insiders ${(heldInsiders*100).toFixed(1)}%`,
+        detail: "Forte détention par les dirigeants — alignement fort avec les actionnaires.",
+        edu: {
+          concept: "Les insiders (dirigeants, administrateurs) qui détiennent une part significative du capital ont un intérêt financier direct dans la performance du titre.",
+          howToRead: "Plus de 10% : engagement fort. Entre 3% et 10% : intérêt modéré. Sous 3% : faible exposition personnelle — normal sur les mega-caps où les dirigeants ont vendu progressivement au fil des années.",
+          example: `Les insiders détiennent ${(heldInsiders*100).toFixed(1)}% du capital — signal de confiance élevée.`,
+        },
+      });
+    } else if (heldInsiders > 0.03) {
+      score += 0.5;
+      signals.push({
+        color: "#f59e0b",
+        label: `Insiders ${(heldInsiders*100).toFixed(1)}%`,
+        detail: "Détention modérée des dirigeants — intérêt aligné mais limité.",
+        edu: {
+          concept: "Les insiders (dirigeants, administrateurs) qui détiennent une part significative du capital ont un intérêt financier direct dans la performance du titre.",
+          howToRead: "Plus de 10% : engagement fort. Entre 3% et 10% : intérêt modéré. Sous 3% : faible exposition personnelle — normal sur les mega-caps.",
+          example: `Les insiders détiennent ${(heldInsiders*100).toFixed(1)}% du capital — alignement modéré.`,
+        },
+      });
+    } else if (isMegaCap) {
+      signals.push({
+        color: "#94a3b8",
+        label: `Insiders ${(heldInsiders*100).toFixed(1)}%`,
+        detail: "Faible détention relative — normal sur une très grande capitalisation où les dirigeants ont progressivement cédé des titres au fil des années.",
+        edu: {
+          concept: "Les insiders (dirigeants, administrateurs) qui détiennent une part significative du capital ont un intérêt financier direct dans la performance du titre.",
+          howToRead: "Sur les très grandes capitalisations (>100B$), un faible pourcentage d'insiders est structurel et ne reflète pas un manque de confiance — les dirigeants ont vendu progressivement sur des décennies. Ce signal est à pondérer différemment des small/mid caps.",
+          example: `Les insiders détiennent ${(heldInsiders*100).toFixed(1)}% du capital. Sur une capitalisation de cette taille, c'est attendu et ne constitue pas un signal négatif.`,
+        },
+      });
+    } else if (isLargeCap) {
+      score -= 0.25;
+      signals.push({
+        color: "#94a3b8",
+        label: `Insiders ${(heldInsiders*100).toFixed(1)}%`,
+        detail: "Faible détention des dirigeants — exposition personnelle limitée au titre.",
+        edu: {
+          concept: "Les insiders (dirigeants, administrateurs) qui détiennent une part significative du capital ont un intérêt financier direct dans la performance du titre.",
+          howToRead: "Plus de 10% : engagement fort. Entre 3% et 10% : intérêt modéré. Sous 3% sur une large-cap : signal légèrement défavorable mais à relativiser selon la taille.",
+          example: `Les insiders détiennent ${(heldInsiders*100).toFixed(1)}% du capital.`,
+        },
+      });
+    } else {
+      score -= 0.5;
+      signals.push({
+        color: "#ef4444",
+        label: `Insiders ${(heldInsiders*100).toFixed(1)}%`,
+        detail: "Faible détention des dirigeants sur une entreprise de taille moyenne — signal d'alignement insuffisant.",
+        edu: {
+          concept: "Les insiders (dirigeants, administrateurs) qui détiennent une part significative du capital ont un intérêt financier direct dans la performance du titre.",
+          howToRead: "Sur une small/mid cap, une faible détention insider (<3%) est un signal négatif réel — les dirigeants n'ont pas mis leur propre argent dans l'entreprise qu'ils dirigent.",
+          example: `Les insiders détiennent seulement ${(heldInsiders*100).toFixed(1)}% du capital — faible alignement avec les actionnaires.`,
+        },
+      });
+    }
+  }
+
+  // Institutionnels
+  if (heldInstitutions != null) {
+    if (heldInstitutions > 0.70) {
+      score += 1.0;
+      signals.push({ color: "#22c55e", label: `Institutionnels ${(heldInstitutions*100).toFixed(1)}%`, detail: "Forte présence institutionnelle — validation par les grands fonds.", edu: eduInstitutions });
+    } else if (heldInstitutions > 0.40) {
+      score += 0.5;
+      signals.push({ color: "#f59e0b", label: `Institutionnels ${(heldInstitutions*100).toFixed(1)}%`, detail: "Présence institutionnelle modérée.", edu: eduInstitutions });
+    } else {
+      score -= 0.5;
+      signals.push({ color: "#ef4444", label: `Institutionnels ${(heldInstitutions*100).toFixed(1)}%`, detail: "Faible intérêt institutionnel — couverture analytique limitée, liquidité réduite.", edu: eduInstitutions });
+    }
+  }
+
+  // Short float
+  if (shortPercentFloat != null) {
+    if (shortPercentFloat < 0.03) {
+      score += 1.5;
+      signals.push({ color: "#22c55e", label: `Short float ${(shortPercentFloat*100).toFixed(1)}%`, detail: "Très peu de positions short — les professionnels ne parient pas contre ce titre.", edu: eduShortFloat });
+    } else if (shortPercentFloat < 0.08) {
+      score += 0.0;
+      signals.push({ color: "#f59e0b", label: `Short float ${(shortPercentFloat*100).toFixed(1)}%`, detail: "Pression short modérée — surveillance recommandée.", edu: eduShortFloat });
+    } else if (shortPercentFloat < 0.15) {
+      score -= 1.0;
+      signals.push({ color: "#f97316", label: `Short float ${(shortPercentFloat*100).toFixed(1)}%`, detail: "Pression short élevée — conviction baissière des professionnels.", edu: eduShortFloat });
+    } else {
+      score -= 2.0;
+      signals.push({ color: "#ef4444", label: `Short float ${(shortPercentFloat*100).toFixed(1)}%`, detail: "Short float très élevé — forte conviction baissière ou potentiel short squeeze.", edu: eduShortFloat });
+    }
+  }
+
+  // Short ratio (days to cover)
+  if (shortRatio != null) {
+    if (shortRatio < 3) {
+      score += 0.5;
+      signals.push({ color: "#22c55e", label: `Days to cover ${shortRatio.toFixed(1)}j`, detail: "Couverture rapide — peu de risque de squeeze, pression vendeuse faible.", edu: eduShortRatio });
+    } else if (shortRatio > 8) {
+      score -= 1.0;
+      signals.push({ color: "#ef4444", label: `Days to cover ${shortRatio.toFixed(1)}j`, detail: "Couverture lente — positions short importantes, risque de squeeze en cas de bonne nouvelle.", edu: eduShortRatio });
+    }
+  }
+
+  return { score: parseFloat(Math.max(1, Math.min(10, score)).toFixed(1)), signals };
+}
+
+function scoreSentimentPressure(
+  change52w:         number | undefined,
+  shortPercentFloat: number | undefined,
+  vix:               number | null | undefined,
+): { score: number; signals: SentSignal[] } {
+  let score = 5;
+  const signals: SentSignal[] = [];
+
+  const edu52w: TechSignal["edu"] = {
+    concept: "La performance sur 52 semaines reflète le momentum moyen terme et la perception du marché sur la période récente. Elle influence le point d'entrée : un titre en repli modéré offre souvent une meilleure marge de sécurité qu'un titre au plus haut.",
+    howToRead: "Forte hausse (+20% et plus) : le momentum est positif mais la valorisation est déjà intégrée. Repli modéré (-10% à -30%) : possible décote temporaire si les fondamentaux restent solides. Forte chute (sous -30%) : le marché intègre un risque sérieux.",
+    example: change52w != null
+      ? `Performance 52 semaines : ${(change52w*100).toFixed(1)}%. ${change52w >= 0.20 ? "Fort momentum — valorisation déjà reflétée dans le prix." : change52w >= -0.10 ? "Momentum neutre à modéré — point d'entrée potentiellement favorable." : "Repli significatif — surveiller si les fondamentaux justifient un retour."}`
+      : "Données de performance 52 semaines non disponibles.",
+  };
+
+  const eduPression: TechSignal["edu"] = {
+    concept: "Quand plus de 10% du flottant est vendu à découvert, cela indique une méfiance structurelle des investisseurs professionnels vis-à-vis du titre.",
+    howToRead: "Ce niveau de short float combiné à d'autres signaux négatifs renforce le signal baissier. Combiné à des fondamentaux solides, il peut au contraire signaler une opportunité de short squeeze.",
+    example: shortPercentFloat != null
+      ? `${(shortPercentFloat*100).toFixed(1)}% du flottant est vendu à découvert — niveau de méfiance institutionnelle notable.`
+      : "Données short float non disponibles.",
+  };
+
+  const eduVix: TechSignal["edu"] = {
+    concept: "Le VIX mesure la volatilité implicite du marché sur 30 jours. Dans le contexte du sentiment, il module la prime de risque globale qui s'applique à tous les titres indépendamment de leurs fondamentaux.",
+    howToRead: "VIX élevé (>30) : le marché est en mode peur — même les bons titres souffrent. VIX bas (<15) : environnement serein, favorable à la prise de risque et aux entrées en position.",
+    example: vix != null
+      ? `VIX à ${vix}. ${vix > 30 ? "Stress élevé — prime de risque marché accrue, prudence sur le timing d'entrée même sur de bons dossiers." : "Marché serein — faible prime de risque, environnement favorable."}`
+      : "Données VIX non disponibles.",
+  };
+
+  // Position dans le range 52 semaines (momentum moyen terme)
+  if (change52w != null) {
+    if (change52w >= 0.20) {
+      score -= 1.0;
+      signals.push({ color: "#f59e0b", label: `+${(change52w*100).toFixed(0)}% sur 52 sem.`, detail: "Fort momentum haussier — valorisation déjà reflétée dans le prix, marge de sécurité réduite.", edu: edu52w });
+    } else if (change52w >= 0.05) {
+      score += 0.5;
+      signals.push({ color: "#22c55e", label: `+${(change52w*100).toFixed(0)}% sur 52 sem.`, detail: "Momentum positif modéré — le marché récompense progressivement le titre.", edu: edu52w });
+    } else if (change52w >= -0.10) {
+      score += 1.0;
+      signals.push({ color: "#22c55e", label: `${(change52w*100).toFixed(0)}% sur 52 sem.`, detail: "Titre stable — pas de momentum excessif, point d'entrée potentiellement neutre.", edu: edu52w });
+    } else if (change52w >= -0.30) {
+      score += 1.5;
+      signals.push({ color: "#22c55e", label: `${(change52w*100).toFixed(0)}% sur 52 sem.`, detail: "Titre en repli modéré — possible décote temporaire si les fondamentaux restent solides.", edu: edu52w });
+    } else {
+      score += 0.5;
+      signals.push({ color: "#f97316", label: `${(change52w*100).toFixed(0)}% sur 52 sem.`, detail: "Forte baisse annuelle — le marché intègre un risque sérieux, vérifier les fondamentaux.", edu: edu52w });
+    }
+  }
+
+  // Short float comme proxy pression vendeuse
+  if (shortPercentFloat != null && shortPercentFloat > 0.10) {
+    score -= 1.0;
+    signals.push({ color: "#ef4444", label: "Pression vendeuse structurelle", detail: `${(shortPercentFloat*100).toFixed(1)}% du flottant vendu à découvert — signal de méfiance institutionnelle.`, edu: eduPression });
+  }
+
+  // VIX contextuel
+  if (vix != null) {
+    if (vix > 30) {
+      score -= 1.0;
+      signals.push({ color: "#ef4444", label: `VIX ${vix} — stress élevé`, detail: "Volatilité implicite élevée — prime de risque marché accrue, prudence sur le timing.", edu: eduVix });
+    } else if (vix < 15) {
+      score += 0.5;
+      signals.push({ color: "#22c55e", label: `VIX ${vix} — marché serein`, detail: "Faible volatilité implicite — environnement favorable à la prise de position.", edu: eduVix });
+    }
+  }
+
+  return { score: parseFloat(Math.max(1, Math.min(10, score)).toFixed(1)), signals };
+}
+
 function buildMetrics(yf: any, meta: any) {
   if (!yf && !meta) return null;
   const sd = yf?.summaryDetail        || {};
@@ -375,8 +595,12 @@ function buildMetrics(yf: any, meta: any) {
   const currentRatio= fd.currentRatio?.raw as number | undefined;
   const fcf         = fd.freeCashflow?.raw as number | undefined;
   const sharesOut   = ks.sharesOutstanding?.raw as number | undefined;
-  const shortRatio  = ks.shortRatio?.raw as number | undefined;
-  const beta        = sd.beta?.raw as number | undefined;
+  const shortRatio        = ks.shortRatio?.raw as number | undefined;
+  const heldInsiders      = ks.heldPercentInsiders?.raw as number | undefined;
+  const heldInstitutions  = ks.heldPercentInstitutions?.raw as number | undefined;
+  const shortPercentFloat = ks.shortPercentOfFloat?.raw as number | undefined;
+  const floatShares       = ks.floatShares?.raw as number | undefined;
+  const beta              = sd.beta?.raw as number | undefined;
   const mktCap      = (pr.marketCap?.raw ?? sd.marketCap?.raw ?? meta?.marketCap) as number | undefined;
   const price       = (pr.regularMarketPrice?.raw ?? meta?.regularMarketPrice) as number | undefined;
   const change1d    = (pr.regularMarketChangePercent?.raw ?? meta?.regularMarketChangePercent) as number | undefined;
@@ -540,7 +764,7 @@ function buildMetrics(yf: any, meta: any) {
     pe, pb, ps, peg, evEbitda,
     roe, roa, grossMargin, opMargin, netMargin,
     divYield, payoutRatio, debtEq, currentRatio, fcf,
-    sharesOut, shortRatio, beta,
+    sharesOut, shortRatio, heldInsiders, heldInstitutions, shortPercentFloat, floatShares, beta,
     scores, globalScore,
     gValorisation, gRentabilite, gSante, gRisque,
     isFinancial,
@@ -3260,6 +3484,141 @@ interface EntryRecommendation {
   triggers: string[];
 }
 
+function SentimentPanel({ metrics, macro }: { metrics: any; macro?: MacroContext | null }) {
+  if (!metrics) return null;
+  const qt = (metrics.quoteType || "").toUpperCase();
+  if (qt !== "EQUITY") return null;
+
+  const instResult  = scoreSentimentInstitutional(
+    metrics.heldInsiders,
+    metrics.heldInstitutions,
+    metrics.shortPercentFloat,
+    metrics.shortRatio,
+    metrics.mktCap,
+  );
+  const pressResult = scoreSentimentPressure(
+    metrics.change52w,
+    metrics.shortPercentFloat,
+    macro?.vix,
+  );
+
+  const hasData = instResult.signals.length > 0 || pressResult.signals.length > 0;
+  if (!hasData) return null;
+
+  const avgScore = parseFloat(((instResult.score + pressResult.score) / 2).toFixed(1));
+  const panelColor =
+    avgScore >= 7 ? THEME.scoreGreen :
+    avgScore >= 4 ? THEME.scoreAmber :
+    THEME.scoreRed;
+
+  const eduInst = {
+    concept: "Le score Smart Money reflète la confiance des investisseurs professionnels dans le titre : dirigeants (insiders), grands fonds (institutionnels) et vendeurs à découvert (shorts). Ces acteurs ont accès à une information et une analyse supérieures à celle du marché de détail.",
+    howToRead: "Insiders > 10% : les dirigeants ont mis leur propre argent. Institutionnels > 70% : les grands fonds ont validé le dossier. Short float < 3% : les professionnels ne parient pas contre. Un score élevé = alignement des 'mains fortes'.",
+    example: metrics.heldInsiders != null
+      ? `Les insiders détiennent ${(metrics.heldInsiders*100).toFixed(1)}% du capital${metrics.heldInstitutions != null ? `, les institutionnels ${(metrics.heldInstitutions*100).toFixed(1)}%` : ""}. ${instResult.score >= 7 ? "Profil de confiance élevée des professionnels." : instResult.score >= 4 ? "Profil neutre — pas de signal fort dans un sens ni dans l'autre." : "Défiance notable des professionnels à surveiller."}`
+      : "Données de détention non disponibles pour ce titre.",
+  };
+
+  const eduPress = {
+    concept: "Le score de Pression de Marché mesure la dynamique court/moyen terme du titre : momentum 52 semaines, intensité des positions short, et contexte de volatilité global (VIX). Il reflète la pression acheteuse ou vendeuse actuelle.",
+    howToRead: "Un titre en repli modéré (-10% à -30%) avec peu de shorts représente souvent un meilleur point d'entrée qu'un titre en forte hausse déjà pricé. Le VIX contextualise le risque global du marché.",
+    example: metrics.change52w != null
+      ? `Le titre a évolué de ${(metrics.change52w*100).toFixed(1)}% sur 12 mois${metrics.shortPercentFloat != null ? `, avec ${(metrics.shortPercentFloat*100).toFixed(1)}% du flottant vendu à découvert` : ""}. ${pressResult.score >= 7 ? "Pression favorable — bon rapport timing/risque." : pressResult.score >= 4 ? "Pression neutre." : "Pression défavorable — timing à risque."}`
+      : "Données de momentum non disponibles.",
+  };
+
+  return (
+    <Panel
+      icon="🧠"
+      title="Sentiment"
+      badge={{ label: `Smart Money · ${avgScore}/10`, color: panelColor }}
+      borderColor={panelColor}
+      defaultOpen={true}
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+
+        {/* Deux jauges */}
+        <div style={{
+          display: "flex", flexDirection: "row",
+          justifyContent: "space-evenly", alignItems: "center",
+          flexWrap: "wrap", gap: 16,
+        }}>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+            <ScoreGauge score={instResult.score}/>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 3 }}>
+              <span style={{ fontSize: 36, fontWeight: 900, lineHeight: 1, color: scoreColor(instResult.score), fontFamily: "'IBM Plex Mono',monospace" }}>
+                {instResult.score}
+              </span>
+              <span style={{ fontSize: 13, color: THEME.textSecondary, fontFamily: "'IBM Plex Mono',monospace" }}>/10</span>
+            </div>
+            <div style={{ fontSize: 9, color: THEME.textMuted, textTransform: "uppercase", letterSpacing: 1.5, display: "flex", alignItems: "center", gap: 4 }}>
+              Smart Money
+              <EduTooltip edu={eduInst} id="sent-inst"/>
+            </div>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+            <ScoreGauge score={pressResult.score}/>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 3 }}>
+              <span style={{ fontSize: 36, fontWeight: 900, lineHeight: 1, color: scoreColor(pressResult.score), fontFamily: "'IBM Plex Mono',monospace" }}>
+                {pressResult.score}
+              </span>
+              <span style={{ fontSize: 13, color: THEME.textSecondary, fontFamily: "'IBM Plex Mono',monospace" }}>/10</span>
+            </div>
+            <div style={{ fontSize: 9, color: THEME.textMuted, textTransform: "uppercase", letterSpacing: 1.5, display: "flex", alignItems: "center", gap: 4 }}>
+              Pression Marché
+              <EduTooltip edu={eduPress} id="sent-press"/>
+            </div>
+          </div>
+        </div>
+
+        {/* Signaux Smart Money */}
+        {instResult.signals.length > 0 && (
+          <div>
+            <div style={{ fontSize: 9, color: THEME.textMuted, textTransform: "uppercase", letterSpacing: 1.5, fontWeight: 800, marginBottom: 6 }}>
+              Détention & Positions
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+              {instResult.signals.map((s, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "7px 10px", background: THEME.bgCard, borderRadius: 7, borderLeft: `3px solid ${s.color}` }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: s.color }}>{s.label}</div>
+                    <div style={{ fontSize: 10, color: THEME.textSecondary, marginTop: 2, lineHeight: 1.5 }}>{s.detail}</div>
+                  </div>
+                  <EduTooltip edu={s.edu} id={`sent-inst-${i}`}/>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Signaux Pression Marché */}
+        {pressResult.signals.length > 0 && (
+          <div>
+            <div style={{ fontSize: 9, color: THEME.textMuted, textTransform: "uppercase", letterSpacing: 1.5, fontWeight: 800, marginBottom: 6 }}>
+              Dynamique de Marché
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+              {pressResult.signals.map((s, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "7px 10px", background: THEME.bgCard, borderRadius: 7, borderLeft: `3px solid ${s.color}` }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: s.color }}>{s.label}</div>
+                    <div style={{ fontSize: 10, color: THEME.textSecondary, marginTop: 2, lineHeight: 1.5 }}>{s.detail}</div>
+                  </div>
+                  <EduTooltip edu={s.edu} id={`sent-press-${i}`}/>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div style={{ fontSize: 9, color: THEME.textMuted }}>
+          Source : Yahoo Finance · Données de détention trimestrielles
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
 function computeEntryRecommendation(
   metrics        : any,
   context        : MarketContext | null,
@@ -4103,6 +4462,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
       {/* ENCARTS ANALYSE */}
       <div style={{ marginTop:14, display:"flex", flexDirection:"column", gap:0 }}>
         <MacroContextPanel macro={macro} zone={zone}/>
+        <SentimentPanel metrics={metrics} macro={macro}/>
         <TechnicalPanel precomputed={techComputed} context={finalScoreResult?.context ?? null} />
         <SituationalPanel metrics={metrics} closes={chartData?.closes ?? []}/>
       </div>
