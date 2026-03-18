@@ -133,7 +133,7 @@ function detectZone(ticker: string): MacroZone {
 // COUCHE 2 — ADAPTERS (sources de données)
 // ════════════════════════════════════════════════════════════════
 const PROXY   = "https://screener.etheryoh.workers.dev";
-const CG_BASE = "https://api.coingecko.com/api/v3";
+const CG_BASE = PROXY;
 const ECB_URL = "https://data-api.ecb.europa.eu/service/data/EXR/D..EUR.SP00.A?lastNObservations=1&format=jsondata";
 
 const getJson = async (url: string): Promise<any> => {
@@ -218,22 +218,66 @@ async function yfFundamentals(ticker: string, addLog: (s: string) => void) {
 // ── Adapter CoinGecko ─────────────────────────────────────────
 async function cgSearch(q: string): Promise<string | null> {
   try {
-    const d = await getJson(`${CG_BASE}/search?query=${encodeURIComponent(q)}`);
-    const coin = d?.coins?.[0];
-    if (!coin) return null;
-    const match =
-      coin.symbol.toLowerCase() === q.toLowerCase() ||
-      coin.id.toLowerCase()     === q.toLowerCase() ||
-      coin.name.toLowerCase().startsWith(q.toLowerCase());
-    return match ? coin.id : null;
+    const d = await getJson(`${CG_BASE}?type=cg&path=search%3Fquery%3D${encodeURIComponent(q)}`);
+    const coins = d?.coins ?? [];
+    if (coins.length === 0) return null;
+
+    // 1. Correspondances exactes symbole — meilleur rang market_cap
+    const bySymbol = coins
+      .filter((c: any) => c.symbol.toLowerCase() === q.toLowerCase())
+      .sort((a: any, b: any) => (a.market_cap_rank ?? 9999) - (b.market_cap_rank ?? 9999));
+    if (bySymbol.length > 0) return bySymbol[0].id;
+
+    // 2. Correspondance exacte id
+    const byId = coins.find((c: any) => c.id.toLowerCase() === q.toLowerCase());
+    if (byId) return byId.id;
+
+    // 3. Correspondance début de nom
+    const byName = coins.find((c: any) => c.name.toLowerCase().startsWith(q.toLowerCase()));
+    if (byName) return byName.id;
+
+    // 4. Fallback : premier résultat si rang market_cap_rank <= 200
+    const first = coins[0];
+    if (first && first.market_cap_rank != null && first.market_cap_rank <= 200) {
+      return first.id;
+    }
+
+    return null;
   } catch { return null; }
 }
 
 async function cgCoin(id: string): Promise<any> {
   try {
     return await getJson(
-      `${CG_BASE}/coins/${id}?localization=false&tickers=false&community_data=false`
+      `${CG_BASE}?type=cg&path=coins%2F${id}%3Flocalization%3Dtrue%26tickers%3Dfalse%26community_data%3Dfalse`
     );
+  } catch { return null; }
+}
+
+async function cgOHLCV(id: string): Promise<{
+  closes:     (number|null)[];
+  opens:      (number|null)[];
+  highs:      (number|null)[];
+  lows:       (number|null)[];
+  volumes:    (number|null)[];
+  timestamps: number[];
+} | null> {
+  try {
+    const data = await getJson(
+      `${CG_BASE}?type=cg&path=coins%2F${id}%2Fmarket_chart%3Fvs_currency%3Dusd%26days%3Dmax%26interval%3Ddaily`
+    );
+    if (!data?.prices?.length) return null;
+    const closes     = data.prices.map(([, p]: [number, number]) => p as number | null);
+    const timestamps = data.prices.map(([ts]: [number, number]) => ts > 1e12 ? Math.floor(ts / 1000) : ts);
+    const volumes    = (data.total_volumes ?? []).map(([, v]: [number, number]) => v as number | null);
+    return {
+      closes,
+      opens:  closes.map(() => null),
+      highs:  closes.map(() => null),
+      lows:   closes.map(() => null),
+      volumes,
+      timestamps,
+    };
   } catch { return null; }
 }
 
@@ -274,7 +318,7 @@ async function yfSearch(q: string): Promise<SearchSuggestion[]> {
 
 async function cgSearchSuggest(q: string): Promise<SearchSuggestion[]> {
   try {
-    const d = await getJson(`${CG_BASE}/search?query=${encodeURIComponent(q)}`);
+    const d = await getJson(`${CG_BASE}?type=cg&path=search%3Fquery%3D${encodeURIComponent(q)}`);
     return (d?.coins ?? []).slice(0, 5).map((c: any) => ({
       symbol:   c.symbol.toUpperCase(),
       name:     c.name,
@@ -2727,6 +2771,7 @@ function InteractiveChart({
   period,
   loading,
   optimalUTKey,
+  periods: periodsProp,
 }: {
   chartData:      ChartData | null;
   currency:       string;
@@ -2735,13 +2780,14 @@ function InteractiveChart({
   period:         string;
   loading:        boolean;
   optimalUTKey?:  string;
+  periods?:       { key: string; label: string }[];
 }) {
   const svgRef  = useRef<SVGSVGElement>(null);
   const [tooltip, setTooltip] = useState<{ x: number; y: number; price: number; date: string } | null>(null);
 
-  const PERIODS = quoteType === "CRYPTOCURRENCY"
-    ? [{ key:"3m", label:"3 mois" }, { key:"1a", label:"1 an" }]
-    : [{ key:"3m", label:"3 mois" }, { key:"1a", label:"1 an" }, { key:"2a", label:"2 ans" }, { key:"3a", label:"3 ans" }, { key:"5a", label:"5 ans" }, { key:"10a", label:"10 ans" }];
+  const PERIODS = periodsProp ?? (quoteType === "CRYPTOCURRENCY"
+    ? [{ key:"7j", label:"7j" }, { key:"1m", label:"1m" }, { key:"3m", label:"3m" }, { key:"6m", label:"6m" }, { key:"1a", label:"1a" }]
+    : [{ key:"3m", label:"3 mois" }, { key:"1a", label:"1 an" }, { key:"2a", label:"2 ans" }, { key:"3a", label:"3 ans" }, { key:"5a", label:"5 ans" }, { key:"10a", label:"10 ans" }]);
 
   const closes     = chartData?.closes     ?? [];
   const timestamps = chartData?.timestamps ?? [];
@@ -2750,8 +2796,8 @@ function InteractiveChart({
   // Fallback : si timestamps absent (proxy ne les transmet pas), on les génère
   const now = Math.floor(Date.now() / 1000);
   const PERIOD_SECS: Record<string, number> = {
-    "3m": 90*86400, "1a": 365*86400, "2a": 2*365*86400,
-    "3a": 3*365*86400, "5a": 5*365*86400, "10a": 10*365*86400,
+    "7j": 7*86400, "1m": 30*86400, "3m": 90*86400, "6m": 180*86400,
+    "1a": 365*86400, "2a": 2*365*86400, "3a": 3*365*86400, "5a": 5*365*86400, "10a": 10*365*86400,
   };
   const periodSecs = PERIOD_SECS[period] ?? 365*86400;
   const hasTimestamps = timestamps.length > 0;
@@ -4500,21 +4546,460 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
 // ════════════════════════════════════════════════════════════════
 // COUCHE 4d — VUE CRYPTO
 // ════════════════════════════════════════════════════════════════
+
+// Mini-jauge demi-cercle pour Fear & Greed (0-100)
+function FearGreedGauge({ value }: { value: number }) {
+  const pct    = Math.max(0, Math.min(100, value)) / 100;
+  const angle  = pct * Math.PI; // 0 → PI (demi-cercle gauche→droite)
+  const cx = 60, cy = 60, r = 48;
+  const startX = cx - r, startY = cy;
+  const endX   = cx + Math.cos(Math.PI - angle) * r;
+  const endY   = cy - Math.sin(angle) * r;
+  const large  = angle > Math.PI / 2 ? 1 : 0;
+  const color  = value < 30 ? THEME.scoreRed : value < 50 ? "#f97316" : value < 70 ? THEME.scoreAmber : THEME.scoreGreen;
+  return (
+    <svg width={120} height={68} viewBox="0 0 120 68">
+      {/* piste grise */}
+      <path d={`M ${cx - r} ${cy} A ${r} ${r} 0 0 1 ${cx + r} ${cy}`}
+        fill="none" stroke="#1e2a3a" strokeWidth={10} strokeLinecap="round"/>
+      {/* arc coloré */}
+      {value > 0 && (
+        <path d={`M ${startX} ${startY} A ${r} ${r} 0 ${large} 1 ${endX} ${endY}`}
+          fill="none" stroke={color} strokeWidth={10} strokeLinecap="round"/>
+      )}
+      <text x={cx} y={cy - 4} textAnchor="middle" fontSize={22} fontWeight={900}
+        fill={color} fontFamily="'IBM Plex Mono',monospace">{value}</text>
+    </svg>
+  );
+}
+
+async function translateToFr(text: string): Promise<string> {
+  try {
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=fr&dt=t&q=${encodeURIComponent(text.slice(0, 1500))}`;
+    const r = await fetch(url);
+    const d = await r.json();
+    return d[0].map((item: any) => item[0]).join("") || text;
+  } catch { return text; }
+}
+
+function CryptoChart({
+  chartData,
+  currency,
+  period,
+  periods,
+  onPeriodChange,
+  loading,
+  optimalUTKey,
+}: {
+  chartData: { closes: (number|null)[]; timestamps: number[]; opens: (number|null)[]; highs: (number|null)[]; lows: (number|null)[]; volumes: (number|null)[] } | null;
+  currency: string;
+  period: string;
+  periods: { key: string; label: string; days: number | "max" }[];
+  onPeriodChange: (p: string) => void;
+  loading: boolean;
+  optimalUTKey?: string;
+}) {
+  const svgRef = useRef<SVGSVGElement>(null);
+  const [tooltip, setTooltip] = useState<{ x: number; y: number; price: number; date: string } | null>(null);
+
+  const PERIOD_SECS: Record<string, number> = {
+    "7j":  7    * 86400,
+    "1m":  30   * 86400,
+    "3m":  90   * 86400,
+    "6m":  180  * 86400,
+    "1a":  365  * 86400,
+    "2a":  730  * 86400,
+    "3a":  1095 * 86400,
+    "5a":  1825 * 86400,
+    "max": 10 * 365 * 86400,
+  };
+
+  const periodSecs = PERIOD_SECS[period] ?? Infinity;
+
+  let displayPts: { ts: number; price: number }[] = [];
+  let base0 = 1, indexed: number[] = [], up = true, c = "#22c55e", chgPct = "0";
+  let baseLineY = 0, yMin = 0, yMax = 100, yRange = 100;
+  let yTicks: { val: number; y: number }[] = [], xTicks: { x: number; label: string }[] = [];
+  let polyPts = "", areaPts = "";
+  const W = 800, H = 260, PAD_L = 52, PAD_R = 12, PAD_T = 12, PAD_B = 28;
+  const chartW = W - PAD_L - PAD_R;
+  const chartH = H - PAD_T - PAD_B;
+  const toX = (i: number) => PAD_L + (i / Math.max(displayPts.length - 1, 1)) * chartW;
+  const toY = (val: number) => PAD_T + chartH - ((val - yMin) / yRange) * chartH;
+  let renderError = false;
+
+  try {
+    const allPts = (chartData?.closes ?? []).map((p, i) => ({
+      ts:    chartData!.timestamps[i],
+      price: p ?? 0,
+    })).filter(p => p.price > 0 && p.ts > 0);
+
+    const nowSec   = Math.floor(Date.now() / 1000);
+    const cutoffTs = nowSec - periodSecs;
+    const filtered = periodSecs === Infinity ? allPts : allPts.filter(p => p.ts >= cutoffTs);
+    displayPts = filtered.length >= 2 ? filtered : allPts;
+
+    if (displayPts.length >= 2) {
+      base0   = displayPts[0].price || 1;
+      indexed = displayPts.map(p => (p.price / base0) * 100);
+      const minI  = Math.min(...indexed);
+      const maxI  = Math.max(...indexed);
+      const yPad  = (maxI - minI) * 0.08;
+      yMin  = Math.max(0, minI - yPad);
+      yMax  = maxI + yPad;
+      yRange = yMax - yMin || 1;
+
+      up      = indexed[indexed.length - 1] >= 100;
+      c       = up ? "#22c55e" : "#ef4444";
+      chgPct  = (indexed[indexed.length - 1] - 100).toFixed(1);
+      baseLineY = toY(100);
+
+      polyPts = indexed.map((v, i) => `${toX(i)},${toY(v)}`).join(" ");
+      const areaBot = H - PAD_B;
+      areaPts = `${PAD_L},${areaBot} ${polyPts} ${toX(displayPts.length - 1)},${areaBot}`;
+
+      const amplitude = maxI - minI;
+      const tickStep  = amplitude > 150 ? 50 : amplitude > 60 ? 25 : amplitude > 25 ? 10 : 5;
+      const firstTick = Math.ceil(yMin / tickStep) * tickStep;
+      yTicks = Array.from(
+        { length: Math.floor((yMax - firstTick) / tickStep) + 1 },
+        (_, i) => firstTick + i * tickStep
+      ).filter(v => v >= yMin && v <= yMax).map(v => ({ val: v, y: toY(v) }));
+
+      const dateFormat = (ts: number): string => {
+        const d = new Date(ts * 1000);
+        if (period === "7j" || period === "1m")
+          return d.toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+        if (period === "3m" || period === "6m")
+          return d.toLocaleDateString("fr-FR", { month: "short", year: "2-digit" });
+        return d.toLocaleDateString("fr-FR", { month: "short", year: "numeric" });
+      };
+
+      const xStep = Math.max(1, Math.floor(displayPts.length / 5));
+      xTicks = displayPts
+        .filter((_, i) => i === 0 || i === displayPts.length - 1 || i % xStep === 0)
+        .slice(0, 6)
+        .map(p => ({ x: toX(displayPts.indexOf(p)), label: dateFormat(p.ts) }));
+    }
+  } catch(e) {
+    console.error("[CryptoChart] render error:", e);
+    renderError = true;
+  }
+
+  if (renderError) return (
+    <div style={{ color: THEME.textMuted, fontSize: 12, padding: "30px 0", textAlign: "center" }}>
+      Erreur de rendu graphique
+    </div>
+  );
+
+  if (displayPts.length < 2) return (
+    <div style={{ color: THEME.textMuted, fontSize: 12, padding: "30px 0", textAlign: "center" }}>
+      {loading ? "Chargement…" : "Données graphique indisponibles"}
+    </div>
+  );
+
+  const fmtPrice = (n: number) => {
+    if (n >= 1000) return n.toFixed(0);
+    if (n >= 100)  return n.toFixed(1);
+    if (n >= 1)    return n.toFixed(2);
+    return n.toFixed(4);
+  };
+
+  const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const svgX = ((e.clientX - rect.left) / rect.width) * W;
+    const relX = svgX - PAD_L;
+    if (relX < 0 || relX > chartW) { setTooltip(null); return; }
+    const idx    = Math.min(Math.max(Math.round((relX / chartW) * (displayPts.length - 1)), 0), displayPts.length - 1);
+    const pt     = displayPts[idx];
+    const idxVal = indexed[idx];
+    const dateStr = new Date(pt.ts * 1000).toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" });
+    setTooltip({ x: toX(idx), y: toY(idxVal), price: pt.price, date: dateStr });
+  };
+
+  const periodLabel = periods.find(p => p.key === period)?.label ?? period;
+
+  return (
+    <div>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10, flexWrap:"wrap", gap:8 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          <span style={{ fontSize:11, color:c, fontWeight:700 }}>
+            {up ? "▲" : "▼"} {Math.abs(parseFloat(chgPct))}% sur {periodLabel}
+          </span>
+          <span style={{ fontSize:10, color:THEME.textSecondary }}>
+            {fmtPrice(displayPts[0].price)} → {fmtPrice(displayPts[displayPts.length - 1].price)} {currency}
+          </span>
+        </div>
+        <div style={{ display:"flex", gap:4 }}>
+          {periods.map(p => (
+            <button key={p.key} onClick={() => onPeriodChange(p.key)} disabled={loading} style={{
+              background: period === p.key ? c + "22" : "transparent",
+              border: `1px solid ${period === p.key ? c : THEME.borderMid}`,
+              color:  period === p.key ? c : "#556",
+              borderRadius: 5, padding: "3px 9px", fontSize: 10, fontWeight: 700, cursor: "pointer", transition: "all .15s",
+            }}>
+              {p.label}
+              {p.key === optimalUTKey && <span style={{ fontSize:6, marginLeft:3, color:THEME.accent, verticalAlign:"super" }}>●</span>}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ position:"relative" }}>
+        <svg ref={svgRef} width="100%" viewBox={`0 0 ${W} ${H}`}
+          style={{ overflow:"visible", cursor:"crosshair", display:"block" }}
+          onMouseMove={handleMouseMove} onMouseLeave={() => setTooltip(null)}>
+          <defs>
+            <linearGradient id="ccg" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%"   stopColor={c} stopOpacity="0.18"/>
+              <stop offset="100%" stopColor={c} stopOpacity="0"/>
+            </linearGradient>
+          </defs>
+          {yTicks.map((t, i) => (
+            <g key={i}>
+              <line x1={PAD_L} y1={t.y} x2={W - PAD_R} y2={t.y} stroke={THEME.borderPanel} strokeWidth="1" strokeDasharray="3,4"/>
+              <text x={PAD_L - 6} y={t.y + 4} textAnchor="end" fontSize="9" fill="#445" fontFamily="'IBM Plex Mono',monospace">
+                {t.val >= 1 ? Math.round(t.val) : ""}
+              </text>
+            </g>
+          ))}
+          {xTicks.map((t, i) => (
+            <text key={i} x={t.x} y={H - PAD_B + 16} textAnchor="middle" fontSize="9" fill="#445">{t.label}</text>
+          ))}
+          <line x1={PAD_L} y1={baseLineY} x2={W - PAD_R} y2={baseLineY} stroke="#ffffff18" strokeWidth="1" strokeDasharray="4,3"/>
+          <text x={PAD_L - 6} y={baseLineY + 4} textAnchor="end" fontSize="9" fill="#666" fontFamily="'IBM Plex Mono',monospace">100</text>
+          <polygon points={areaPts} fill="url(#ccg)"/>
+          <polyline points={polyPts} fill="none" stroke={c} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"/>
+          {tooltip && <line x1={tooltip.x} y1={PAD_T} x2={tooltip.x} y2={H - PAD_B} stroke="#ffffff22" strokeWidth="1" strokeDasharray="3,3"/>}
+          {tooltip && <circle cx={tooltip.x} cy={tooltip.y} r="4" fill={c} stroke={THEME.bgPage} strokeWidth="2"/>}
+        </svg>
+        {tooltip && (
+          <div style={{
+            position:"absolute", left:`${(tooltip.x / W) * 100}%`, top:0,
+            transform: tooltip.x / W > 0.72 ? "translateX(-100%) translateX(-8px)" : tooltip.x / W < 0.15 ? "translateX(8px)" : "translateX(-50%)",
+            background:THEME.bgCard, border:`1px solid ${c}55`, borderRadius:7, padding:"6px 11px",
+            pointerEvents:"none", maxWidth:"200px", whiteSpace:"nowrap", zIndex:10,
+          }}>
+            <div style={{ fontSize:12, color:c, fontWeight:800, fontFamily:"'IBM Plex Mono',monospace" }}>
+              {((tooltip.price / base0 - 1) * 100) >= 0 ? "+" : ""}{((tooltip.price / base0 - 1) * 100).toFixed(2)}%
+            </div>
+            <div style={{ fontSize:10, color:THEME.textSecondary, fontFamily:"'IBM Plex Mono',monospace", marginTop:1 }}>
+              {fmtPrice(tooltip.price)} {currency}
+            </div>
+            <div style={{ fontSize:9, color:"#445", marginTop:2 }}>{tooltip.date}</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function CryptoView({ data }: { data: any }) {
   const md     = data.market_data || {};
-  const price  = md.current_price?.usd;
-  const chg24h = md.price_change_percentage_24h;
-  const chg7d  = md.price_change_percentage_7d;
-  const mktCap = md.market_cap?.usd;
-  const vol24h = md.total_volume?.usd;
-  const supply = md.circulating_supply;
-  const maxSup = md.max_supply;
-  const ath    = md.ath?.usd;
-  const athPct = md.ath_change_percentage?.usd;
-  const up24   = chg24h >= 0;
+  const price    = md.current_price?.usd as number | undefined;
+  const priceEur = md.current_price?.eur as number | undefined;
+  const chg24h = md.price_change_percentage_24h as number | undefined;
+  const chg7d  = md.price_change_percentage_7d  as number | undefined;
+  const chg30d = md.price_change_percentage_30d  as number | undefined;
+  const chg1y  = md.price_change_percentage_1y   as number | undefined;
+  const mktCap = md.market_cap?.usd     as number | undefined;
+  const vol24h = md.total_volume?.usd   as number | undefined;
+  const supply = md.circulating_supply  as number | undefined;
+  const maxSup = md.max_supply          as number | undefined;
+  const ath    = md.ath?.usd            as number | undefined;
+  const athPct = md.ath_change_percentage?.usd as number | undefined;
+  const atlUsd = md.atl?.usd            as number | undefined;
+  const high24 = md.high_24h?.usd       as number | undefined;
+  const low24  = md.low_24h?.usd        as number | undefined;
+  const rank   = data.market_cap_rank   as number | undefined;
+  const up24   = (chg24h ?? 0) >= 0;
+
+  // Votes communauté (top-level dans data, pas dans market_data)
+  const sentUp   = data.sentiment_votes_up_percentage   as number | undefined;
+  const sentDown = data.sentiment_votes_down_percentage as number | undefined;
+
+  // Métriques dérivées
+  const volMktRatio = (vol24h != null && mktCap != null && mktCap > 0) ? vol24h / mktCap : undefined;
+  const btcDomRatio = mktCap != null ? mktCap / 1.5e12 : undefined;
+  const topPct      = rank   != null ? (rank / 15000) * 100 : undefined;
+
+  // Position dans le range historique (ATL → ATH)
+  let rangePos: number | null = null;
+  if (price != null && ath != null && atlUsd != null && ath > atlUsd)
+    rangePos = ((price - atlUsd) / (ath - atlUsd)) * 100;
+
+  // Position dans le range 24h
+  let range24Pos: number | null = null;
+  if (price != null && high24 != null && low24 != null && high24 > low24)
+    range24Pos = ((price - low24) / (high24 - low24)) * 100;
+
+  const sym   = (data.symbol || "").toLowerCase();
+  const isEth = sym === "eth" || sym === "steth";
+  const cgId  = data.id || "";
+
+  // ── Chart state ──────────────────────────────────────────────
+  const genesisYear = data.genesis_date ? new Date(data.genesis_date).getFullYear() : null;
+  const age = genesisYear ? new Date().getFullYear() - genesisYear : 0;
+
+  const ALL_PERIODS = [
+    { key: "7j",  label: "7j",   days: 7    as number | "max" },
+    { key: "1m",  label: "1m",   days: 30   as number | "max" },
+    { key: "3m",  label: "3m",   days: 90   as number | "max" },
+    { key: "6m",  label: "6m",   days: 180  as number | "max" },
+    { key: "1a",  label: "1a",   days: 365  as number | "max" },
+    { key: "2a",  label: "2a",   days: 730  as number | "max" },
+    { key: "3a",  label: "3a",   days: 1095 as number | "max" },
+    { key: "5a",  label: "5a",   days: 1825 as number | "max" },
+    { key: "max", label: "Max",  days: "max" as "max" },
+  ];
+  const PERIODS = ALL_PERIODS.filter(p => {
+    if (p.key === "7j" || p.key === "1m" || p.key === "3m") return true;
+    if (p.key === "6m" || p.key === "1a") return true;
+    if (p.key === "2a") return age >= 2;
+    if (p.key === "3a") return age >= 3;
+    if (p.key === "5a") return age >= 5;
+    if (p.key === "max") return age >= 2;
+    return false;
+  });
+
+  const [period,       setPeriod]       = useState("1a");
+  const [allChartData, setAllChartData] = useState<{
+    closes: (number|null)[]; opens: (number|null)[]; highs: (number|null)[]; lows: (number|null)[];
+    volumes: (number|null)[]; timestamps: number[];
+  } | null>(null);
+  const [chartLoading, setChartLoading] = useState(true);
+  const [optimalUTKey, setOptimalUTKey] = useState<string | undefined>(undefined);
+
+  useEffect(() => {
+    setChartLoading(true);
+    cgOHLCV(data.id).then(result => {
+      setAllChartData(result);
+      setChartLoading(false);
+    });
+  }, [data.id]);
+
+  useEffect(() => {
+    if (!allChartData?.closes) return;
+    const sw = calcSinewave(allChartData.closes);
+    if (sw) {
+      const dp = sw.dominantPeriod;
+      setOptimalUTKey(dp <= 10 ? "3m" : "1a");
+    }
+  }, [allChartData]);
+
+  const handlePeriodChange = (p: string) => { setPeriod(p); };
+
+  // ── Description traduite ─────────────────────────────────────
+  const [descFr, setDescFr] = useState<string>("");
+
+  useEffect(() => {
+    const en = (data.description?.en || "").replace(/<[^>]+>/g, "").trim();
+    if (!en) return;
+    if (data.description?.fr?.trim()) {
+      setDescFr(data.description.fr.replace(/<[^>]+>/g, "").trim());
+      return;
+    }
+    translateToFr(en).then(setDescFr);
+  }, [data.id]);
+
+  // ── États enrichissement async ────────────────────────────────
+  const [fearGreed,     setFearGreed]     = useState<{ value: number; label: string } | null>(null);
+  const [staking,       setStaking]       = useState<{ apr: number; queue: number | null } | null>(null);
+  const [tvl,           setTvl]           = useState<number | null>(null);
+  const [funding,       setFunding]       = useState<{ rate: number; markPrice: number } | null>(null);
+  const [openInterest,  setOpenInterest]  = useState<number | null>(null);
+  const [cgGlobal,      setCgGlobal]      = useState<{ btc: number; eth: number; totalMktCap: number } | null>(null);
+  const [showEur,       setShowEur]       = useState(false);
+
+  useEffect(() => {
+    const jobs: Promise<void>[] = [];
+
+    jobs.push(
+      fetch(`${PROXY}?type=feargreed`)
+        .then(r => r.json())
+        .then(j => {
+          const d = j?.data?.[0];
+          if (d) setFearGreed({ value: parseInt(d.value, 10), label: d.value_classification });
+        })
+        .catch(() => {})
+    );
+
+    if (isEth) {
+      jobs.push(
+        fetch(`${PROXY}?type=beaconchain`)
+          .then(r => r.json())
+          .then(j => {
+            const apr   = j?.apr?.data?.apr as number | undefined;
+            const queue = j?.queue?.data?.beaconcount as number | undefined;
+            if (apr != null) setStaking({ apr, queue: queue ?? null });
+          })
+          .catch(() => {})
+      );
+    }
+
+    if (cgId) {
+      jobs.push(
+        fetch(`${PROXY}?type=defillama&slug=${encodeURIComponent(cgId)}`)
+          .then(r => r.json())
+          .then(j => {
+            const arr = j?.tvl;
+            if (Array.isArray(arr) && arr.length > 0) {
+              const last = arr[arr.length - 1]?.totalLiquidityUSD;
+              if (last != null) setTvl(last);
+            }
+          })
+          .catch(() => {})
+      );
+    }
+
+    jobs.push(
+      Promise.all([
+        fetch(`${PROXY}?type=coinglass&symbol=${encodeURIComponent(sym.toUpperCase())}`).then(r => r.json()).catch(() => null),
+        fetch(`${PROXY}?type=openinterest&symbol=${encodeURIComponent(sym.toUpperCase())}`).then(r => r.json()).catch(() => null),
+      ]).then(([fundingData, oiData]) => {
+        const entry = fundingData?.fundingRate?.[0];
+        if (entry) {
+          const rate      = parseFloat(entry.fundingRate);
+          const markPrice = parseFloat(entry.markPrice);
+          if (!isNaN(rate)) setFunding({ rate, markPrice });
+        }
+        const oiUnits   = parseFloat(oiData?.openInterest || "0");
+        const markPrice = parseFloat(fundingData?.fundingRate?.[0]?.markPrice || "0");
+        const oiUsd     = markPrice > 0 && oiUnits > 0 ? oiUnits * markPrice : null;
+        setOpenInterest(oiUsd);
+      }).catch(() => {})
+    );
+
+    jobs.push(
+      fetch(`${PROXY}?type=cglobal`)
+        .then(r => r.json())
+        .then(j => {
+          const d = j?.data;
+          if (d) setCgGlobal({
+            btc:         d.market_cap_percentage?.btc  ?? 0,
+            eth:         d.market_cap_percentage?.eth  ?? 0,
+            totalMktCap: d.total_market_cap?.usd       ?? 0,
+          });
+        })
+        .catch(() => {})
+    );
+
+    Promise.allSettled(jobs);
+  }, [cgId, isEth, sym]);
+
+  const fmtTvl = (v: number) =>
+    v >= 1e9 ? `$${(v / 1e9).toFixed(2)}B` : v >= 1e6 ? `$${(v / 1e6).toFixed(1)}M` : `$${fmt(v)}`;
+
+  const pctColor = (v: number | undefined) =>
+    v == null ? THEME.textMuted : v >= 0 ? THEME.scoreGreen : THEME.scoreRed;
+  const pctLabel = (v: number | undefined) =>
+    v == null ? "—" : `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
 
   return (
     <div style={{ animation:"fadeIn .4s ease" }}>
+
+      {/* ── Header ── */}
       <div style={{ display:"flex", alignItems:"flex-start", gap:16, marginBottom:20, flexWrap:"wrap" }}>
         {data.image?.small && <img src={data.image.small} alt="" style={{ width:52, height:52, borderRadius:"50%", marginTop:4 }}/>}
         <div style={{ flex:1 }}>
@@ -4524,44 +5009,358 @@ function CryptoView({ data }: { data: any }) {
           </div>
           <div style={{ display:"flex", alignItems:"baseline", gap:14, flexWrap:"wrap" }}>
             <span style={{ fontSize:34, fontWeight:900, color:THEME.accent, fontFamily:"'IBM Plex Mono',monospace" }}>
-              ${fmt(price)}
+              {showEur && priceEur != null ? `${fmt(priceEur)} €` : `$${fmt(price)}`}
             </span>
-            <span style={{ fontSize:14, fontWeight:700, color: up24?THEME.scoreGreen:THEME.scoreRed }}>
-              {up24?"▲":"▼"} {Math.abs(chg24h||0).toFixed(2)}% 24h
-            </span>
-            {chg7d != null && (
-              <span style={{ fontSize:12, color: chg7d>=0?THEME.scoreGreen:THEME.scoreRed }}>
-                {chg7d>=0?"▲":"▼"} {Math.abs(chg7d).toFixed(2)}% 7j
-              </span>
+            {priceEur != null && (
+              <button
+                onClick={() => setShowEur(v => !v)}
+                style={{ fontSize:10, padding:"3px 9px", borderRadius:6, border:`1px solid ${THEME.borderMid}`, background: showEur ? THEME.accent : THEME.bgCardAlt, color: showEur ? THEME.bgPage : THEME.textMuted, cursor:"pointer", fontFamily:"'IBM Plex Mono',monospace", fontWeight:700, alignSelf:"center" }}
+              >{showEur ? "EUR" : "USD"}</button>
             )}
+            <span style={{ fontSize:14, fontWeight:700, color: up24 ? THEME.scoreGreen : THEME.scoreRed }}>
+              {up24 ? "▲" : "▼"} {Math.abs(chg24h ?? 0).toFixed(2)}% 24h
+            </span>
+            {chg7d  != null && <span style={{ fontSize:12, color:pctColor(chg7d)  }}>{chg7d  >= 0 ? "▲" : "▼"} {Math.abs(chg7d ).toFixed(2)}% 7j</span>}
+            {chg30d != null && <span style={{ fontSize:12, color:pctColor(chg30d) }}>{chg30d >= 0 ? "▲" : "▼"} {Math.abs(chg30d).toFixed(2)}% 30j</span>}
+            {chg1y  != null && <span style={{ fontSize:12, color:pctColor(chg1y)  }}>{chg1y  >= 0 ? "▲" : "▼"} {Math.abs(chg1y ).toFixed(2)}% 1an</span>}
           </div>
         </div>
-        <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:12, padding:"12px 20px", textAlign:"center" }}>
-          <div style={{ fontSize:10, color:"#445", marginBottom:3 }}>Rang CoinGecko</div>
-          <div style={{ fontSize:24, fontWeight:800, color:THEME.accent }}>#{data.market_cap_rank}</div>
-        </div>
       </div>
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))", gap:10, marginBottom:18 }}>
-        {[
-          ["Market Cap",       "$"+fmt(mktCap)],
-          ["Volume 24h",       "$"+fmt(vol24h)],
-          ["Offre circulante", fmt(supply,0)],
-          ["Offre max",        maxSup ? fmt(maxSup,0) : "∞"],
-          ["ATH",              ath ? "$"+fmt(ath) : "—"],
-          ["Depuis ATH",       athPct != null ? athPct.toFixed(1)+"%" : "—"],
-        ].map(([k,v]) => (
-          <div key={k} style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
-            <div style={{ fontSize:10, color:"#445", marginBottom:3 }}>{k}</div>
-            <div style={{ fontSize:14, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>{v}</div>
+
+      {/* ── Grille métriques enrichie ── */}
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))", gap:10, marginBottom:14 }}>
+
+        {rank != null && (
+          <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
+            <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Rang CoinGecko</div>
+            <div style={{ fontSize:14, fontWeight:700, color:THEME.accent, fontFamily:"'IBM Plex Mono',monospace" }}>#{rank}</div>
+            {topPct != null && <div style={{ fontSize:9, color:THEME.textMuted, marginTop:2 }}>Top {topPct.toFixed(1)}%</div>}
           </div>
-        ))}
+        )}
+
+        <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
+          <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Market Cap</div>
+          <div style={{ fontSize:14, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>${fmt(mktCap)}</div>
+          {btcDomRatio != null && <div style={{ fontSize:9, color:THEME.textMuted, marginTop:2 }}>{(btcDomRatio * 100).toFixed(3)}% vs BTC</div>}
+        </div>
+
+        <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
+          <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Volume 24h</div>
+          <div style={{ fontSize:14, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>${fmt(vol24h)}</div>
+          {volMktRatio != null && (
+            <div style={{ fontSize:9, color: volMktRatio > 0.05 ? THEME.scoreGreen : THEME.scoreAmber, marginTop:2 }}>
+              {(volMktRatio * 100).toFixed(1)}% du MC · {volMktRatio > 0.05 ? "Liquidité forte" : "Liquidité modérée"}
+            </div>
+          )}
+        </div>
+
+        <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
+          <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Offre circulante</div>
+          <div style={{ fontSize:14, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>{fmt(supply, 0)}</div>
+          {maxSup != null && supply != null && (
+            <div style={{ fontSize:9, color:THEME.textMuted, marginTop:2 }}>{((supply / maxSup) * 100).toFixed(1)}% émis</div>
+          )}
+        </div>
+
+        <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
+          <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Offre max</div>
+          <div style={{ fontSize:14, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>{maxSup ? fmt(maxSup, 0) : "∞"}</div>
+        </div>
+
+        <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
+          <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>ATH</div>
+          <div style={{ fontSize:14, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>{ath ? "$" + fmt(ath) : "—"}</div>
+        </div>
+
+        {athPct != null && (
+          <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
+            <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Depuis ATH</div>
+            <div style={{ fontSize:14, fontWeight:700, fontFamily:"'IBM Plex Mono',monospace",
+              color: athPct > -5 ? THEME.scoreRed : athPct > -20 ? THEME.scoreAmber : THEME.scoreGreen
+            }}>{athPct.toFixed(1)}%</div>
+            <div style={{ fontSize:9, color:THEME.textMuted, marginTop:2 }}>
+              {athPct > -5 ? "Proche ATH — attention" : athPct > -20 ? "Repli modéré" : "Décote significative"}
+            </div>
+          </div>
+        )}
+
+        {chg1y != null && (
+          <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
+            <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Perf 1 an</div>
+            <div style={{ fontSize:14, fontWeight:700, color:pctColor(chg1y), fontFamily:"'IBM Plex Mono',monospace" }}>{pctLabel(chg1y)}</div>
+          </div>
+        )}
+
       </div>
-      {data.description?.en && (
-        <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:16, fontSize:12, color:THEME.textSecondary, lineHeight:1.8 }}>
-          <div style={{ color:THEME.accent, fontWeight:700, marginBottom:8 }}>📖 À propos</div>
-          {data.description.en.replace(/<[^>]+>/g,"").slice(0,600)}…
+
+      {/* ── Graphique ── */}
+      <div style={{ background: THEME.bgPanel, border: `1px solid ${THEME.borderPanel}`, borderRadius: 12, padding: "14px 18px", marginBottom: 10 }}>
+        <div style={{ fontSize: 10, color: THEME.textMuted, textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 8 }}>
+          Performance historique
+        </div>
+        {chartLoading && (
+          <div style={{ color: THEME.textMuted, fontSize: 12, padding: "30px 0", textAlign: "center" }}>
+            Chargement…
+          </div>
+        )}
+        {!chartLoading && !allChartData && (
+          <div style={{ color: THEME.textMuted, fontSize: 12, padding: "30px 0", textAlign: "center" }}>
+            Données graphique indisponibles
+          </div>
+        )}
+        {!chartLoading && allChartData && allChartData.closes && allChartData.closes.length >= 2 && (
+          <CryptoChart
+            chartData={allChartData}
+            currency="USD"
+            period={period}
+            periods={PERIODS}
+            onPeriodChange={handlePeriodChange}
+            loading={false}
+            optimalUTKey={optimalUTKey}
+          />
+        )}
+      </div>
+
+      {/* ── Analyse technique ── */}
+      {allChartData && allChartData.closes.filter((v: number|null) => v != null).length > 20 && (() => {
+        const marketCtx       = classifyMarketContext(allChartData.closes, allChartData.highs, allChartData.lows, allChartData.volumes);
+        const techComputed    = computeTechSignals(allChartData.closes, allChartData.volumes, allChartData.highs, allChartData.lows,
+          "1d"
+        );
+        const finalScoreResult = computeFinalScore(null, marketCtx, techComputed.signals, allChartData.closes);
+        return (
+          <>
+            <MarketContextPanel context={finalScoreResult.context} modifiers={finalScoreResult.modifiers}/>
+            <TechnicalPanel precomputed={techComputed} context={finalScoreResult.context}/>
+          </>
+        );
+      })()}
+
+      {/* ── Bandeau dominance marché global ── */}
+      {cgGlobal != null && cgGlobal.totalMktCap > 0 && (
+        <div style={{ marginBottom:14, padding:"8px 14px", background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, display:"flex", flexWrap:"wrap", gap:8, alignItems:"center", fontSize:10, color:THEME.textMuted }}>
+          <span style={{ fontWeight:700, color:THEME.textSecondary }}>Marché global ·</span>
+          <span>BTC <span style={{ color:THEME.scoreAmber, fontWeight:700 }}>{cgGlobal.btc.toFixed(1)}%</span></span>
+          <span>·</span>
+          <span>ETH <span style={{ color:THEME.textSecondary, fontWeight:700 }}>{cgGlobal.eth.toFixed(1)}%</span></span>
+          <span>·</span>
+          <span>Alts <span style={{ color:THEME.textSecondary, fontWeight:700 }}>{(100 - cgGlobal.btc - cgGlobal.eth).toFixed(1)}%</span></span>
+          <span>·</span>
+          <span>Cap totale <span style={{ color:THEME.textSecondary, fontWeight:700 }}>{fmtTvl(cgGlobal.totalMktCap)}</span></span>
         </div>
       )}
+
+      {/* ── Barre position dans le marché ── */}
+      {topPct != null && (
+        <div style={{ marginBottom:14, background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"12px 16px" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8, flexWrap:"wrap", gap:6 }}>
+            <div style={{ fontSize:10, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5 }}>Position dans le marché</div>
+            <div style={{ fontSize:10, color:THEME.textSecondary }}>
+              {rank != null && `Rang #${rank} · `}Top {topPct.toFixed(1)}% parmi ~15 000 cryptos
+              {btcDomRatio != null && ` · ${(btcDomRatio * 100).toFixed(3)}% du MC Bitcoin`}
+            </div>
+          </div>
+          <div style={{ height:6, borderRadius:3, background:"#1e2a3a", overflow:"hidden" }}>
+            <div style={{
+              height:"100%", borderRadius:3,
+              width:`${Math.min(100, 101 - topPct)}%`,
+              background: topPct < 0.1 ? THEME.scoreGreen : topPct < 1 ? THEME.scoreAmber : THEME.scoreRed,
+              transition:"width .4s ease",
+            }}/>
+          </div>
+          <div style={{ display:"flex", justifyContent:"space-between", marginTop:4, fontSize:8, color:THEME.textMuted }}>
+            <span>Top 1 (Bitcoin)</span><span>Top 100</span><span>Top 1 000</span><span>Top 15 000</span>
+          </div>
+        </div>
+      )}
+
+      {/* ── Votes communauté ── */}
+      {sentUp != null && sentDown != null && (
+        <div style={{ marginBottom:14, background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"12px 16px" }}>
+          <div style={{ fontSize:10, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:8 }}>Sentiment communauté (votes CoinGecko)</div>
+          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+            <span style={{ fontSize:11, color:THEME.scoreGreen, fontWeight:700 }}>👍 {sentUp.toFixed(1)}%</span>
+            <div style={{ flex:1, height:8, borderRadius:4, background:THEME.scoreRed, overflow:"hidden" }}>
+              <div style={{ height:"100%", width:`${sentUp}%`, background:THEME.scoreGreen, borderRadius:4, transition:"width .4s ease" }}/>
+            </div>
+            <span style={{ fontSize:11, color:THEME.scoreRed, fontWeight:700 }}>👎 {sentDown.toFixed(1)}%</span>
+          </div>
+        </div>
+      )}
+
+      {/* ── Panel Analyse technique rapide ── */}
+      {(rangePos != null || range24Pos != null) && (
+        <Panel icon="📐" title="Analyse technique rapide" borderColor={THEME.borderPanel} defaultOpen={true}>
+          <div style={{ display:"flex", flexDirection:"column", gap:18 }}>
+
+            {rangePos != null && ath != null && atlUsd != null && (
+              <div>
+                <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6, fontSize:10, flexWrap:"wrap", gap:4 }}>
+                  <span style={{ color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1 }}>Position dans le range historique (ATL → ATH)</span>
+                  <span style={{ fontWeight:700, color: rangePos < 20 ? THEME.scoreGreen : rangePos > 80 ? THEME.scoreRed : THEME.scoreAmber }}>
+                    {rangePos < 20 ? "Proche des plus bas" : rangePos > 80 ? "Proche des plus hauts" : "Milieu de range"} · {rangePos.toFixed(0)}%
+                  </span>
+                </div>
+                <div style={{ height:8, borderRadius:4, background:"#1e2a3a", overflow:"hidden" }}>
+                  <div style={{
+                    height:"100%", borderRadius:4, transition:"width .4s ease",
+                    width:`${rangePos}%`,
+                    background: rangePos < 20 ? THEME.scoreGreen : rangePos > 80 ? THEME.scoreRed : THEME.scoreAmber,
+                  }}/>
+                </div>
+                <div style={{ display:"flex", justifyContent:"space-between", marginTop:4, fontSize:9, color:THEME.textMuted }}>
+                  <span>ATL ${fmt(atlUsd)}</span><span>ATH ${fmt(ath)}</span>
+                </div>
+              </div>
+            )}
+
+            {range24Pos != null && high24 != null && low24 != null && (
+              <div>
+                <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6, fontSize:10, flexWrap:"wrap", gap:4 }}>
+                  <span style={{ color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1 }}>Position dans le range 24h</span>
+                  <span style={{ fontWeight:700, color:THEME.textSecondary }}>{range24Pos.toFixed(0)}% du range</span>
+                </div>
+                <div style={{ height:8, borderRadius:4, background:"#1e2a3a", overflow:"hidden" }}>
+                  <div style={{ height:"100%", borderRadius:4, width:`${range24Pos}%`, background:THEME.accent, transition:"width .4s ease" }}/>
+                </div>
+                <div style={{ display:"flex", justifyContent:"space-between", marginTop:4, fontSize:9, color:THEME.textMuted }}>
+                  <span>Bas 24h ${fmt(low24)}</span><span>Haut 24h ${fmt(high24)}</span>
+                </div>
+              </div>
+            )}
+
+          </div>
+        </Panel>
+      )}
+
+      {/* ── Panel Sentiment de marché (Fear & Greed + Funding Rate) ── */}
+      {(fearGreed != null || funding != null) && (
+        <Panel icon="🌡️" title="Sentiment de marché" borderColor={THEME.borderPanel} defaultOpen={true}>
+          <div style={{ display:"flex", flexWrap:"wrap", gap:24, alignItems:"flex-start" }}>
+
+            {fearGreed != null && (
+              <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4, minWidth:130 }}>
+                <FearGreedGauge value={fearGreed.value}/>
+                <div style={{ fontSize:12, fontWeight:700, color:
+                  fearGreed.value < 30 ? THEME.scoreRed : fearGreed.value < 50 ? "#f97316" :
+                  fearGreed.value < 70 ? THEME.scoreAmber : THEME.scoreGreen
+                }}>{fearGreed.label}</div>
+                <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5 }}>Fear & Greed Index</div>
+                <div style={{ fontSize:9, color:THEME.textMuted, maxWidth:160, textAlign:"center", lineHeight:1.5, marginTop:4 }}>
+                  Mesure l'émotion dominante du marché crypto. Extrême Fear = opportunité potentielle. Extrême Greed = prudence.
+                </div>
+              </div>
+            )}
+
+            {funding != null && (
+              <div style={{ flex:1, minWidth:180 }}>
+                <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:10 }}>Funding Rate (perpétuels)</div>
+                <div style={{ display:"flex", alignItems:"baseline", gap:8, marginBottom:4 }}>
+                  <span style={{
+                    fontSize:28, fontWeight:900, fontFamily:"'IBM Plex Mono',monospace",
+                    color: funding.rate > 0 ? THEME.scoreGreen : funding.rate < 0 ? THEME.scoreRed : THEME.textSecondary
+                  }}>
+                    {funding.rate > 0 ? "+" : ""}{(funding.rate * 100).toFixed(4)}%
+                  </span>
+                  <span style={{ fontSize:10, color:THEME.textMuted }}>/ 8h</span>
+                </div>
+                <div style={{ fontSize:10, color:THEME.textSecondary, marginBottom:8 }}>
+                  ≈ <span style={{ fontWeight:700, color: funding.rate > 0 ? THEME.scoreGreen : THEME.scoreRed }}>
+                    {funding.rate > 0 ? "+" : ""}{(funding.rate * 3 * 365 * 100).toFixed(1)}% /an
+                  </span> annualisé
+                </div>
+                <div style={{ fontSize:10, fontWeight:600, marginBottom:8,
+                  color: funding.rate > 0 ? THEME.scoreGreen : funding.rate < 0 ? THEME.scoreRed : THEME.textSecondary
+                }}>
+                  {funding.rate > 0.0002  ? "Marché très optimiste — longs dominants"  :
+                   funding.rate > 0       ? "Légère dominance haussière"                :
+                   funding.rate < -0.0002 ? "Marché très pessimiste — shorts dominants" :
+                                            "Légère dominance baissière"}
+                </div>
+                <div style={{ fontSize:9, color:THEME.textMuted, lineHeight:1.6 }}>
+                  Le funding rate est le coût payé entre acheteurs et vendeurs de contrats perpétuels.
+                  Positif = les longs paient les shorts (marché optimiste).
+                  Négatif = les shorts paient les longs (marché pessimiste).
+                </div>
+                {funding.markPrice > 0 && (
+                  <div style={{ marginTop:8, fontSize:10, color:THEME.textMuted }}>
+                    Mark price : <span style={{ color:THEME.textSecondary, fontFamily:"'IBM Plex Mono',monospace" }}>${fmt(funding.markPrice)}</span>
+                  </div>
+                )}
+              </div>
+            )}
+          {/* Open Interest */}
+          {openInterest != null && (
+            <div style={{ width:"100%", paddingTop:12, borderTop:`1px solid ${THEME.borderPanel}` }}>
+              <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:6 }}>Open Interest (Binance Futures)</div>
+              <div style={{ display:"flex", alignItems:"baseline", gap:8, marginBottom:4 }}>
+                <span style={{ fontSize:22, fontWeight:900, fontFamily:"'IBM Plex Mono',monospace", color:THEME.textPrimary }}>
+                  {fmtTvl(openInterest)}
+                </span>
+              </div>
+              <div style={{ fontSize:9, color:THEME.textMuted, lineHeight:1.6 }}>
+                L'Open Interest représente la valeur totale des contrats à terme ouverts sur le marché.
+                Une hausse = nouveaux capitaux qui entrent. Une baisse = positions qui se ferment.
+              </div>
+            </div>
+          )}
+          </div>
+        </Panel>
+      )}
+
+      {/* ── Panel Staking ETH (conditionnel) ── */}
+      {isEth && staking != null && (
+        <Panel icon="🔒" title="Staking Ethereum" borderColor={THEME.scoreGreen} defaultOpen={true}
+          badge={{ label: `APR ${staking.apr.toFixed(2)}%`, color: THEME.scoreGreen }}>
+          <div style={{ display:"flex", flexWrap:"wrap", gap:20 }}>
+            <div>
+              <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:6 }}>APR stETH (Lido)</div>
+              <div style={{ fontSize:32, fontWeight:900, color:THEME.scoreGreen, fontFamily:"'IBM Plex Mono',monospace" }}>
+                {staking.apr.toFixed(2)}%
+              </div>
+              <div style={{ fontSize:10, color:THEME.textMuted, marginTop:4 }}>Taux de rendement annuel en temps réel</div>
+            </div>
+            <div style={{ flex:1, minWidth:180 }}>
+              <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:6 }}>File d'attente validateurs</div>
+              <div style={{ fontSize:20, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>
+                {staking.queue != null ? staking.queue.toLocaleString() : "Aucune congestion"}
+              </div>
+              <div style={{ fontSize:10, color:THEME.textMuted, marginTop:4 }}>
+                {staking.queue != null && staking.queue > 0
+                  ? `${staking.queue.toLocaleString()} validateurs en attente d'activation`
+                  : "Pas de congestion — activation immédiate"}
+              </div>
+            </div>
+          </div>
+        </Panel>
+      )}
+
+      {/* ── Panel TVL DeFi (conditionnel) ── */}
+      {tvl != null && (
+        <Panel icon="🏦" title="DeFi — Total Value Locked" borderColor={THEME.scoreAmber} defaultOpen={true}
+          badge={{ label: fmtTvl(tvl), color: THEME.scoreAmber }}>
+          <div>
+            <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:6 }}>TVL actuel (DefiLlama)</div>
+            <div style={{ fontSize:32, fontWeight:900, color:THEME.scoreAmber, fontFamily:"'IBM Plex Mono',monospace" }}>{fmtTvl(tvl)}</div>
+            <div style={{ fontSize:10, color:THEME.textMuted, marginTop:6, lineHeight:1.6 }}>
+              Total Value Locked = valeur totale des actifs déposés dans le protocole.
+              Un TVL élevé reflète la confiance des utilisateurs et la profondeur de liquidité.
+            </div>
+          </div>
+        </Panel>
+      )}
+
+      {/* ── Description ── */}
+      {(() => {
+        const description = descFr;
+        if (!description) return null;
+        return (
+          <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:16, fontSize:12, color:THEME.textSecondary, lineHeight:1.8 }}>
+            <div style={{ color:THEME.accent, fontWeight:700, marginBottom:8 }}>À propos</div>
+            {description.slice(0, 600)}…
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -4588,7 +5387,7 @@ export default function App() {
 
   const addLog = (msg: string) => setLog(l => [...l, msg]);
 
-  const doAnalyze = useCallback(async (forceTicker?: string) => {
+  const doAnalyze = useCallback(async (forceTicker?: string, forceType?: string) => {
     const raw = (forceTicker || query).trim();
     if (!raw) return;
     const upper = raw.toUpperCase();
@@ -4601,6 +5400,23 @@ export default function App() {
       /^[A-Z]{3}[/][A-Z]{3}$/.test(upper) ||
       /^[A-Z]{6}$/.test(upper) ||
       upper.endsWith("=X");
+
+    const looksLikeCryptoYF = /^[A-Z0-9]{2,10}-USD$/i.test(raw) && !isForexPattern;
+
+    if (looksLikeCryptoYF || forceType?.toUpperCase() === "CRYPTOCURRENCY") {
+      addLog(`⚡ Crypto détectée — recherche CoinGecko directe...`);
+      const cgQuery = raw.replace(/-USD$|-EUR$|-USDT$|-BTC$|-GBP$/i, "").toLowerCase();
+      const cgId = await cgSearch(cgQuery);
+      if (cgId) {
+        const d = await cgCoin(cgId);
+        if (d?.market_data?.current_price?.usd) {
+          addLog(`✅ CoinGecko : ${cgId}`);
+          setResult({ type: "crypto", data: d });
+          setLoading(false); return;
+        }
+      }
+      addLog(`⚠️ CoinGecko : introuvable pour "${cgQuery}" — fallback Yahoo Finance`);
+    }
 
     if (isForexPattern) {
       addLog("💱 Pattern Forex → ECB...");
@@ -4654,11 +5470,12 @@ export default function App() {
       optimalUTKey === "5a"  ? (yfDataWeekly  || yfDataDaily) :
                                (yfDataDaily   || yfDataWeekly);
 
+    const yfQuoteType = (yfData?.meta?.instrumentType || yfData?.meta?.quoteType || "").toUpperCase();
+
     if (cgId) {
       const d = await cgCoin(cgId);
       if (d?.market_data?.current_price?.usd) {
-        const yfType = yfData?.meta?.instrumentType || yfData?.meta?.quoteType || "";
-        const isCryptoETF = yfType === "ETF" && (
+        const isCryptoETF = yfQuoteType === "ETF" && (
           upper === "BTC" || upper === "ETH" || upper === "SOL"
           || d.symbol?.toUpperCase() === upper
         );
@@ -4785,7 +5602,7 @@ export default function App() {
     setQuery(s.symbol);
     setShowSuggestions(false);
     setSuggestions([]);
-    doAnalyze(s.symbol);
+    doAnalyze(s.symbol, s.type);
   };
 
   useEffect(() => {
