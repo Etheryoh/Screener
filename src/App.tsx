@@ -3683,6 +3683,196 @@ function SentimentPanel({ metrics, macro }: { metrics: any; macro?: MacroContext
   );
 }
 
+// ── RECOMMANDATION D'ENTRÉE CRYPTO ────────────────────────────────────
+function computeCryptoEntryRecommendation(
+  context     : MarketContext,
+  techSignals : TechSignal[],
+  sinewave    : SinewaveResult | null,
+  fearGreed   : { value: number; label: string } | null,
+  funding     : { rate: number; markPrice: number } | null,
+): EntryRecommendation {
+  const NONE: EntryRecommendation = { type: "none", icon: "", title: "", reasons: [], triggers: [] };
+
+  const hasSignalLabel = (lbl: string) => techSignals.some(s => s.label === lbl || s.label.startsWith(lbl));
+  const hasDeathCross  = hasSignalLabel("Death Cross");
+  const hasGoldenCross = hasSignalLabel("Golden Cross");
+  const rsiSignal      = techSignals.find(s => s.label.startsWith("RSI"));
+  const rsiValue       = rsiSignal ? parseFloat(rsiSignal.label.split(" ")[1]) : null;
+  const momentum14     = sinewave?.momentum14 ?? 0;
+  const fg             = fearGreed?.value ?? null;
+  const fundingRate    = funding?.rate ?? null;
+
+  // W1 — Chaos
+  if (context.type === "chaos") return {
+    type: "wait", icon: "⛔",
+    title: "Attendre la stabilisation — volatilité extrême",
+    reasons: ["Contexte chaotique — ATR 3× la normale, aucune direction claire", "Les cryptos en chaos peuvent perdre 30-50% rapidement"],
+    triggers: ["ADX se stabilise sous 20", "Volatilité ATR revient à la normale", "Structure HH/HL commence à se former"],
+  };
+
+  // W2 — Death Cross + baissier + funding positif (longs piégés)
+  if (hasDeathCross && context.structure.type === "bearish" && fundingRate != null && fundingRate > 0.0001) return {
+    type: "wait", icon: "⛔",
+    title: "Tendance baissière confirmée — longs encore dominants",
+    reasons: [
+      "Death Cross actif (EMA50 < EMA200) — tendance de fond baissière",
+      "Structure LL+LH confirmée",
+      `Funding rate positif (${(fundingRate * 100).toFixed(4)}%) — les longs n'ont pas encore capitulé`,
+    ],
+    triggers: ["Funding rate devient négatif (capitulation des longs)", "RSI descend sous 25", "Golden Cross + structure HH+HL"],
+  };
+
+  // W3 — Death Cross + baissier (sans données funding)
+  if (hasDeathCross && context.structure.type === "bearish") return {
+    type: "wait", icon: "⛔",
+    title: "Attendre un retournement haussier confirmé",
+    reasons: ["Death Cross actif — tendance baissière de fond", "Structure de prix LL+LH — chaque rebond est vendu"],
+    triggers: ["Golden Cross (EMA50 repasse au-dessus EMA200)", "RSI < 25 + creux de cycle Sinewave", "Structure HH+HL sur 3 pivots confirmés"],
+  };
+
+  // W4 — RSI extrême + sommet de cycle ou funding élevé
+  if (rsiValue != null && rsiValue > 78 && (sinewave?.cycleTurn === "peak" || (fundingRate != null && fundingRate > 0.0003))) return {
+    type: "wait", icon: "⛔",
+    title: "Zone de surachat extrême — attendre le prochain cycle",
+    reasons: [
+      `RSI à ${rsiValue} — surachat extrême en crypto`,
+      sinewave?.cycleTurn === "peak" ? "Sommet de cycle Sinewave détecté" : `Funding rate élevé (${(fundingRate! * 100).toFixed(4)}%) — euphorie des longs`,
+    ],
+    triggers: ["RSI redescend sous 50", "Creux de cycle Sinewave", "Funding rate revient sous 0.01%"],
+  };
+
+  // W5 — Extreme Greed + Death Cross
+  if (fg != null && fg > 85 && hasDeathCross) return {
+    type: "wait", icon: "⛔",
+    title: "Euphorie sur tendance baissière — risque élevé",
+    reasons: [
+      `Fear & Greed à ${fg}/100 — Extreme Greed`,
+      "Death Cross actif — la structure de fond contredit le sentiment",
+      "Configuration historiquement précurseur de corrections sévères",
+    ],
+    triggers: ["Fear & Greed redescend sous 60", "Golden Cross", "Structure haussière confirmée"],
+  };
+
+  // C1 — Death Cross seul
+  if (hasDeathCross) return {
+    type: "caution", icon: "⚠️",
+    title: "Death Cross actif — prudence sur la tendance de fond",
+    reasons: ["EMA50 sous EMA200 — momentum baissier moyen terme"],
+    triggers: ["Golden Cross", "RSI < 30 + creux Sinewave pour entrée tactique uniquement"],
+  };
+
+  // C2 — Essoufflement haussier + RSI suracheté
+  if (context.subtype === "essoufflement" && context.structure.type === "bullish" && rsiValue != null && rsiValue > 65) return {
+    type: "caution", icon: "⚠️",
+    title: "Tendance haussière qui s'essouffle — attendre le creux",
+    reasons: [
+      `RSI à ${rsiValue} — surachat sur tendance essoufflée`,
+      "Momentum en déclin — les corrections crypto peuvent être -20 à -40%",
+    ],
+    triggers: ["RSI redescend sous 45", "Creux de cycle Sinewave", "MACD recroise à la hausse sa ligne de signal"],
+  };
+
+  // C3 — Extreme Greed
+  if (fg != null && fg > 80) return {
+    type: "caution", icon: "⚠️",
+    title: "Euphorie de marché — position réduite recommandée",
+    reasons: [
+      `Fear & Greed à ${fg}/100 — Extreme Greed`,
+      "Les entrées en Extreme Greed offrent historiquement de mauvais rendements ajustés au risque",
+    ],
+    triggers: ["Fear & Greed redescend sous 60", "Creux de cycle Sinewave + RSI < 50"],
+  };
+
+  // C4 — Structure baissière + survente (rebond tactique)
+  if (context.structure.type === "bearish" && rsiValue != null && rsiValue < 30) return {
+    type: "caution", icon: "⚠️",
+    title: "Survente sur tendance baissière — rebond tactique possible",
+    reasons: [
+      `RSI à ${rsiValue} — survente extrême`,
+      "Structure baissière de fond — tout rebond reste tactique et de courte durée",
+    ],
+    triggers: ["Stabilisation sur 2-3 chandelles + volume supérieur à la moyenne", "Creux de cycle Sinewave confirmé"],
+  };
+
+  // C5 — Extreme Fear
+  if (fg != null && fg < 20) return {
+    type: "caution", icon: "⚠️",
+    title: "Peur extrême — opportunité tactique à confirmer",
+    reasons: [
+      `Fear & Greed à ${fg}/100 — Extreme Fear`,
+      "Les marchés crypto en peur extrême précèdent souvent des rebonds significatifs",
+    ],
+    triggers: ["Creux de cycle Sinewave + RSI < 30", "Première chandelle haussière avec volume fort", "Structure HH+HL qui commence à se former"],
+  };
+
+  // C6 — Funding négatif persistant sur structure non baissière
+  if (fundingRate != null && fundingRate < -0.0002 && context.structure.type !== "bearish") return {
+    type: "caution", icon: "⚠️",
+    title: "Shorts dominants — compression possible",
+    reasons: [
+      `Funding rate négatif (${(fundingRate * 100).toFixed(4)}%) — les shorts paient les longs`,
+      "Configuration précurseur de short squeeze en crypto",
+    ],
+    triggers: ["Breakout au-dessus d'une résistance avec volume", "RSI dépasse 55 + momentum positif"],
+  };
+
+  // C7 — Range
+  if (context.type === "range") return {
+    type: "caution", icon: "⚠️",
+    title: "Marché en range — entrée sur support ou attendre le breakout",
+    reasons: ["Pas de tendance directionnelle (ADX bas)", "La crypto oscille entre support et résistance"],
+    triggers: ["Breakout haussier avec volume 2× la moyenne", "ADX passe au-dessus de 25", "Golden Cross"],
+  };
+
+  // F1 — Configuration optimale
+  if (context.type === "tendance" && context.structure.type === "bullish" && hasGoldenCross && !hasDeathCross && (rsiValue == null || rsiValue < 70)) {
+    const reasons: string[] = ["Golden Cross actif — tendance haussière de fond confirmée"];
+    if (sinewave?.cycleTurn === "trough") reasons.push("Creux de cycle Sinewave — timing optimal");
+    if (momentum14 > 5) reasons.push(`Momentum positif +${momentum14.toFixed(1)}% sur 14 jours`);
+    if (fg != null && fg > 50 && fg < 75) reasons.push(`Fear & Greed ${fg}/100 — sentiment haussier modéré`);
+    if (fundingRate != null && fundingRate > 0 && fundingRate < 0.0002) reasons.push("Funding rate légèrement positif — longs dominants sans euphorie");
+    return {
+      type: "favorable", icon: "✅",
+      title: "Configuration favorable — entrée progressive possible",
+      reasons,
+      triggers: ["Surveiller RSI > 75 pour commencer à alléger", "Fear & Greed > 80 : réduire la position", "Stop suggéré : sous le dernier plus bas de structure (HL)"],
+    };
+  }
+
+  // F2 — Creux de cycle sur structure haussière
+  if (sinewave?.cycleTurn === "trough" && context.structure.type === "bullish" && (rsiValue == null || rsiValue < 55)) return {
+    type: "favorable", icon: "✅",
+    title: "Creux de cycle en tendance haussière — fenêtre d'entrée",
+    reasons: ["Sinewave signale un retournement cyclique haussier", "Structure de prix haussière (HH+HL) intacte"],
+    triggers: ["Confirmer avec une chandelle haussière + volume", "Stop suggéré : sous le dernier HL", "RSI > 70 : commencer à alléger"],
+  };
+
+  // F3 — Survente extrême sur structure haussière
+  if (rsiValue != null && rsiValue < 25 && context.structure.type === "bullish" && !hasDeathCross) return {
+    type: "favorable", icon: "✅",
+    title: "Survente extrême sur structure haussière — opportunité d'accumulation",
+    reasons: [
+      `RSI à ${rsiValue} — survente extrême en contexte haussier`,
+      "Structure de fond haussière maintenue — la baisse semble exagérée",
+    ],
+    triggers: ["Confirmation sur 1-2 chandelles de rebond avec volume", "Ne pas renforcer si la structure HL est cassée"],
+  };
+
+  // F4 — Extreme Fear + Golden Cross
+  if (fg != null && fg < 25 && hasGoldenCross) return {
+    type: "favorable", icon: "✅",
+    title: "Peur extrême sur tendance haussière — configuration rare",
+    reasons: [
+      `Fear & Greed à ${fg}/100 — Extreme Fear`,
+      "Golden Cross actif — la tendance de fond reste haussière",
+      "La divergence sentiment/tendance est historiquement favorable",
+    ],
+    triggers: ["Creux de cycle Sinewave confirmé", "Volume en augmentation sur chandelles haussières"],
+  };
+
+  return NONE;
+}
+
 function computeEntryRecommendation(
   metrics        : any,
   context        : MarketContext | null,
@@ -4817,6 +5007,42 @@ function CryptoChart({
   );
 }
 
+function resampleToMonthly(weekly: {
+  closes: (number|null)[]; opens: (number|null)[]; highs: (number|null)[];
+  lows: (number|null)[]; volumes: (number|null)[]; timestamps: number[];
+}): typeof weekly {
+  if (!weekly || weekly.timestamps.length === 0) return weekly;
+  const months: Record<string, { o: number; h: number; l: number; c: number; v: number; ts: number }> = {};
+  for (let i = 0; i < weekly.timestamps.length; i++) {
+    const ts  = weekly.timestamps[i];
+    const d   = new Date(ts * 1000);
+    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+    const cl  = weekly.closes[i];
+    const op  = weekly.opens[i];
+    const hi  = weekly.highs[i];
+    const lo  = weekly.lows[i];
+    const vo  = weekly.volumes[i];
+    if (cl == null) continue;
+    if (!months[key]) {
+      months[key] = { o: op ?? cl, h: hi ?? cl, l: lo ?? cl, c: cl, v: vo ?? 0, ts };
+    } else {
+      if (hi != null && hi > months[key].h) months[key].h = hi;
+      if (lo != null && lo < months[key].l) months[key].l = lo;
+      months[key].c = cl;
+      months[key].v += vo ?? 0;
+    }
+  }
+  const keys = Object.keys(months).sort();
+  return {
+    timestamps: keys.map(k => months[k].ts),
+    opens:      keys.map(k => months[k].o),
+    highs:      keys.map(k => months[k].h),
+    lows:       keys.map(k => months[k].l),
+    closes:     keys.map(k => months[k].c),
+    volumes:    keys.map(k => months[k].v),
+  };
+}
+
 function CryptoView({ data }: { data: any }) {
   const md     = data.market_data || {};
   const price    = md.current_price?.usd as number | undefined;
@@ -5029,7 +5255,7 @@ function CryptoView({ data }: { data: any }) {
     <div style={{ animation:"fadeIn .4s ease" }}>
 
       {/* ── Header ── */}
-      <div style={{ display:"flex", alignItems:"flex-start", gap:16, marginBottom:20, flexWrap:"wrap" }}>
+      <div style={{ display:"flex", alignItems:"flex-start", gap:16, marginBottom:16, flexWrap:"wrap" }}>
         {data.image?.small && <img src={data.image.small} alt="" style={{ width:52, height:52, borderRadius:"50%", marginTop:4 }}/>}
         <div style={{ flex:1 }}>
           <div style={{ fontSize:22, fontWeight:800, color:THEME.textPrimary, marginBottom:6 }}>
@@ -5055,6 +5281,98 @@ function CryptoView({ data }: { data: any }) {
           </div>
         </div>
       </div>
+
+      {/* ── Carte verdict technique crypto ── */}
+      {allChartData && allChartData.closes.filter((v: number|null) => v != null).length > 20 && (() => {
+        const cryptoInterval: "1d" | "1wk" | "1mo" =
+          (period === "5a" || period === "max") && allChartDataWeekly ? "1wk" :
+          period === "3a" && allChartDataWeekly ? "1mo" : "1d";
+        const rawData =
+          cryptoInterval === "1wk" && allChartDataWeekly ? allChartDataWeekly :
+          cryptoInterval === "1mo" && allChartDataWeekly ? resampleToMonthly(allChartDataWeekly) :
+          allChartData;
+        const PERIOD_DAYS: Record<string, number> = {
+          "7j": 7, "1m": 30, "3m": 90, "6m": 180, "1a": 365,
+          "2a": 730, "3a": 1095, "5a": 1825, "max": 99999,
+        };
+        const cutoffDays = PERIOD_DAYS[period] ?? 365;
+        const cutoffTs   = Math.floor(Date.now() / 1000) - cutoffDays * 86400;
+        const sliceData  = (src: typeof rawData) => {
+          if (!src) return src;
+          const indices: number[] = [];
+          src.timestamps.forEach((ts, i) => { if (ts >= cutoffTs) indices.push(i); });
+          if (indices.length < 20) return src;
+          return {
+            closes:     indices.map(i => src.closes[i]),
+            opens:      indices.map(i => src.opens[i]),
+            highs:      indices.map(i => src.highs[i]),
+            lows:       indices.map(i => src.lows[i]),
+            volumes:    indices.map(i => src.volumes[i]),
+            timestamps: indices.map(i => src.timestamps[i]),
+          };
+        };
+        const cryptoData = sliceData(rawData);
+        const upperCtx = cryptoInterval === "1d" && allChartDataWeekly
+          ? classifyMarketContext(allChartDataWeekly.closes, allChartDataWeekly.highs, allChartDataWeekly.lows, allChartDataWeekly.volumes)
+          : null;
+        const _marketCtx    = classifyMarketContext(cryptoData.closes, cryptoData.highs, cryptoData.lows, cryptoData.volumes);
+        const _techComputed = computeTechSignals(cryptoData.closes, cryptoData.volumes, cryptoData.highs, cryptoData.lows, cryptoInterval);
+        const upperBearish  = upperCtx != null &&
+          (upperCtx.structure.type === "bearish" || upperCtx.type === "chaos" ||
+           (upperCtx.subtype === "essoufflement" && upperCtx.structure.type === "bullish"));
+        const _finalScoreRaw = computeFinalScore(null, _marketCtx, _techComputed.signals, cryptoData.closes);
+        const _finalScore    = {
+          ..._finalScoreRaw,
+          score: upperBearish && _finalScoreRaw.score > 5
+            ? parseFloat(Math.max(1, _finalScoreRaw.score - 1.5).toFixed(1))
+            : _finalScoreRaw.score,
+        };
+        const score            = _finalScore.score;
+        const v                = getVerdict(score);
+        const bulls = _techComputed.signals.filter(s => s.strength === "bull").length;
+        const bears = _techComputed.signals.filter(s => s.strength === "bear").length;
+        const total = bulls + bears;
+        const techLabel = bears > bulls + 1 ? "Baissière" : bulls > bears + 1 ? "Haussière" : "Mitigée";
+        const techColor = bears > bulls + 1 ? "#ef4444" : bulls > bears + 1 ? "#22c55e" : "#f59e0b";
+        if (!v) return null;
+        return (
+          <div style={{
+            background: v.color + "0f", border: `1px solid ${v.color}33`,
+            borderRadius: 14, padding: "18px 22px", marginBottom: 14,
+            display: "flex", alignItems: "center", gap: 24, flexWrap: "wrap",
+          }}>
+            {/* Jauge score timing */}
+            <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4 }}>
+              <ScoreGauge score={score}/>
+              <div style={{ display:"flex", alignItems:"baseline", gap:3 }}>
+                <span style={{ fontSize:46, fontWeight:900, lineHeight:1, color:scoreColor(score), fontFamily:"'IBM Plex Mono',monospace" }}>{score}</span>
+                <span style={{ fontSize:14, color:THEME.textSecondary, fontFamily:"'IBM Plex Mono',monospace" }}>/10</span>
+              </div>
+              <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5 }}>
+                Timing — Technique
+              </div>
+            </div>
+            {/* Verdict + oscillateurs */}
+            <div style={{ flex:1 }}>
+              <div style={{ fontSize:20, fontWeight:900, color:v.color, marginBottom:4 }}>{v.emoji} {v.label}</div>
+              <div style={{ fontSize:11, color:THEME.textSecondary, lineHeight:1.4, marginBottom:12 }}>{v.desc}</div>
+              {total > 0 && (
+                <div style={{
+                  display:"inline-flex", alignItems:"center", gap:8,
+                  padding:"5px 10px", borderRadius:6,
+                  background: techColor + "15", borderLeft:`3px solid ${techColor}`,
+                }}>
+                  <span style={{ fontSize:9, color:THEME.textSecondary, textTransform:"uppercase", letterSpacing:1 }}>Oscillateurs</span>
+                  <span style={{ fontSize:12, fontWeight:700, color:techColor }}>{techLabel}</span>
+                  <span style={{ fontSize:9, color:THEME.scoreGreen, fontWeight:700 }}>{bulls}+</span>
+                  <span style={{ fontSize:9, color:THEME.scoreRed, fontWeight:700 }}>{bears}-</span>
+                  <span style={{ fontSize:9, color:THEME.textSecondary }}>/ {total}</span>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── Grille métriques enrichie ── */}
       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))", gap:10, marginBottom:14 }}>
@@ -5153,15 +5471,69 @@ function CryptoView({ data }: { data: any }) {
 
       {/* ── Analyse technique ── */}
       {allChartData && allChartData.closes.filter((v: number|null) => v != null).length > 20 && (() => {
-        const marketCtx       = classifyMarketContext(allChartData.closes, allChartData.highs, allChartData.lows, allChartData.volumes);
-        const techComputed    = computeTechSignals(allChartData.closes, allChartData.volumes, allChartData.highs, allChartData.lows,
-          "1d"
+        const cryptoInterval: "1d" | "1wk" | "1mo" =
+          (period === "5a" || period === "max") && allChartDataWeekly ? "1wk" :
+          period === "3a" && allChartDataWeekly ? "1mo" : "1d";
+        const rawData2 =
+          cryptoInterval === "1wk" && allChartDataWeekly ? allChartDataWeekly :
+          cryptoInterval === "1mo" && allChartDataWeekly ? resampleToMonthly(allChartDataWeekly) :
+          allChartData;
+        const PERIOD_DAYS2: Record<string, number> = {
+          "7j": 7, "1m": 30, "3m": 90, "6m": 180, "1a": 365,
+          "2a": 730, "3a": 1095, "5a": 1825, "max": 99999,
+        };
+        const cutoffDays2 = PERIOD_DAYS2[period] ?? 365;
+        const cutoffTs2   = Math.floor(Date.now() / 1000) - cutoffDays2 * 86400;
+        const sliceData2  = (src: typeof rawData2) => {
+          if (!src) return src;
+          const indices: number[] = [];
+          src.timestamps.forEach((ts, i) => { if (ts >= cutoffTs2) indices.push(i); });
+          if (indices.length < 20) return src;
+          return {
+            closes:     indices.map(i => src.closes[i]),
+            opens:      indices.map(i => src.opens[i]),
+            highs:      indices.map(i => src.highs[i]),
+            lows:       indices.map(i => src.lows[i]),
+            volumes:    indices.map(i => src.volumes[i]),
+            timestamps: indices.map(i => src.timestamps[i]),
+          };
+        };
+        const cryptoData   = sliceData2(rawData2);
+        const upperCtx     = cryptoInterval === "1d" && allChartDataWeekly
+          ? classifyMarketContext(allChartDataWeekly.closes, allChartDataWeekly.highs, allChartDataWeekly.lows, allChartDataWeekly.volumes)
+          : null;
+        const marketCtx    = classifyMarketContext(cryptoData.closes, cryptoData.highs, cryptoData.lows, cryptoData.volumes);
+        const techComputed = computeTechSignals(cryptoData.closes, cryptoData.volumes, cryptoData.highs, cryptoData.lows, cryptoInterval);
+        const finalScoreResult = computeFinalScore(null, marketCtx, techComputed.signals, cryptoData.closes);
+        const upperBearish = upperCtx != null &&
+          (upperCtx.structure.type === "bearish" || upperCtx.type === "chaos" ||
+           (upperCtx.subtype === "essoufflement" && upperCtx.structure.type === "bullish"));
+        const adjustedScore = upperBearish && finalScoreResult.score > 5
+          ? parseFloat(Math.max(1, finalScoreResult.score - 1.5).toFixed(1))
+          : finalScoreResult.score;
+        const adjustedScoreResult = { ...finalScoreResult, score: adjustedScore };
+        const cryptoEntryRec = computeCryptoEntryRecommendation(
+          upperBearish ? { ...marketCtx, fundamentalConfirm: "warns" } : marketCtx,
+          techComputed.signals,
+          techComputed.sinewave,
+          fearGreed,
+          funding,
         );
-        const finalScoreResult = computeFinalScore(null, marketCtx, techComputed.signals, allChartData.closes);
         return (
           <>
-            <MarketContextPanel context={finalScoreResult.context} modifiers={finalScoreResult.modifiers}/>
-            <TechnicalPanel precomputed={techComputed} context={finalScoreResult.context}/>
+            <EntryRecommendationPanel rec={cryptoEntryRec}/>
+            {upperBearish && (
+              <div style={{
+                padding: "8px 14px", marginBottom: 10,
+                background: "#1e0808", border: `1px solid ${THEME.scoreRed}44`,
+                borderRadius: 10, fontSize: 11, color: THEME.scoreRed,
+                display: "flex", alignItems: "center", gap: 8,
+              }}>
+                ⚠️ <strong>Contexte hebdomadaire défavorable (UT+1)</strong> — la tendance supérieure est baissière ou en essoufflement. Score pénalisé de −1.5 points.
+              </div>
+            )}
+            <MarketContextPanel context={adjustedScoreResult.context} modifiers={adjustedScoreResult.modifiers}/>
+            <TechnicalPanel precomputed={techComputed} context={adjustedScoreResult.context}/>
           </>
         );
       })()}
