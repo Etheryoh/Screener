@@ -2938,7 +2938,7 @@ function InteractiveChart({
 
           </span>
         </div>
-        <div style={{ display:"flex", gap:4 }}>
+        <div style={{ display:"flex", gap:4, overflowX:"auto", flexShrink:1, minWidth:0, paddingBottom:2 }}>
           {PERIODS.map(p => (
             <button
               key={p.key}
@@ -4136,6 +4136,94 @@ function computeEntryRecommendation(
   return NONE;
 }
 
+const ENTRY_EDU: Record<string, TechSignal["edu"]> = {
+  "Golden Cross": {
+    concept: "Le Golden Cross se produit quand la moyenne mobile courte (EMA50) repasse au-dessus de la moyenne mobile longue (EMA200). C'est l'un des signaux haussiers les plus connus en analyse technique.",
+    howToRead: "EMA50 > EMA200 = tendance haussière de fond confirmée. Le Golden Cross signale que le momentum court terme a repris le dessus sur le long terme. Plus fiable quand il s'accompagne d'un volume en hausse.",
+    example: "Sur BTC en 2020 et 2023, les Golden Cross ont précédé des hausses importantes. Ce n'est pas infaillible — c'est un signal de confirmation, pas de prédiction.",
+  },
+  "Death Cross": {
+    concept: "Le Death Cross se produit quand la moyenne mobile courte (EMA50) passe sous la moyenne mobile longue (EMA200). C'est le signal baissier symétrique du Golden Cross.",
+    howToRead: "EMA50 < EMA200 = tendance baissière de fond active. Le marché a perdu son momentum haussier sur le moyen terme. Les rebonds dans ce contexte sont souvent temporaires.",
+    example: "BTC a subi un Death Cross fin 2021 avant une chute prolongée. Attendre le Golden Cross avant de reprendre une position longue est une règle de prudence classique.",
+  },
+  "Death Cross actif — EMA50 sous EMA200 — momentum baissier moyen terme": {
+    concept: "Le Death Cross indique que la moyenne des 50 derniers jours est passée sous celle des 200 derniers jours — signal que la tendance baissière est installée sur le moyen terme.",
+    howToRead: "Tant que l'EMA50 reste sous l'EMA200, la tendance de fond est baissière. Les rebonds peuvent être violents mais restent statistiquement vendeurs dans ce contexte.",
+    example: "En pratique : éviter les achats impulsifs sur les rebonds tant que le Death Cross est actif. Attendre le Golden Cross pour confirmer un retournement durable.",
+  },
+  "EMA50 sous EMA200 — momentum baissier moyen terme": {
+    concept: "Le Death Cross est actif : la moyenne mobile des 50 derniers jours est passée sous celle des 200 derniers jours. C'est le signal baissier structurel le plus connu en analyse technique.",
+    howToRead: "Tant que l'EMA50 reste sous l'EMA200, la tendance de fond est baissière. Chaque rebond est une opportunité de sortie, pas d'achat.",
+    example: "BTC a subi ce signal fin 2021 avant une chute prolongée. La règle classique : ne pas acheter tant que le Death Cross est actif, attendre le Golden Cross.",
+  },
+  "Death Cross actif — EMA50 sous EMA200": {
+    concept: "Le Death Cross indique que la tendance baissière est installée sur le moyen terme — l'EMA50 est passée sous l'EMA200.",
+    howToRead: "Signal baissier structurel. Les corrections dans ce contexte sont souvent profondes. Attendre le Golden Cross pour envisager un retour en position longue.",
+    example: "Sur les actions comme sur les cryptos, le Death Cross précède souvent des baisses prolongées. C'est un signal de prudence, pas de panique — mais une raison d'attendre.",
+  },
+  "Structure baissière confirmée (LL+LH)": {
+    concept: "Une structure LL+LH (Lower Lows + Lower Highs) signifie que le prix fait des plus bas et des plus hauts de plus en plus bas — définition technique d'une tendance baissière.",
+    howToRead: "Chaque rebond est vendu moins haut que le précédent, et chaque baisse enfonce un nouveau plancher. La structure ne se retourne qu'avec un premier HH (Higher High) confirmé.",
+    example: "Tant que la structure LL+LH est intacte, les achats sont statistiquement perdants. Attendre la formation d'un premier HH+HL pour envisager un retournement.",
+  },
+  "Death Cross actif — tendance baissière de fond": {
+    concept: "Le Death Cross confirme que la tendance baissière est installée sur le moyen terme — l'EMA50 est sous l'EMA200.",
+    howToRead: "Contexte défavorable pour les positions longues. Les rebonds restent des opportunités de vente tant que le Golden Cross n'est pas formé.",
+    example: "Règle de base : en Death Cross, réduire l'exposition aux actifs risqués et attendre une confirmation haussière avant de réinvestir.",
+  },
+  "Structure de prix LL+LH — chaque rebond est vendu": {
+    concept: "La structure LL+LH (Lower Lows + Lower Highs) est la définition d'une tendance baissière — chaque sommet est plus bas que le précédent, chaque creux aussi.",
+    howToRead: "Dans ce contexte, les rebonds sont des pièges haussiers — des opportunités pour les vendeurs, pas pour les acheteurs. Attendre un renversement de structure.",
+    example: "Un renversement se confirme quand le prix fait un premier Higher High (HH) — sommet plus haut que le précédent. Avant ça, la tendance baissière est toujours en place.",
+  },
+  "Golden Cross (EMA50 repasse au-dessus EMA200)": {
+    concept: "Le Golden Cross se produit quand l'EMA50 repasse au-dessus de l'EMA200 — signal que la tendance haussière reprend le dessus sur le moyen terme.",
+    howToRead: "C'est le signal de retournement haussier le plus attendu après un Death Cross. Il confirme que le momentum court terme a repris le dessus sur le long terme.",
+    example: "BTC en janvier 2023 a formé un Golden Cross qui a précédé un rallye de plusieurs mois. Ce n'est pas infaillible, mais c'est une condition nécessaire pour revenir en position longue.",
+  },
+  "RSI < 25 + creux de cycle Sinewave": {
+    concept: "La combinaison RSI < 25 (survente extrême) et creux de cycle Sinewave (retournement cyclique) est l'une des configurations d'entrée les plus solides après une baisse.",
+    howToRead: "RSI < 25 = les vendeurs sont épuisés. Creux Sinewave = le cycle baissier arrive à son terme. Les deux ensemble = probabilité élevée de rebond significatif.",
+    example: "Cette configuration apparaît rarement — en général moins de 3-4 fois par an sur BTC. Quand elle se présente avec un Golden Cross en formation, c'est une opportunité majeure.",
+  },
+  "Structure HH+HL sur 3 pivots confirmés": {
+    concept: "Une structure HH+HL (Higher Highs + Higher Lows) sur 3 pivots minimum confirme qu'une tendance haussière est structurellement en place — pas juste un rebond.",
+    howToRead: "3 pivots = 3 cycles de hausse-correction confirmés. La tendance est considérée comme fiable. C'est la condition minimale pour parler de tendance haussière structurelle.",
+    example: "Sur BTC, après un Death Cross, attendre 3 pivots HH+HL confirmés avant de revenir en position longue réduit significativement le risque d'acheter un faux retournement.",
+  },
+  "Golden Cross actif — tendance haussière de fond confirmée": {
+    concept: "Le Golden Cross confirme que la tendance haussière est installée sur le moyen terme — l'EMA50 est repassée au-dessus de l'EMA200.",
+    howToRead: "Signal haussier structurel. Les corrections dans ce contexte sont généralement des opportunités d'achat tant que la structure HH+HL est maintenue.",
+    example: "Combiner Golden Cross + RSI non suracheté + creux de cycle Sinewave = configuration d'entrée optimale selon la méthode Pro Indicators.",
+  },
+  "RSI < 30 + creux Sinewave pour entrée tactique uniquement": {
+    concept: "Le RSI (Relative Strength Index) mesure la vitesse des mouvements de prix. Sous 30, le marché est en zone de survente — les vendeurs ont peut-être exagéré la baisse.",
+    howToRead: "RSI < 30 = survente potentielle, rebond possible. Mais sur tendance baissière (Death Cross actif), ce rebond est tactique — il ne remet pas en cause la direction baissière de fond.",
+    example: "Sur une crypto en Death Cross, un RSI < 30 peut offrir un rebond de 10-20%. Ce n'est pas une raison d'entrer en position longue durable — seulement une opportunité court terme.",
+  },
+  "Creux de cycle Sinewave": {
+    concept: "Le Sinewave d'Ehlers détecte les phases cycliques du marché. Un creux de cycle signale que la phase baissière du cycle arrive à son terme — retournement haussier probable à court terme.",
+    howToRead: "La ligne Sine croise la LeadSine vers le bas = creux de cycle = signal haussier. Ce signal est plus fiable quand il coïncide avec un RSI bas et une structure de prix haussière.",
+    example: "En tendance haussière, le creux de cycle Sinewave est le point d'entrée optimal selon la méthode Pro Indicators — il correspond au pullback dans la tendance.",
+  },
+  "ADX passe au-dessus de 25": {
+    concept: "L'ADX (Average Directional Index) mesure la force d'une tendance sans en indiquer la direction. Sous 25 = pas de tendance. Au-dessus de 25 = tendance directionnelle qui se met en place.",
+    howToRead: "Un ADX qui passe de 20 à 25+ signale qu'un mouvement directionnel commence. C'est souvent le déclencheur d'un breakout de range vers une tendance.",
+    example: "Sur un marché en range, attendre ADX > 25 avant d'entrer confirme que le breakout n'est pas un faux signal.",
+  },
+  "Funding rate devient négatif (capitulation des longs)": {
+    concept: "Le funding rate est le coût périodique payé entre acheteurs et vendeurs de contrats perpétuels crypto. Négatif = les shorts (vendeurs) paient les longs (acheteurs) = les vendeurs dominent et sont prêts à payer pour maintenir leurs positions.",
+    howToRead: "Un funding négatif persistant signale une capitulation des acheteurs — tout le monde est baissier. Historiquement, c'est souvent un signal contrarian : quand tout le monde est vendu, un rebond violent peut se produire (short squeeze).",
+    example: "BTC en juin 2022 et novembre 2022 avait un funding très négatif juste avant les rebonds techniques les plus violents de la baisse.",
+  },
+  "RSI descend sous 25": {
+    concept: "Le RSI sous 25 indique une survente extrême — le marché a baissé trop vite. Les vendeurs sont épuisés et un rebond technique est statistiquement probable.",
+    howToRead: "Sur les grandes cryptos (BTC, ETH), un RSI < 25 sur le journalier est rare et précède souvent un rebond significatif, même en contexte baissier.",
+    example: "Ce n'est pas un signal d'achat en tendance baissière — c'est un signal de prudence pour les vendeurs et une opportunité tactique court terme pour les acheteurs.",
+  },
+};
+
 function EntryRecommendationPanel({ rec }: { rec: EntryRecommendation }) {
   if (rec.type === "none") return null;
 
@@ -4168,8 +4256,10 @@ function EntryRecommendationPanel({ rec }: { rec: EntryRecommendation }) {
               Pourquoi
             </div>
             {rec.reasons.map((r, i) => (
-              <div key={i} style={{ fontSize: 11, color: THEME.textSecondary, lineHeight: 1.6 }}>
-                • {r}
+              <div key={i} style={{ fontSize: 11, color: THEME.textSecondary, lineHeight: 1.6, display:"flex", alignItems:"flex-start", gap:6 }}>
+                <span>•</span>
+                <span>{r}</span>
+                {ENTRY_EDU[r] && <EduTooltip edu={ENTRY_EDU[r]} id={`entry-reason-${i}`}/>}
               </div>
             ))}
           </div>
@@ -4181,8 +4271,10 @@ function EntryRecommendationPanel({ rec }: { rec: EntryRecommendation }) {
               Surveiller
             </div>
             {rec.triggers.map((t, i) => (
-              <div key={i} style={{ fontSize: 11, color: THEME.textSecondary, lineHeight: 1.6 }}>
-                👁 {t}
+              <div key={i} style={{ fontSize: 11, color: THEME.textSecondary, lineHeight: 1.6, display:"flex", alignItems:"flex-start", gap:6 }}>
+                <span>👁</span>
+                <span>{t}</span>
+                {ENTRY_EDU[t] && <EduTooltip edu={ENTRY_EDU[t]} id={`entry-trigger-${i}`}/>}
               </div>
             ))}
           </div>
@@ -4484,13 +4576,13 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
             <button
               onClick={() => setShowEur(v => !v)}
               style={{
-                background: showEur ? THEME.accent + "33" : THEME.bgCard,
-                border: `1px solid ${showEur ? THEME.accent : THEME.borderMid}`,
+                background: showEur ? THEME.accent + "33" : THEME.scoreAmber + "22",
+                border: `1px solid ${showEur ? THEME.accent : THEME.scoreAmber}`,
                 borderRadius: 8,
                 padding: "5px 14px",
                 fontSize: 13,
                 fontWeight: 800,
-                color: showEur ? THEME.accent : THEME.textSecondary,
+                color: showEur ? THEME.accent : THEME.scoreAmber,
                 cursor: "pointer",
                 transition: "all .15s",
                 fontFamily: "'IBM Plex Mono',monospace",
@@ -4943,7 +5035,7 @@ function CryptoChart({
             {fmtPrice(displayPts[0].price)} → {fmtPrice(displayPts[displayPts.length - 1].price)} {currency}
           </span>
         </div>
-        <div style={{ display:"flex", gap:4 }}>
+        <div style={{ display:"flex", gap:4, overflowX:"auto", flexShrink:1, minWidth:0, paddingBottom:2 }}>
           {periods.map(p => (
             <button key={p.key} onClick={() => onPeriodChange(p.key)} disabled={loading} style={{
               background: period === p.key ? c + "22" : "transparent",
@@ -5069,7 +5161,6 @@ function CryptoView({ data }: { data: any }) {
 
   // Métriques dérivées
   const volMktRatio = (vol24h != null && mktCap != null && mktCap > 0) ? vol24h / mktCap : undefined;
-  const btcDomRatio = mktCap != null ? mktCap / 1.5e12 : undefined;
   const topPct      = rank   != null ? (rank / 15000) * 100 : undefined;
 
   // Position dans le range historique (ATL → ATH)
@@ -5166,6 +5257,9 @@ function CryptoView({ data }: { data: any }) {
   const [openInterest,  setOpenInterest]  = useState<number | null>(null);
   const [cgGlobal,      setCgGlobal]      = useState<{ btc: number; eth: number; totalMktCap: number } | null>(null);
   const [showEur,       setShowEur]       = useState(false);
+  const btcDomRatio = (mktCap != null && cgGlobal != null && cgGlobal.totalMktCap > 0)
+    ? mktCap / cgGlobal.totalMktCap
+    : undefined;
 
   useEffect(() => {
     const jobs: Promise<void>[] = [];
@@ -5269,8 +5363,15 @@ function CryptoView({ data }: { data: any }) {
             {priceEur != null && (
               <button
                 onClick={() => setShowEur(v => !v)}
-                style={{ fontSize:10, padding:"3px 9px", borderRadius:6, border:`1px solid ${THEME.borderMid}`, background: showEur ? THEME.accent : THEME.bgCardAlt, color: showEur ? THEME.bgPage : THEME.textMuted, cursor:"pointer", fontFamily:"'IBM Plex Mono',monospace", fontWeight:700, alignSelf:"center" }}
-              >{showEur ? "EUR" : "USD"}</button>
+                style={{
+                  fontSize:10, padding:"3px 9px", borderRadius:6,
+                  border:`1px solid ${showEur ? THEME.accent : THEME.scoreAmber}`,
+                  background: showEur ? THEME.accent : THEME.scoreAmber + "22",
+                  color: showEur ? THEME.bgPage : THEME.scoreAmber,
+                  cursor:"pointer", fontFamily:"'IBM Plex Mono',monospace",
+                  fontWeight:700, alignSelf:"center",
+                }}
+              >{showEur ? "↩ USD" : "≈ EUR"}</button>
             )}
             <span style={{ fontSize:14, fontWeight:700, color: up24 ? THEME.scoreGreen : THEME.scoreRed }}>
               {up24 ? "▲" : "▼"} {Math.abs(chg24h ?? 0).toFixed(2)}% 24h
@@ -5388,7 +5489,7 @@ function CryptoView({ data }: { data: any }) {
         <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
           <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Market Cap</div>
           <div style={{ fontSize:14, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>${fmt(mktCap)}</div>
-          {btcDomRatio != null && <div style={{ fontSize:9, color:THEME.textMuted, marginTop:2 }}>{(btcDomRatio * 100).toFixed(3)}% vs BTC</div>}
+          {btcDomRatio != null && <div style={{ fontSize:9, color:THEME.textMuted, marginTop:2 }}>{(btcDomRatio * 100).toFixed(3)}% du marché crypto total</div>}
         </div>
 
         <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
@@ -5396,7 +5497,7 @@ function CryptoView({ data }: { data: any }) {
           <div style={{ fontSize:14, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>${fmt(vol24h)}</div>
           {volMktRatio != null && (
             <div style={{ fontSize:9, color: volMktRatio > 0.05 ? THEME.scoreGreen : THEME.scoreAmber, marginTop:2 }}>
-              {(volMktRatio * 100).toFixed(1)}% du MC · {volMktRatio > 0.05 ? "Liquidité forte" : "Liquidité modérée"}
+              {(volMktRatio * 100).toFixed(1)}% de la capitalisation · {volMktRatio > 0.05 ? "Liquidité forte" : "Liquidité modérée"}
             </div>
           )}
         </div>
@@ -5559,7 +5660,7 @@ function CryptoView({ data }: { data: any }) {
             <div style={{ fontSize:10, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5 }}>Position dans le marché</div>
             <div style={{ fontSize:10, color:THEME.textSecondary }}>
               {rank != null && `Rang #${rank} · `}Top {topPct.toFixed(1)}% parmi ~15 000 cryptos
-              {btcDomRatio != null && ` · ${(btcDomRatio * 100).toFixed(3)}% du MC Bitcoin`}
+              {btcDomRatio != null && ` · ${(btcDomRatio * 100).toFixed(3)}% de la capitalisation totale`}
             </div>
           </div>
           <div style={{ height:6, borderRadius:3, background:"#1e2a3a", overflow:"hidden" }}>
