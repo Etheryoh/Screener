@@ -37,11 +37,6 @@ const EXCHANGE_CURRENCY: Record<string, string> = {
   ".HK":"HKD",".AX":"AUD",".TO":"CAD",".SW":"CHF",".ST":"SEK",
   ".CO":"DKK",".OL":"NOK",".HE":"EUR",".WA":"PLN",".IS":"TRY",
 };
-function inferCurrency(ticker: string): string {
-  for (const [sfx, cur] of Object.entries(EXCHANGE_CURRENCY))
-    if (ticker.toUpperCase().endsWith(sfx)) return cur;
-  return "USD";
-}
 
 const TYPE_BADGE: Record<string, { label: string; color: string; bg: string }> = {
   EQUITY:         { label:"Action", color:"#60a5fa", bg:"#1e3a5f" },
@@ -5161,7 +5156,6 @@ function CryptoView({ data }: { data: any }) {
 
   // Métriques dérivées
   const volMktRatio = (vol24h != null && mktCap != null && mktCap > 0) ? vol24h / mktCap : undefined;
-  const topPct      = rank   != null ? (rank / 15000) * 100 : undefined;
 
   // Position dans le range historique (ATL → ATH)
   let rangePos: number | null = null;
@@ -5255,8 +5249,10 @@ function CryptoView({ data }: { data: any }) {
   const [tvl,           setTvl]           = useState<number | null>(null);
   const [funding,       setFunding]       = useState<{ rate: number; markPrice: number } | null>(null);
   const [openInterest,  setOpenInterest]  = useState<number | null>(null);
-  const [cgGlobal,      setCgGlobal]      = useState<{ btc: number; eth: number; totalMktCap: number } | null>(null);
+  const [cgGlobal,      setCgGlobal]      = useState<{ btc: number; eth: number; totalMktCap: number; active_cryptocurrencies: number } | null>(null);
   const [showEur,       setShowEur]       = useState(false);
+  const totalCoins  = cgGlobal?.active_cryptocurrencies ?? 15000;
+  const topPct      = rank != null ? (rank / totalCoins) * 100 : undefined;
   const btcDomRatio = (mktCap != null && cgGlobal != null && cgGlobal.totalMktCap > 0)
     ? mktCap / cgGlobal.totalMktCap
     : undefined;
@@ -5326,9 +5322,10 @@ function CryptoView({ data }: { data: any }) {
         .then(j => {
           const d = j?.data;
           if (d) setCgGlobal({
-            btc:         d.market_cap_percentage?.btc  ?? 0,
-            eth:         d.market_cap_percentage?.eth  ?? 0,
-            totalMktCap: d.total_market_cap?.usd       ?? 0,
+            btc:                     d.market_cap_percentage?.btc  ?? 0,
+            eth:                     d.market_cap_percentage?.eth  ?? 0,
+            totalMktCap:             d.total_market_cap?.usd       ?? 0,
+            active_cryptocurrencies: d.active_cryptocurrencies     ?? 15000,
           });
         })
         .catch(() => {})
@@ -5659,7 +5656,7 @@ function CryptoView({ data }: { data: any }) {
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8, flexWrap:"wrap", gap:6 }}>
             <div style={{ fontSize:10, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5 }}>Position dans le marché</div>
             <div style={{ fontSize:10, color:THEME.textSecondary }}>
-              {rank != null && `Rang #${rank} · `}Top {topPct.toFixed(1)}% parmi ~15 000 cryptos
+              {rank != null && `Rang #${rank} · `}Top {topPct.toFixed(1)}% parmi ~{(cgGlobal?.active_cryptocurrencies ?? 15000).toLocaleString("fr-FR")} cryptos
               {btcDomRatio != null && ` · ${(btcDomRatio * 100).toFixed(3)}% de la capitalisation totale`}
             </div>
           </div>
@@ -5672,7 +5669,7 @@ function CryptoView({ data }: { data: any }) {
             }}/>
           </div>
           <div style={{ display:"flex", justifyContent:"space-between", marginTop:4, fontSize:8, color:THEME.textMuted }}>
-            <span>Top 1 (Bitcoin)</span><span>Top 100</span><span>Top 1 000</span><span>Top 15 000</span>
+            <span>Top 1 (Bitcoin)</span><span>Top 100</span><span>Top 1 000</span><span>Top {(cgGlobal?.active_cryptocurrencies ?? 15000).toLocaleString("fr-FR")}</span>
           </div>
         </div>
       )}
