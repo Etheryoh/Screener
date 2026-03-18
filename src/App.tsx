@@ -133,7 +133,6 @@ function detectZone(ticker: string): MacroZone {
 // COUCHE 2 — ADAPTERS (sources de données)
 // ════════════════════════════════════════════════════════════════
 const PROXY   = "https://screener.etheryoh.workers.dev";
-const CG_BASE = PROXY;
 const ECB_URL = "https://data-api.ecb.europa.eu/service/data/EXR/D..EUR.SP00.A?lastNObservations=1&format=jsondata";
 
 const getJson = async (url: string): Promise<any> => {
@@ -218,7 +217,7 @@ async function yfFundamentals(ticker: string, addLog: (s: string) => void) {
 // ── Adapter CoinGecko ─────────────────────────────────────────
 async function cgSearch(q: string): Promise<string | null> {
   try {
-    const d = await getJson(`${CG_BASE}?type=cg&path=search%3Fquery%3D${encodeURIComponent(q)}`);
+    const d = await getJson(`${PROXY}?type=cg&path=${encodeURIComponent(`search?query=${encodeURIComponent(q)}`)}`);
     const coins = d?.coins ?? [];
     if (coins.length === 0) return null;
 
@@ -249,8 +248,28 @@ async function cgSearch(q: string): Promise<string | null> {
 async function cgCoin(id: string): Promise<any> {
   try {
     return await getJson(
-      `${CG_BASE}?type=cg&path=coins%2F${id}%3Flocalization%3Dtrue%26tickers%3Dfalse%26community_data%3Dfalse`
+      `${PROXY}?type=cg&path=${encodeURIComponent(`coins/${id}?localization=true&tickers=false&community_data=false`)}`
     );
+  } catch { return null; }
+}
+
+async function binanceOHLCV(symbol: string, interval: string, limit: number): Promise<{
+  closes: (number|null)[]; opens: (number|null)[]; highs: (number|null)[]; lows: (number|null)[];
+  volumes: (number|null)[]; timestamps: number[];
+} | null> {
+  try {
+    const data = await getJson(
+      `${PROXY}?type=klines&symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}`
+    );
+    if (!Array.isArray(data) || data.length === 0) return null;
+    return {
+      closes:     data.map((k: any) => parseFloat(k[4]) as number | null),
+      opens:      data.map((k: any) => parseFloat(k[1]) as number | null),
+      highs:      data.map((k: any) => parseFloat(k[2]) as number | null),
+      lows:       data.map((k: any) => parseFloat(k[3]) as number | null),
+      volumes:    data.map((k: any) => parseFloat(k[5]) as number | null),
+      timestamps: data.map((k: any) => Math.floor(k[0] / 1000)),
+    };
   } catch { return null; }
 }
 
@@ -263,9 +282,8 @@ async function cgOHLCV(id: string): Promise<{
   timestamps: number[];
 } | null> {
   try {
-    const data = await getJson(
-      `${CG_BASE}?type=cg&path=coins%2F${id}%2Fmarket_chart%3Fvs_currency%3Dusd%26days%3Dmax%26interval%3Ddaily`
-    );
+    const path = `coins/${id}/market_chart?vs_currency=usd&days=max`;
+    const data = await getJson(`${PROXY}?type=cg&path=${encodeURIComponent(path)}`);
     if (!data?.prices?.length) return null;
     const closes     = data.prices.map(([, p]: [number, number]) => p as number | null);
     const timestamps = data.prices.map(([ts]: [number, number]) => ts > 1e12 ? Math.floor(ts / 1000) : ts);
@@ -318,7 +336,7 @@ async function yfSearch(q: string): Promise<SearchSuggestion[]> {
 
 async function cgSearchSuggest(q: string): Promise<SearchSuggestion[]> {
   try {
-    const d = await getJson(`${CG_BASE}?type=cg&path=search%3Fquery%3D${encodeURIComponent(q)}`);
+    const d = await getJson(`${PROXY}?type=cg&path=${encodeURIComponent(`search?query=${encodeURIComponent(q)}`)}`);
     return (d?.coins ?? []).slice(0, 5).map((c: any) => ({
       symbol:   c.symbol.toUpperCase(),
       name:     c.name,
@@ -4584,6 +4602,7 @@ async function translateToFr(text: string): Promise<string> {
 
 function CryptoChart({
   chartData,
+  chartDataWeekly,
   currency,
   period,
   periods,
@@ -4591,7 +4610,8 @@ function CryptoChart({
   loading,
   optimalUTKey,
 }: {
-  chartData: { closes: (number|null)[]; timestamps: number[]; opens: (number|null)[]; highs: (number|null)[]; lows: (number|null)[]; volumes: (number|null)[] } | null;
+  chartData:        { closes: (number|null)[]; timestamps: number[]; opens: (number|null)[]; highs: (number|null)[]; lows: (number|null)[]; volumes: (number|null)[] } | null;
+  chartDataWeekly?: { closes: (number|null)[]; timestamps: number[]; opens: (number|null)[]; highs: (number|null)[]; lows: (number|null)[]; volumes: (number|null)[] } | null;
   currency: string;
   period: string;
   periods: { key: string; label: string; days: number | "max" }[];
@@ -4629,15 +4649,17 @@ function CryptoChart({
   let renderError = false;
 
   try {
-    const allPts = (chartData?.closes ?? []).map((p, i) => ({
-      ts:    chartData!.timestamps[i],
+    const useWeekly = (period === "5a" || period === "max") && chartDataWeekly != null;
+    const sourceData = useWeekly ? chartDataWeekly : chartData;
+    const allPts = (sourceData?.closes ?? []).map((p, i) => ({
+      ts:    sourceData!.timestamps[i],
       price: p ?? 0,
     })).filter(p => p.price > 0 && p.ts > 0);
 
     const nowSec   = Math.floor(Date.now() / 1000);
     const cutoffTs = nowSec - periodSecs;
     const filtered = periodSecs === Infinity ? allPts : allPts.filter(p => p.ts >= cutoffTs);
-    displayPts = filtered.length >= 2 ? filtered : allPts;
+    displayPts = filtered.length >= 2 ? filtered : [];
 
     if (displayPts.length >= 2) {
       base0   = displayPts[0].price || 1;
@@ -4693,8 +4715,8 @@ function CryptoChart({
   );
 
   if (displayPts.length < 2) return (
-    <div style={{ color: THEME.textMuted, fontSize: 12, padding: "30px 0", textAlign: "center" }}>
-      {loading ? "Chargement…" : "Données graphique indisponibles"}
+    <div style={{ color: THEME.textMuted, fontSize: 12, padding: "20px 0", textAlign: "center" }}>
+      {loading ? "Chargement…" : "Données insuffisantes pour la période sélectionnée"}
     </div>
   );
 
@@ -4864,19 +4886,26 @@ function CryptoView({ data }: { data: any }) {
   });
 
   const [period,       setPeriod]       = useState("1a");
-  const [allChartData, setAllChartData] = useState<{
-    closes: (number|null)[]; opens: (number|null)[]; highs: (number|null)[]; lows: (number|null)[];
-    volumes: (number|null)[]; timestamps: number[];
-  } | null>(null);
+  type ChartSeries = { closes: (number|null)[]; opens: (number|null)[]; highs: (number|null)[]; lows: (number|null)[]; volumes: (number|null)[]; timestamps: number[] } | null;
+  const [allChartData,       setAllChartData]       = useState<ChartSeries>(null);
+  const [allChartDataWeekly, setAllChartDataWeekly] = useState<ChartSeries>(null);
   const [chartLoading, setChartLoading] = useState(true);
   const [optimalUTKey, setOptimalUTKey] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     setChartLoading(true);
-    cgOHLCV(data.id).then(result => {
-      setAllChartData(result);
+    const timer = setTimeout(async () => {
+      const sym = (data.symbol || "").toUpperCase();
+      const [daily, weekly] = await Promise.all([
+        binanceOHLCV(sym, "1d", 1000),
+        binanceOHLCV(sym, "1w", 1000),
+      ]);
+      const fallback = (!daily && !weekly) ? await cgOHLCV(data.id) : null;
+      setAllChartData(daily || fallback);
+      setAllChartDataWeekly(weekly || null);
       setChartLoading(false);
-    });
+    }, 500);
+    return () => clearTimeout(timer);
   }, [data.id]);
 
   useEffect(() => {
@@ -5111,6 +5140,7 @@ function CryptoView({ data }: { data: any }) {
         {!chartLoading && allChartData && allChartData.closes && allChartData.closes.length >= 2 && (
           <CryptoChart
             chartData={allChartData}
+            chartDataWeekly={allChartDataWeekly}
             currency="USD"
             period={period}
             periods={PERIODS}
@@ -5401,13 +5431,25 @@ export default function App() {
       /^[A-Z]{6}$/.test(upper) ||
       upper.endsWith("=X");
 
-    const looksLikeCryptoYF = /^[A-Z0-9]{2,10}-USD$/i.test(raw) && !isForexPattern;
+    const KNOWN_CRYPTO_SYMBOLS = new Set([
+      "BTC","ETH","SOL","BNB","XRP","ADA","DOGE","AVAX","DOT","MATIC",
+      "LINK","UNI","ATOM","LTC","BCH","XLM","ALGO","VET","ICP","FIL",
+      "HBAR","ETC","MANA","SAND","AXS","THETA","XTZ","EOS","AAVE","MKR",
+      "COMP","SNX","CRV","YFI","SUSHI","1INCH","GRT","ENJ","CHZ","BAT",
+      "ZEC","DASH","XMR","NEO","WAVES","QTUM","ONT","ZIL","ICX","IOTA",
+      "OP","ARB","APT","SUI","SEI","TIA","INJ","PYTH","JUP","WIF",
+    ]);
 
-    if (looksLikeCryptoYF || forceType?.toUpperCase() === "CRYPTOCURRENCY") {
+    const looksLikeCrypto =
+      KNOWN_CRYPTO_SYMBOLS.has(upper) ||
+      (/^[A-Z0-9]{2,10}-USD$/i.test(raw) && !isForexPattern);
+
+    if (looksLikeCrypto || forceType?.toUpperCase() === "CRYPTOCURRENCY") {
       addLog(`⚡ Crypto détectée — recherche CoinGecko directe...`);
       const cgQuery = raw.replace(/-USD$|-EUR$|-USDT$|-BTC$|-GBP$/i, "").toLowerCase();
       const cgId = await cgSearch(cgQuery);
       if (cgId) {
+        await new Promise(r => setTimeout(r, 300));
         const d = await cgCoin(cgId);
         if (d?.market_data?.current_price?.usd) {
           addLog(`✅ CoinGecko : ${cgId}`);
