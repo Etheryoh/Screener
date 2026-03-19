@@ -3297,8 +3297,15 @@ const PROFILE_CONTEXT: Record<string, {
   capital_heavy: {
     badge: "Secteur capitalistique",
     color: "#f59e0b",
-    description: (m) =>
-      `${m.name || "Cette entreprise"} opère dans un secteur nécessitant de lourds investissements en infrastructure. Une dette structurellement plus élevée est normale et attendue — elle finance des actifs à longue durée de vie. Les ratios de liquidité sont à lire différemment : la régularité des flux de trésorerie compte plus que le current ratio instantané.`,
+    description: (m) => {
+      const sectorTxt = m.sector ? ` dans le secteur ${m.sector}` : "";
+      const valTxt = m.gValorisation != null && m.gValorisation <= 3.5
+        ? " Sa valorisation est actuellement tendue malgré ce contexte capitalistique."
+        : m.gValorisation != null && m.gValorisation >= 7
+        ? " Sa valorisation est attractive pour ce type de secteur."
+        : "";
+      return `${m.name || "Cette entreprise"}${sectorTxt} opère dans un secteur nécessitant de lourds investissements en infrastructure. Une dette structurellement élevée est normale — elle finance des actifs à longue durée de vie. La régularité des flux de trésorerie compte plus que le current ratio instantané.${valTxt}`.replace(/\s+/g, " ").trim();
+    },
     notes: {
       "Santé Financière": "Dette élevée normale dans ce secteur — financement d'actifs long terme.",
     },
@@ -3306,8 +3313,14 @@ const PROFILE_CONTEXT: Record<string, {
   financial_sector: {
     badge: "Secteur financier",
     color: "#f97316",
-    description: (m) =>
-      `${m.name || "Cette entreprise"} appartient au secteur financier. Dette/Equity et Current Ratio ne sont pas des indicateurs pertinents pour ce modèle économique — les banques et assureurs ont structurellement un levier très élevé par nature de leur activité. Le ROE et les marges sont les métriques clés.`,
+    description: (m) => {
+      const rentaTxt = m.gRentabilite != null && m.gRentabilite >= 7
+        ? " La rentabilité est solide — ROE et marges confirment l'efficacité du modèle."
+        : m.gRentabilite != null && m.gRentabilite <= 3.5
+        ? " La rentabilité est sous pression — surveiller l'évolution des marges et du ROE."
+        : " Le ROE et les marges sont les métriques clés à suivre.";
+      return `${m.name || "Cette entreprise"} appartient au secteur financier. Dette/Equity et Current Ratio ne sont pas des indicateurs pertinents pour ce modèle économique — les banques et assureurs ont structurellement un levier très élevé par nature de leur activité.${rentaTxt}`.replace(/\s+/g, " ").trim();
+    },
     notes: {
       "Santé Financière": "Ratios de dette non applicables au secteur financier.",
     },
@@ -3315,8 +3328,20 @@ const PROFILE_CONTEXT: Record<string, {
   standard: {
     badge: "Profil standard",
     color: "#94a3b8",
-    description: (m) =>
-      `Les ratios de ${m.name || "cette entreprise"} sont lus avec les seuils standard. Comparez toujours avec les moyennes du secteur ${m.sector ? `(${m.sector})` : ""} pour contextualiser les valeurs.`,
+    description: (m) => {
+      const sectorTxt = m.sector ? ` dans le secteur ${m.sector}` : "";
+      const valTxt = m.gValorisation != null && m.gValorisation <= 3.5
+        ? "La valorisation est actuellement tendue — le prix intègre déjà beaucoup d'optimisme."
+        : m.gValorisation != null && m.gValorisation >= 7
+        ? "La valorisation est attractive — le prix offre une marge de sécurité intéressante."
+        : "La valorisation est dans une zone neutre.";
+      const santeTxt = m.gSante != null && m.gSante <= 3
+        ? " La santé financière mérite surveillance — endettement ou liquidités sous pression."
+        : m.gSante != null && m.gSante >= 8
+        ? " Le bilan est solide."
+        : "";
+      return `${m.name || "Cette entreprise"}${sectorTxt} est analysée avec les seuils standard. ${valTxt}${santeTxt} Comparez toujours avec les moyennes du secteur pour contextualiser les scores.`.replace(/\s+/g, " ").trim();
+    },
     notes: {},
   },
 };
