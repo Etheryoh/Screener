@@ -628,6 +628,54 @@ function scoreSentimentPressure(
   return { score: parseFloat(Math.max(1, Math.min(10, score)).toFixed(1)), signals };
 }
 
+// ── PROFIL D'ENTREPRISE ───────────────────────────────────────
+type CompanyProfile =
+  | "mega_cap_quality"
+  | "dividend_compounder"
+  | "growth_premium"
+  | "capital_heavy"
+  | "financial_sector"
+  | "standard";
+
+function detectCompanyProfile(
+  mktCap:      number | undefined,
+  netMargin:   number | undefined,
+  divYield:    number | undefined,
+  payoutRatio: number | undefined,
+  ps:          number | undefined,
+  change52w:   number | undefined,
+  debtEq:      number | null | undefined,
+  sector:      string,
+  isFinancial: boolean,
+): CompanyProfile {
+  if (isFinancial) return "financial_sector";
+
+  const capitalHeavySectors = ["utilities", "real estate", "energy", "telecommunication"];
+  const isCapitalHeavy =
+    capitalHeavySectors.some(s => sector.toLowerCase().includes(s)) ||
+    (debtEq != null && debtEq > 1.5 && netMargin != null && netMargin > 0);
+  if (isCapitalHeavy) return "capital_heavy";
+
+  const isMegaCap =
+    mktCap != null && mktCap > 200e9 &&
+    netMargin != null && netMargin > 0.15;
+  if (isMegaCap) return "mega_cap_quality";
+
+  const isDividendCompounder =
+    divYield != null && divYield > 0 && divYield < 0.025 &&
+    payoutRatio != null && payoutRatio > 0 && payoutRatio < 0.65 &&
+    netMargin != null && netMargin > 0.08;
+  if (isDividendCompounder) return "dividend_compounder";
+
+  const isGrowthPremium =
+    ps != null && ps > 5 &&
+    netMargin != null && netMargin > 0.10 &&
+    change52w != null && change52w > 0.10;
+  if (isGrowthPremium) return "growth_premium";
+
+  return "standard";
+}
+
 function buildMetrics(yf: any, meta: any) {
   if (!yf && !meta) return null;
   const sd = yf?.summaryDetail        || {};
@@ -670,6 +718,7 @@ function buildMetrics(yf: any, meta: any) {
   const industry    = (yf?.assetProfile?.industry || "") as string;
   const isFinancial = ["Financial Services", "Banks", "Insurance", "Real Estate"]
     .some(s => sector.toLowerCase().includes(s.toLowerCase()));
+  const companyProfile = detectCompanyProfile(mktCap, netMargin, divYield, payoutRatio, ps, change52w, debtEq, sector, isFinancial);
   const currency    = (pr.currency || meta?.currency || "USD") as string;
   const exchange    = (pr.exchangeName || meta?.exchangeName || "") as string;
   const quoteType   = (pr.quoteType || meta?.instrumentType || "EQUITY") as string;
@@ -679,15 +728,16 @@ function buildMetrics(yf: any, meta: any) {
   // VALORISATION (40% du score global)
   const scorePE = pe != null ? scoreVal(pe, 15, 25, 40, true) : null;
 
-  // P/B lié au ROE : si ROE > 20%, un P/B élevé est justifié
+  // P/B contextualisé par profil entreprise
   let scorePB: number | null = null;
   if (pb != null) {
-    if (roe != null && roe > 0.20) {
-      // ROE fort → seuils P/B relevés (1→3→10 au lieu de 1→3→6)
-      scorePB = scoreVal(pb, 3, 6, 10, true);
-    } else if (roe != null && roe < 0) {
-      // ROE négatif → P/B bas peut signifier détresse, pas opportunité
+    if (roe != null && roe < 0) {
       scorePB = Math.min(scoreVal(pb, 1, 3, 6, true), 4);
+    } else if (companyProfile === "mega_cap_quality") {
+      // Mega-cap : P/B très élevé est structurel (brand equity, buybacks)
+      scorePB = scoreVal(pb, 10, 20, 40, true);
+    } else if (roe != null && roe > 0.20) {
+      scorePB = scoreVal(pb, 3, 6, 10, true);
     } else {
       scorePB = scoreVal(pb, 1, 3, 6, true);
     }
@@ -720,7 +770,16 @@ function buildMetrics(yf: any, meta: any) {
 
   // SANTÉ FINANCIÈRE (20% du score global)
   const scoreDebtEq      = (!isFinancial && debtEq       != null) ? scoreVal(debtEq,      0.3, 0.8, 1.5, true)  : null;
-  const scoreCurrentRatio= (!isFinancial && currentRatio != null) ? scoreVal(currentRatio, 1,   1.5, 2.5, false) : null;
+  const scoreCurrentRatio = (() => {
+    if (isFinancial || currentRatio == null) return null;
+    if (companyProfile === "mega_cap_quality") {
+      return currentRatio >= 0.7 ? 6 : scoreVal(currentRatio, 0.7, 1, 1.5, false);
+    }
+    if (companyProfile === "capital_heavy") {
+      return scoreVal(currentRatio, 0.8, 1.2, 2.0, false);
+    }
+    return scoreVal(currentRatio, 1, 1.5, 2.5, false);
+  })();
 
   // RISQUE / MOMENTUM (10% du score global)
   const scoreBeta = beta != null
@@ -733,7 +792,14 @@ function buildMetrics(yf: any, meta: any) {
     else if (change52w >= -0.20) scorePerf52w = 4;
     else                         scorePerf52w = 2;
   }
-  const scoreDivYield = divYield != null ? scoreVal(divYield, 0.01, 0.03, 0.06, false) : null;
+  const scoreDivYield = (() => {
+    if (divYield == null) return null;
+    if (companyProfile === "dividend_compounder" || companyProfile === "mega_cap_quality") {
+      if (divYield > 0 && divYield < 0.025) return 6;
+      if (divYield >= 0.025) return scoreVal(divYield, 0.02, 0.04, 0.07, false);
+    }
+    return scoreVal(divYield, 0.01, 0.03, 0.06, false);
+  })();
 
   // ── SCORE GLOBAL PONDÉRÉ ──────────────────────────────────────
   // Valorisation 40% | Rentabilité 30% | Santé 20% | Risque 10%
@@ -816,7 +882,7 @@ function buildMetrics(yf: any, meta: any) {
   };
 
   return {
-    name, sector, industry, currency, exchange, quoteType,
+    name, sector, industry, currency, exchange, quoteType, companyProfile,
     mktCap, price, change1d, change52w,
     pe, pb, ps, peg, evEbitda,
     roe, roa, grossMargin, opMargin, netMargin,
@@ -1005,9 +1071,11 @@ interface TechSignal {
   label: string;    // terme technique
   detail: string;   // valeurs chiffrées
   edu: {
-    concept: string;    // définition simple du concept
-    howToRead: string;  // comment interpréter les valeurs
-    example: string;    // ce que ça signifie ici concrètement
+    concept:   string;
+    howToRead: string;
+    example:   string;
+    good?:     string;
+    bad?:      string;
   };
   strength: "bull" | "bear" | "neutral";
 }
@@ -2271,18 +2339,35 @@ function Tooltip({ content, id: _id }: { content: TooltipContent; id: string }) 
     const next = !visible;
     _eduSubscribers.forEach(s => s(false));
     if (next) {
-      const BUBBLE_W = 320, BUBBLE_H = 340, MARGIN = 8;
+      const BUBBLE_W = 320, MARGIN = 8;
       const rect = wrapperRef.current?.getBoundingClientRect();
       if (rect) {
         const isMobile = window.innerWidth < 480;
         if (isMobile) {
+          const BUBBLE_H_MOBILE = 380;
+          const spaceBelow = window.innerHeight - rect.bottom - MARGIN;
+          const spaceAbove = rect.top - MARGIN;
+          // Si pas assez de place en bas mais assez en haut → afficher au-dessus
+          const top = spaceBelow < BUBBLE_H_MOBILE && spaceAbove > spaceBelow
+            ? Math.max(MARGIN, rect.top - BUBBLE_H_MOBILE - MARGIN)
+            : rect.bottom + MARGIN;
           setWidth(window.innerWidth - MARGIN * 2);
-          setPos({ top: rect.bottom + MARGIN, left: MARGIN });
+          setPos({ top, left: MARGIN });
         } else {
+          // Hauteur dynamique : on laisse le navigateur calculer,
+          // mais on estime une hauteur max pour le repositionnement
+          const BUBBLE_H_ESTIMATE = 380;
           let left = rect.right + MARGIN;
           let top  = rect.top;
-          if (left + BUBBLE_W > window.innerWidth - MARGIN) left = rect.left - BUBBLE_W - MARGIN;
-          if (top + BUBBLE_H > window.innerHeight) top = window.innerHeight - BUBBLE_H - MARGIN;
+          // Débordement à droite → passer à gauche du bouton
+          if (left + BUBBLE_W > window.innerWidth - MARGIN)
+            left = rect.left - BUBBLE_W - MARGIN;
+          // Débordement à gauche (si l'élément est tout à gauche)
+          if (left < MARGIN) left = MARGIN;
+          // Débordement en bas → remonter le tooltip
+          if (top + BUBBLE_H_ESTIMATE > window.innerHeight - MARGIN)
+            top = window.innerHeight - BUBBLE_H_ESTIMATE - MARGIN;
+          // Débordement en haut → forcer à MARGIN
           if (top < MARGIN) top = MARGIN;
           setWidth(BUBBLE_W);
           setPos({ top, left });
@@ -2312,6 +2397,8 @@ function Tooltip({ content, id: _id }: { content: TooltipContent; id: string }) 
           color:         THEME.textMuted,
           display:       "flex", alignItems: "center", justifyContent: "center",
           flexShrink:    0,
+          position:      "relative",
+          zIndex:        10,
           transition:    "all .15s",
           padding:       0,
         }}
@@ -2365,31 +2452,20 @@ function Tooltip({ content, id: _id }: { content: TooltipContent; id: string }) 
 }
 
 function EduTooltip({ edu, id }: { edu: TechSignal["edu"]; id: string }) {
+  const sections: TooltipContent["sections"] = [
+    { label: "C'est quoi ?",       text: edu.concept,   variant: "default"   },
+    { label: "Comment le lire ?",  text: edu.howToRead, variant: "default"   },
+  ];
+  if (edu.good) sections.push({ label: "✅ Bon signe",      text: edu.good, variant: "good" });
+  if (edu.bad)  sections.push({ label: "⚠️ Mauvais signe", text: edu.bad,  variant: "bad"  });
+  if (edu.example) sections.push({ label: "Dans ce cas précis", text: edu.example, variant: "highlight" });
   const content: TooltipContent = {
     title: "Comprendre cet indicateur",
-    sections: [
-      { label: "C'est quoi ?",      text: edu.concept,   variant: "default"   },
-      { label: "Comment le lire ?", text: edu.howToRead, variant: "default"   },
-      { label: "Dans ce cas précis", text: edu.example,  variant: "highlight" },
-    ],
+    sections,
   };
   return <Tooltip content={content} id={id} />;
 }
 
-// ── TOOLTIP MÉTRIQUE FONDAMENTALE ────────────────────────────
-function MetricTooltip({ edu, id }: { edu: MetricProps["edu"]; id?: string }) {
-  if (!edu) return null;
-  const content: TooltipContent = {
-    title: "Comprendre cet indicateur",
-    sections: [
-      { label: "C'est quoi ?",      text: edu.concept,  variant: "default" },
-      { label: "Comment le lire ?", text: edu.howToRead, variant: "default" },
-      { label: "✅ Bon signe",      text: edu.good,     variant: "good"    },
-      { label: "⚠️ Mauvais signe", text: edu.bad,       variant: "bad"     },
-    ],
-  };
-  return <Tooltip content={content} id={id ?? "metric"} />;
-}
 
 // ── COMPOSANT PANEL RÉUTILISABLE ──────────────────────────────
 interface PanelProps {
@@ -2642,6 +2718,7 @@ function TechnicalPanel({ precomputed, context }: { precomputed: { signals: Tech
                   flex: "1 1 200px",
                   minWidth: 0,
                   boxSizing: "border-box",
+                  overflow: "visible",
                 }}>
                   <span style={{ fontSize: 12, flexShrink: 0 }}>{s.emoji}</span>
                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -3113,12 +3190,7 @@ interface MetricProps {
   label: string;
   value: string;
   s?: number | null;
-  edu?: {
-    concept: string;
-    howToRead: string;
-    good: string;
-    bad: string;
-  };
+  edu?: TechSignal["edu"];
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -3143,7 +3215,7 @@ function MetricCard({ label, value, s, edu }: MetricProps) {
       <div style={{ fontSize: 10, color: THEME.textSecondary, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>
         {label}
       </div>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, minWidth: 0, overflow: "visible" }}>
         <span style={{
           fontSize: 24, fontWeight: 800,
           color: s == null ? THEME.textPrimary : scoreColor(s),
@@ -3162,9 +3234,263 @@ function MetricCard({ label, value, s, edu }: MetricProps) {
               {scoreEmoji(s)} {s}/10
             </span>
           )}
-          <MetricTooltip edu={edu} id={label}/>
+          {edu && <EduTooltip edu={edu} id={`metric-${label}`}/>}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── TEXTES CONTEXTUELS PAR PROFIL ────────────────────────────
+const PROFILE_CONTEXT: Record<string, {
+  badge: string;
+  color: string;
+  description: (m: any) => string;
+  notes: Partial<Record<string, string>>;
+}> = {
+  mega_cap_quality: {
+    badge: "Mega-cap de qualité",
+    color: "#60a5fa",
+    description: (m) => {
+      const valTxt = m.gValorisation != null && m.gValorisation <= 3.5
+        ? `Sa valorisation est actuellement tendue (score ${m.gValorisation}/10) — le marché paye une prime élevée qui laisse peu de marge de sécurité pour l'acheteur aujourd'hui.`
+        : m.gValorisation != null && m.gValorisation <= 6
+        ? `Sa valorisation est modérée — la prime de qualité est présente mais reste raisonnable.`
+        : `Sa valorisation est attractive pour une entreprise de cette qualité.`;
+      const roeTxt = m.roe != null && m.roe > 0.50
+        ? `Son ROE exceptionnellement élevé (${(m.roe*100).toFixed(0)}%) est en partie mécanique : les rachats massifs d'actions réduisent les capitaux propres au dénominateur, ce qui gonfle le ratio sans refléter une rentabilité réelle supplémentaire.`
+        : "";
+      return `${m.name || "Cette entreprise"} génère des marges exceptionnelles et dispose d'un avantage concurrentiel structurel. ${roeTxt} ${valTxt} La gestion de sa trésorerie proche de 1 est un choix délibéré, non un signe de fragilité.`.replace(/\s+/g, " ").trim();
+    },
+    notes: {
+      "Valorisation": "P/B élevé justifié par les rachats d'actions et la force de la marque.",
+      "Santé Financière": "Trésorerie gérée délibérément proche de 1 — choix stratégique.",
+      "Dividende": "Rendement faible = prix élevé. La croissance du dividende prime sur le rendement absolu.",
+    },
+  },
+  dividend_compounder: {
+    badge: "Aristocrate du dividende",
+    color: "#22c55e",
+    description: (m) => {
+      const valTxt = m.gValorisation != null && m.gValorisation <= 3.5
+        ? `Sa valorisation est actuellement tendue — la prime payée pour la régularité du dividende est élevée.`
+        : `Sa valorisation reste raisonnable pour un profil de cette qualité.`;
+      return `${m.name || "Cette entreprise"} privilégie la croissance régulière de son dividende plutôt qu'un rendement élevé immédiat. Un faible rendement traduit la confiance du marché dans sa pérennité — le prix a progressé avec les bénéfices. ${valTxt}`.replace(/\s+/g, " ").trim();
+    },
+    notes: {
+      "Dividende": "Rendement modeste = signe de confiance du marché, pas de faiblesse.",
+    },
+  },
+  growth_premium: {
+    badge: "Croissance premium",
+    color: "#a78bfa",
+    description: (m) => {
+      const valTxt = m.gValorisation != null && m.gValorisation <= 3.5
+        ? `La valorisation est actuellement tendue (${m.gValorisation}/10) — la prime de croissance est élevée et suppose que les marges continuent de progresser sans déception.`
+        : `La valorisation reste dans une zone acceptable pour ce niveau de croissance.`;
+      return `${m.name || "Cette entreprise"} est valorisée sur ses perspectives de croissance future. Les ratios PE et PS élevés sont normaux pour une entreprise dont les marges progressent rapidement. ${valTxt}`.replace(/\s+/g, " ").trim();
+    },
+    notes: {
+      "Valorisation": "Multiples élevés normaux pour une entreprise en forte croissance rentable.",
+    },
+  },
+  capital_heavy: {
+    badge: "Secteur capitalistique",
+    color: "#f59e0b",
+    description: (m) =>
+      `${m.name || "Cette entreprise"} opère dans un secteur nécessitant de lourds investissements en infrastructure. Une dette structurellement plus élevée est normale et attendue — elle finance des actifs à longue durée de vie. Les ratios de liquidité sont à lire différemment : la régularité des flux de trésorerie compte plus que le current ratio instantané.`,
+    notes: {
+      "Santé Financière": "Dette élevée normale dans ce secteur — financement d'actifs long terme.",
+    },
+  },
+  financial_sector: {
+    badge: "Secteur financier",
+    color: "#f97316",
+    description: (m) =>
+      `${m.name || "Cette entreprise"} appartient au secteur financier. Dette/Equity et Current Ratio ne sont pas des indicateurs pertinents pour ce modèle économique — les banques et assureurs ont structurellement un levier très élevé par nature de leur activité. Le ROE et les marges sont les métriques clés.`,
+    notes: {
+      "Santé Financière": "Ratios de dette non applicables au secteur financier.",
+    },
+  },
+  standard: {
+    badge: "Profil standard",
+    color: "#94a3b8",
+    description: (m) =>
+      `Les ratios de ${m.name || "cette entreprise"} sont lus avec les seuils standard. Comparez toujours avec les moyennes du secteur ${m.sector ? `(${m.sector})` : ""} pour contextualiser les valeurs.`,
+    notes: {},
+  },
+};
+
+// ── COMPOSANT FUNDAMENTALS PANEL ─────────────────────────────
+function FundamentalsPanel({ metrics, scores, sections, currency }: {
+  metrics:  any;
+  scores:   Record<string, number | null>;
+  sections: any[];
+  currency: string;
+}) {
+  const [expertMode, setExpertMode] = useState(false);
+
+  if (!metrics) return null;
+  const { companyProfile = "standard", gValorisation, gRentabilite, gSante, gRisque } = metrics;
+  const ctx = PROFILE_CONTEXT[companyProfile] ?? PROFILE_CONTEXT.standard;
+
+  const GROUP_EDU: Record<string, TechSignal["edu"]> = {
+    Valorisation: {
+      concept: "Le score de Valorisation agrège P/E, P/B, P/S et EV/EBITDA. Il mesure si le prix payé aujourd'hui est raisonnable par rapport aux bénéfices, aux actifs et aux ventes de l'entreprise.",
+      howToRead: "Un score élevé (vert) = l'action est bon marché par rapport à ses fondamentaux. Un score faible (rouge) = le marché paye une prime élevée — justifiée si la croissance suit, risquée sinon.",
+      good: "7-10 : valorisation attractive ou raisonnable. Le prix offre une marge de sécurité.",
+      bad: "1-3 : valorisation tendue. Toute déception sur les résultats peut entraîner une correction.",
+      example: "",
+    },
+    Rentabilité: {
+      concept: "Le score de Rentabilité agrège ROE, marge opérationnelle et marge nette. Il mesure l'efficacité avec laquelle l'entreprise transforme ses ventes et ses actifs en bénéfices réels.",
+      howToRead: "Un score élevé indique une entreprise qui génère beaucoup de profit par rapport à ce qu'elle investit. C'est un signe d'avantage concurrentiel durable.",
+      good: "7-10 : rentabilité solide. L'entreprise monétise bien son activité.",
+      bad: "1-3 : marges faibles ou négatives — peu de coussin face aux imprévus.",
+      example: "",
+    },
+    "Santé Financière": {
+      concept: "Le score de Santé Financière agrège le ratio Dette/Equity et le Current Ratio. Il évalue si l'entreprise peut faire face à ses engagements financiers à court et long terme.",
+      howToRead: "Un score élevé = bilan sain, peu de risque de faillite ou de dilution. Un score faible = endettement élevé ou liquidités insuffisantes — risque accru en cas de choc.",
+      good: "7-10 : bilan solide, flexibilité financière. L'entreprise peut investir ou résister à une crise.",
+      bad: "1-3 : endettement ou tensions de trésorerie — surveiller les échéances et le free cash flow.",
+      example: "",
+    },
+    Risque: {
+      concept: "Le score Risque / Dividende agrège le bêta (volatilité), la performance 52 semaines et le rendement du dividende. Il mesure l'exposition au risque de marché et la rémunération de l'actionnaire.",
+      howToRead: "Un bêta élevé amplifie les gains ET les pertes. Un bon score combine un risque maîtrisé avec une rémunération correcte de l'actionnaire.",
+      good: "7-10 : risque modéré et/ou dividende attractif. Profil défensif ou bien rémunéré.",
+      bad: "1-3 : forte volatilité et/ou dividende absent ou insuffisant.",
+      example: "",
+    },
+  };
+
+  const groups = [
+    { key: "Valorisation",    label: "Valorisation",  score: gValorisation, weight: "40%",
+      note: ctx.notes["Valorisation"] ?? null,    edu: GROUP_EDU["Valorisation"] },
+    { key: "Rentabilité",     label: "Rentabilité",   score: gRentabilite,  weight: "30%",
+      note: ctx.notes["Rentabilité"] ?? null,     edu: GROUP_EDU["Rentabilité"] },
+    { key: "Santé Financière",label: "Santé Fin.",    score: gSante,        weight: "20%",
+      note: ctx.notes["Santé Financière"] ?? null, edu: GROUP_EDU["Santé Financière"] },
+    { key: "Risque",          label: "Risque / Div.", score: gRisque,       weight: "10%",
+      note: ctx.notes["Risque"] ?? ctx.notes["Dividende"] ?? null, edu: GROUP_EDU["Risque"] },
+  ];
+
+  return (
+    <div style={{ marginTop: 20 }}>
+
+      {/* Bloc profil */}
+      <div style={{
+        background: THEME.bgPanel,
+        border: `1px solid ${ctx.color}33`,
+        borderRadius: 12,
+        padding: "16px 18px",
+        marginBottom: 12,
+      }}>
+        {/* En-tête profil */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ fontSize: 12, fontWeight: 800, color: THEME.textSecondary, textTransform: "uppercase", letterSpacing: 2 }}>
+              🏢 Profil d'entreprise
+            </span>
+            <span style={{
+              fontSize: 11, fontWeight: 800,
+              color: ctx.color, background: ctx.color + "22",
+              borderRadius: 4, padding: "2px 8px",
+            }}>
+              {ctx.badge}
+            </span>
+          </div>
+        </div>
+
+        {/* Texte contextuel */}
+        <div style={{
+          fontSize: 12, color: THEME.textSecondary, lineHeight: 1.7,
+          marginBottom: 16, padding: "10px 12px",
+          background: THEME.bgCard, borderRadius: 8,
+          borderLeft: `3px solid ${ctx.color}`,
+        }}>
+          {ctx.description(metrics)}
+        </div>
+
+        {/* Barres de score par groupe */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {groups.map(g => {
+            if (g.score == null) return null;
+            const color = scoreColor(g.score);
+            const pct   = (g.score / 10) * 100;
+            return (
+              <div key={g.key}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+                  <span style={{ fontSize: 11, color: THEME.textSecondary, minWidth: 90 }}>{g.label}</span>
+                  <div style={{ flex: 1, height: 8, background: THEME.borderPanel, borderRadius: 4, overflow: "hidden" }}>
+                    <div style={{
+                      width: `${pct}%`, height: "100%",
+                      background: color, borderRadius: 4,
+                      transition: "width .5s ease",
+                    }}/>
+                  </div>
+                  <span style={{ fontSize: 12, fontWeight: 800, color, minWidth: 36, textAlign: "right",
+                                  fontFamily: "'IBM Plex Mono',monospace" }}>
+                    {g.score}/10
+                  </span>
+                  <span style={{ fontSize: 9, color: THEME.textMuted, minWidth: 28 }}>{g.weight}</span>
+                  {g.edu && <EduTooltip edu={g.edu} id={`funda-group-${g.key}`}/>}
+                </div>
+                {g.note && (
+                  <div style={{
+                    fontSize: 10, color: THEME.textMuted, fontStyle: "italic",
+                    paddingLeft: 100, lineHeight: 1.5, marginBottom: 2,
+                  }}>
+                    ℹ️ {g.note}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Toggle mode expert */}
+      <div style={{ display: "flex", justifyContent: "center", marginBottom: expertMode ? 16 : 0 }}>
+        <button
+          onClick={() => setExpertMode(v => !v)}
+          style={{
+            background: expertMode ? THEME.borderMid : "transparent",
+            border: `1px solid ${THEME.borderMid}`,
+            borderRadius: 8, padding: "6px 18px",
+            fontSize: 11, fontWeight: 700,
+            color: THEME.textMuted, cursor: "pointer",
+            transition: "all .15s",
+          }}
+        >
+          {expertMode ? "▲ Masquer le détail" : "▼ Mode expert — afficher les métriques détaillées"}
+        </button>
+      </div>
+
+      {/* Mode expert : sections MetricCard existantes */}
+      {expertMode && sections.map((sec: any) => (
+        <div key={sec.label}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", margin: "20px 0 10px" }}>
+            <SectionTitle icon={sec.icon} label={sec.label}/>
+            <span style={{ fontSize: 9, color: THEME.textMuted, fontStyle: "italic" }}>{sec.note}</span>
+          </div>
+          {sec.label === "Santé Financière" && metrics.isFinancial && (
+            <div style={{
+              fontSize: 11, color: THEME.textSecondary, fontStyle: "italic",
+              marginBottom: 8, padding: "6px 10px",
+              background: THEME.bgCard, borderRadius: 6,
+              borderLeft: `3px solid ${THEME.scoreAmber}`,
+            }}>
+              ⚠️ Secteur financier — Dette/Equity et Current Ratio ne sont pas des indicateurs pertinents pour ce secteur et sont exclus du scoring.
+            </div>
+          )}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12 }}>
+            {sec.cards.map((c: any, i: number) => <MetricCard key={i} {...c}/>)}
+          </div>
+        </div>
+      ))}
+
     </div>
   );
 }
@@ -4346,6 +4672,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
             howToRead: "Un P/E bas peut indiquer une action bon marché — ou une entreprise en difficulté. Un P/E élevé reflète des attentes de forte croissance future. Comparez toujours le P/E à la moyenne historique du secteur : un P/E de 30 est normal pour une tech en croissance rapide, excessif pour une utility.",
             good: "Sous 15 : attractif pour une entreprise mature et stable. Sous 25 dans un secteur technologique en croissance : acceptable.",
             bad: "Au-dessus de 40 : le marché paye très cher la croissance future — toute déception peut entraîner une correction sévère. P/E négatif : l'entreprise est déficitaire.",
+            example: "",
           }},
         { label: "P/B Ratio", value: fmt(metrics.pb), s: scores.pb,
           edu: {
@@ -4353,6 +4680,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
             howToRead: "Un PB inférieur à 1 peut signaler une décote sur les actifs (opportunité ou piège selon leur qualité). Un PB élevé est justifié pour des entreprises très rentables comme Apple ou LVMH, qui créent de la valeur avec peu d'actifs physiques — leur vraie richesse est dans les marques et brevets, hors bilan.",
             good: "Sous 1.5 : décote modérée potentiellement intéressante. PB élevé (3-8) acceptable si le ROE dépasse 20 % — l'entreprise justifie sa prime par une rentabilité structurelle.",
             bad: "PB supérieur à 8 avec un ROE faible : prime difficile à justifier. PB inférieur à 0.5 avec des pertes : risque de value trap — les actifs peuvent se déprécier encore.",
+            example: "",
           }},
         { label: "P/S Ratio", value: fmt(metrics.ps), s: scores.ps,
           edu: {
@@ -4360,6 +4688,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
             howToRead: "Un PS bas signifie qu'on paye peu pour chaque euro de ventes. Mais attention : des ventes ne sont pas des bénéfices. Un PS élevé n'est défendable que si les marges vont s'améliorer fortement dans le futur. Comparez avec des entreprises similaires en termes de stade de maturité.",
             good: "Sous 2 : valorisation raisonnable pour une entreprise rentable. Entre 2 et 5 : acceptable pour une société en forte croissance avec des marges en amélioration.",
             bad: "Au-dessus de 8 : pari très optimiste sur une amélioration future des marges. Au-dessus de 20 : réservé aux hypercroissances — risque important si la croissance ralentit même légèrement.",
+            example: "",
           }},
         { label: "EV/EBITDA", value: fmt(metrics.evEbitda), s: scores.evEbitda,
           edu: {
@@ -4367,6 +4696,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
             howToRead: "Contrairement au P/E, l'EV/EBITDA n'est pas faussé par l'effet de levier financier ni par les politiques fiscales — il permet de comparer des entreprises avec des dettes très différentes. Plus le multiple est bas, moins on paye cher la génération de cash opérationnel.",
             good: "Sous 10 : valorisation raisonnable pour une entreprise mature. Sous 15 : acceptable pour un secteur en croissance. Secteurs défensifs (utilities, alim.) : viser sous 12.",
             bad: "Au-dessus de 25 : valorisation premium élevée — la croissance future est déjà intégrée dans le prix. Valeur négative : EBITDA négatif, le ratio ne s'applique pas.",
+            example: "",
           }},
         { label: "PEG Ratio", value: fmt(metrics.peg), s: null,
           edu: {
@@ -4374,6 +4704,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
             howToRead: "Une entreprise avec un P/E de 30 mais une croissance bénéficiaire de 30 % a un PEG de 1 — équilibrée. Une entreprise avec un P/E de 15 mais seulement 5 % de croissance a un PEG de 3 — chère pour sa croissance. Le PEG dépend de la fiabilité des prévisions de croissance.",
             good: "Sous 1 : action potentiellement sous-valorisée par rapport à sa croissance attendue. Entre 1 et 1.5 : valorisation équilibrée, raisonnable pour entrer.",
             bad: "Au-dessus de 2 : on paye cher pour la croissance anticipée. Si les prévisions de croissance ne se réalisent pas, la correction peut être importante.",
+            example: "",
           }},
         { label: "Market Cap", value: `${currency} ${fmt(metrics.mktCap)}`, s: null,
           edu: {
@@ -4381,6 +4712,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
             howToRead: "Large cap (> 10 Md€) : entreprises stables, bien couvertes par les analystes, moins volatiles. Mid cap (2-10 Md€) : potentiel de croissance supérieur, risque modéré. Small cap (< 2 Md€) : opportunités de croissance importantes mais volatilité élevée et liquidité parfois limitée.",
             good: "Large cap avec fondamentaux solides : pilier de portefeuille, résilience en période de crise. Small cap sous-valorisée avec croissance : potentiel de multiplication.",
             bad: "Micro cap (< 300 M€) : risque de manipulation de cours, spreads larges à l'achat/vente, couverture analytique quasi nulle. Méfiance accrue.",
+            example: "",
           }},
       ],
     },
@@ -4394,6 +4726,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
             howToRead: "Un ROE élevé et stable indique une entreprise efficace qui crée réellement de la valeur. Attention cependant : un ROE supérieur à 50 % peut être artificiel si l'entreprise a massivement racheté ses propres actions, réduisant mécaniquement les capitaux propres au dénominateur. Vérifiez la dette associée.",
             good: "Entre 15 % et 30 % sur plusieurs années consécutives : signe de qualité réelle et d'avantage concurrentiel durable. ROE stable > 20 % depuis 5 ans : entreprise de qualité 'Buffett-style'.",
             bad: "Sous 8 % : rentabilité insuffisante pour les actionnaires. Négatif : l'entreprise détruit de la valeur. ROE > 50 % : vérifier l'endettement et les rachats d'actions avant de conclure à l'excellence.",
+            example: "",
           }},
         { label: "ROA", value: pct(metrics.roa), s: null,
           edu: {
@@ -4401,6 +4734,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
             howToRead: "Le ROA est calculé sur l'ensemble des actifs (pas seulement les fonds propres), ce qui le rend plus stable et moins manipulable. Un ROA de 10 % signifie 10 € de profit pour 100 € d'actifs totaux. Comparez toujours dans le même secteur : les banques ont structurellement un ROA faible (1-2 %) à cause de leur bilan très chargé.",
             good: "Au-dessus de 10 % : très efficace, rare et précieux. Au-dessus de 5 % : correct pour un secteur industriel, manufacturier ou bancaire.",
             bad: "Sous 2 % : les actifs sont mal utilisés ou trop lourds par rapport aux profits. Négatif : l'entreprise détruit de la valeur sur l'ensemble de son parc d'actifs.",
+            example: "",
           }},
         { label: "Marge Brute", value: pct(metrics.grossMargin), s: null,
           edu: {
@@ -4408,6 +4742,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
             howToRead: "Une marge brute élevée (> 50 %) indique un fort pricing power : l'entreprise peut augmenter ses prix sans perdre ses clients. Elle finance la R&D, le marketing et les bénéfices. Les logiciels, le luxe et la pharma affichent souvent > 70 %. La grande distribution peut être à 25 % et être très rentable si les volumes sont massifs.",
             good: "Au-dessus de 40 % : modèle compétitif et scalable. Au-dessus de 60 % : pouvoir de marché structurel fort — difficile à répliquer par des concurrents.",
             bad: "Sous 20 % : peu de marge pour absorber les chocs de coûts. Dans ces secteurs, surveiller la marge nette de près — la moindre hausse de matières premières peut effacer les bénéfices.",
+            example: "",
           }},
         { label: "Marge Opé.", value: pct(metrics.opMargin), s: scores.opMargin,
           edu: {
@@ -4415,6 +4750,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
             howToRead: "Une marge opérationnelle en hausse sur plusieurs années est un signal fort : l'équipe de direction contrôle bien ses coûts et améliore l'efficacité. À comparer systématiquement avec les concurrents du même secteur. Une marge opérationnelle bien supérieure au secteur = avantage concurrentiel réel.",
             good: "Au-dessus de 15 % : bonne efficacité opérationnelle pour la plupart des secteurs. Au-dessus de 25 % : entreprise très bien gérée avec un pricing power fort.",
             bad: "Sous 5 % : coussin très mince face aux imprévus (hausse de coûts, concurrence). Négative : l'entreprise perd de l'argent sur ses opérations courantes — situation urgente à surveiller.",
+            example: "",
           }},
         { label: "Marge Nette", value: pct(metrics.netMargin), s: scores.netMargin,
           edu: {
@@ -4422,6 +4758,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
             howToRead: "Si la marge brute est haute mais la marge nette faible, les frais généraux, la dette ou les impôts consomment trop. Une marge nette élevée et stable sur plusieurs années est un signe de qualité rare. Microsoft et Apple dépassent les 25 %. Comparez avec la tendance historique de l'entreprise.",
             good: "Au-dessus de 10 % : très rentable, l'entreprise monétise efficacement ses activités. Au-dessus de 20 % : profil 'cash machine' — génère massivement du profit par rapport à ses ventes.",
             bad: "Négative : l'entreprise perd de l'argent in fine. Sous 3 % : très exposée à tout choc de coûts ou de demande — très peu de marge de sécurité.",
+            example: "",
           }},
       ],
     },
@@ -4435,6 +4772,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
             howToRead: "L'endettement amplifie les gains en bonne période (effet de levier), mais peut être fatal en période de crise ou de hausse des taux. Certains secteurs sont structurellement plus endettés (immobilier, utilities, télécoms) — comparez toujours dans le même secteur. Ce qui compte autant que le niveau : la capacité de remboursement (flux de trésorerie / charges d'intérêts).",
             good: "Sous 0.5 : bilan très sain, peu de risque financier, grande flexibilité stratégique. Entre 0.5 et 1.0 : levier modéré, gérable dans la plupart des environnements de taux.",
             bad: "Au-dessus de 2 : endettement élevé — surveiller les flux de trésorerie et la couverture des intérêts. Au-dessus de 3 hors secteurs spécialisés : risque sérieux en cas de remontée des taux ou de retournement conjoncturel.",
+            example: "",
           }},
         { label: "Current Ratio", value: fmt(metrics.currentRatio), s: scores.currentRatio,
           edu: {
@@ -4442,6 +4780,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
             howToRead: "Un current ratio supérieur à 1 signifie que l'entreprise a plus d'actifs liquides que de dettes court terme — elle peut faire face à ses obligations immédiates. Un ratio inférieur à 1 n'est pas toujours catastrophique si l'entreprise génère des flux de trésorerie très réguliers (grande distribution, par exemple), mais c'est un signal d'alerte à vérifier.",
             good: "Entre 1.5 et 3 : confort de liquidité solide, bonne capacité à absorber les imprévus. Au-dessus de 1 : situation a priori saine.",
             bad: "Sous 1 : les dettes court terme dépassent les actifs liquides — risque de tension trésorerie. Sous 0.7 : alerte rouge — l'entreprise pourrait avoir des difficultés à honorer ses prochaines échéances.",
+            example: "",
           }},
         { label: "Free Cash Flow", value: `${currency} ${fmt(metrics.fcf)}`, s: null,
           edu: {
@@ -4449,6 +4788,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
             howToRead: "Le FCF est souvent plus fiable que le bénéfice comptable, qui peut être influencé par des choix comptables. Une entreprise peut afficher des bénéfices mais avoir un FCF négatif (problème réel de trésorerie). Warren Buffett considère le FCF comme la mesure de valeur la plus fondamentale d'une entreprise.",
             good: "Positif et croissant sur plusieurs années : qualité rare et très recherchée. FCF yield supérieur à 5 % (FCF / capitalisation boursière) : entreprise potentiellement sous-valorisée.",
             bad: "Négatif : l'entreprise consomme plus de cash qu'elle n'en génère — elle dépend de financements externes (dettes, émissions d'actions). Acceptable en phase d'investissement intense, problématique si persistant sans amélioration visible.",
+            example: "",
           }},
         { label: "Actions en circ.", value: fmt(metrics.sharesOut, 0), s: null,
           edu: {
@@ -4456,6 +4796,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
             howToRead: "Surveiller l'évolution dans le temps : une augmentation du nombre d'actions (dilution) réduit la part de chaque actionnaire dans les bénéfices et la valeur. À l'inverse, des rachats d'actions (buybacks) réduisent ce nombre et augmentent mécaniquement le bénéfice par action — souvent un signal positif.",
             good: "Nombre stable ou en baisse sur 5 ans : l'entreprise protège ses actionnaires de la dilution. Rachats réguliers + croissance des bénéfices = double effet positif sur le BPA.",
             bad: "Forte augmentation du nombre d'actions : dilution des actionnaires existants. Souvent signe que l'entreprise a besoin de lever des fonds pour survivre — à analyser avec le FCF.",
+            example: "",
           }},
       ],
     },
@@ -4469,6 +4810,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
             howToRead: "Un rendement élevé n'est pas toujours bon signe : il peut refléter une chute du cours (action en difficulté, marché qui anticipe une coupe de dividende). Vérifiez toujours la soutenabilité : payout ratio inférieur à 70-75 % et FCF couvrant le dividende. Les 'aristocrates du dividende' (>25 ans de hausse consécutive) sont les références.",
             good: "Entre 2 % et 4 % : attractif et généralement soutenable pour une entreprise saine. Historique de croissance du dividende sur 10+ ans : signe de qualité et d'engagement envers les actionnaires.",
             bad: "Au-dessus de 8 % : souvent insoutenable — le marché anticipe probablement une coupe prochaine. Payout ratio supérieur à 90 % : le dividende sera fragilisé par tout choc sur les bénéfices.",
+            example: "",
           }},
         { label: "Payout Ratio", value: pct(metrics.payoutRatio), s: null,
           edu: {
@@ -4476,6 +4818,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
             howToRead: "Un payout faible (< 40 %) laisse beaucoup de marge pour la croissance future et la résilience. Un payout élevé (> 80 %) signifie que l'entreprise reverse presque tout — peu de coussin si les bénéfices reculent. Le payout idéal dépend du stade : une entreprise mature peut distribuer plus, une entreprise en croissance doit réinvestir.",
             good: "Entre 30 % et 60 % : équilibre sain entre rémunération des actionnaires et réinvestissement pour la croissance. Payout stable ou en légère hausse = gestion prudente.",
             bad: "Au-dessus de 90 % : le dividende est à risque au moindre recul des bénéfices. Supérieur à 100 % : dividende financé par la dette ou la trésorerie — non soutenable à long terme.",
+            example: "",
           }},
       ],
     },
@@ -4489,6 +4832,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
             howToRead: "Bêta > 1 : action plus volatile que le marché — amplification des gains ET des pertes. Bêta < 1 : action défensive, moins sensible aux retournements (utilities, pharma, alimentaire). Bêta négatif : l'action évolue en sens inverse du marché — très rare (or, certaines valeurs refuge). Le bêta mesure la volatilité passée, pas le risque fondamental.",
             good: "Entre 0.5 et 1 : profil défensif, idéal en période d'incertitude ou pour équilibrer un portefeuille volatile. Bêta faible couplé à un dividende stable = valeur refuge classique.",
             bad: "Au-dessus de 2 : très spéculatif — en marché baissier, les pertes peuvent être sévères et rapides. Bêta élevé combiné à une valorisation tendue : risque maximal, position réduite recommandée.",
+            example: "",
           }},
         { label: "Short Ratio", value: fmt(metrics.shortRatio), s: null,
           edu: {
@@ -4496,6 +4840,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
             howToRead: "Un short ratio élevé signifie que beaucoup d'investisseurs professionnels parient contre l'action. Mais c'est une arme à double tranchant : si une bonne nouvelle arrive (résultats meilleurs que prévu, acquisition...), ces vendeurs sont forcés de racheter en urgence, ce qui peut déclencher un 'short squeeze' — une hausse violente et explosive du cours.",
             good: "Sous 3 jours : niveau normal, peu de pression baissière structurelle. Faible short ratio sur une action décotée = le marché ne la déteste pas, signal potentiellement positif.",
             bad: "Au-dessus de 10 jours : forte conviction des professionnels baissiers. À surveiller de très près : soit ils ont raison sur un problème fondamental, soit un squeeze violent est possible si le sentiment tourne.",
+            example: "",
           }},
         { label: "Perf. 52 sem.", value: metrics.change52w != null ? (metrics.change52w * 100).toFixed(1) + "%" : "—",
           s: scores.perf52w,
@@ -4504,6 +4849,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
             howToRead: "Une performance forte (+30 % sur 12 mois) indique une tendance haussière — mais signifie aussi que la valorisation a probablement progressé. Une performance négative peut créer une opportunité d'entrée si les fondamentaux restent solides (le marché a peut-être surréagi). Comparez toujours avec l'indice de référence du secteur.",
             good: "+10 % à +30 % en phase avec un marché haussier : momentum sain sans surchauffe. Surperformance du secteur + fondamentaux solides = force relative positive.",
             bad: "Baisse supérieure à −30 % sans amélioration visible des fondamentaux : tendance baissière possiblement structurelle. Hausse supérieure à +80 % : valorisation déjà élevée, la marge de sécurité pour entrer s'est réduite.",
+            example: "",
           }},
       ],
     },
@@ -4808,28 +5154,15 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
         <SituationalPanel metrics={metrics} closes={chartData?.closes ?? []}/>
       </div>
 
-      {/* SECTIONS — masquées pour les types sans fondamentaux d'entreprise */}
-      {["INDEX","FUTURE","BOND","ETF","MUTUALFUND","CURRENCY"].indexOf((quoteType||"").toUpperCase()) === -1 && SECTIONS.map(sec => (
-        <div key={sec.label}>
-          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", margin:"20px 0 10px" }}>
-            <SectionTitle icon={sec.icon} label={sec.label}/>
-            <span style={{ fontSize:9, color:THEME.textMuted, fontStyle:"italic" }}>{sec.note}</span>
-          </div>
-          {sec.label === "Santé Financière" && metrics.isFinancial && (
-            <div style={{
-              fontSize: 11, color: THEME.textSecondary, fontStyle: "italic",
-              marginBottom: 8, padding: "6px 10px",
-              background: THEME.bgCard, borderRadius: 6,
-              borderLeft: `3px solid ${THEME.scoreAmber}`,
-            }}>
-              ⚠️ Secteur financier — Dette/Equity et Current Ratio ne sont pas des indicateurs pertinents pour ce secteur et sont exclus du scoring.
-            </div>
-          )}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12 }}>
-            {sec.cards.map((c, i) => <MetricCard key={i} {...c}/>)}
-          </div>
-        </div>
-      ))}
+      {/* FONDAMENTAUX — masqués pour les types sans données d'entreprise */}
+      {["INDEX","FUTURE","BOND","ETF","MUTUALFUND","CURRENCY"].indexOf((quoteType||"").toUpperCase()) === -1 && (
+        <FundamentalsPanel
+          metrics={metrics}
+          scores={scores}
+          sections={SECTIONS}
+          currency={currency}
+        />
+      )}
 
       <div style={{ fontSize: 10, color: THEME.textMuted, textAlign: "right", marginTop: 16 }}>
         Source : Yahoo Finance via proxy · Données indicatives, non contractuelles
