@@ -78,12 +78,6 @@ function scoreColor(s: number | null): string {
   if (s >= 4) return "#f59e0b";
   return "#ef4444";
 }
-function scoreEmoji(s: number | null): string {
-  if (s == null) return "·";
-  if (s >= 7) return "🟢";
-  if (s >= 4) return "🟡";
-  return "🔴";
-}
 function getVerdict(g: number | null) {
   if (g == null) return null;
   if (g >= 7.5) return { label:"Opportunité Technique", color:"#22c55e", emoji:"🚀", desc:"Signal technique fort — fondamentaux confirment." };
@@ -714,6 +708,12 @@ function buildMetrics(yf: any, meta: any) {
   let change52w = (sd["52WeekChange"]?.raw ?? ks["52WeekChange"]?.raw) as number | undefined;
   if (change52w != null && Math.abs(change52w) > 15) change52w = change52w / 100;
   const name        = (pr.longName || pr.shortName || meta?.longName || meta?.shortName || "") as string;
+  const longBusinessSummary = (
+    yf?.assetProfile?.longBusinessSummary ||
+    yf?.summaryProfile?.longBusinessSummary ||
+    yf?.quoteType?.longBusinessSummary ||
+    ""
+  ) as string;
   const sector      = (yf?.assetProfile?.sector   || "") as string;
   const industry    = (yf?.assetProfile?.industry || "") as string;
   const isFinancial = ["Financial Services", "Banks", "Insurance", "Real Estate"]
@@ -882,7 +882,7 @@ function buildMetrics(yf: any, meta: any) {
   };
 
   return {
-    name, sector, industry, currency, exchange, quoteType, companyProfile,
+    name, sector, industry, currency, exchange, quoteType, longBusinessSummary, companyProfile,
     mktCap, price, change1d, change52w,
     pe, pb, ps, peg, evEbitda,
     roe, roa, grossMargin, opMargin, netMargin,
@@ -891,6 +891,7 @@ function buildMetrics(yf: any, meta: any) {
     scores, globalScore,
     gValorisation, gRentabilite, gSante, gRisque,
     isFinancial,
+    assetProfile: yf?.assetProfile,
   };
 }
 
@@ -3186,61 +3187,9 @@ function MiniGauge({ label, score, weight }: { label: string; score: number | nu
   );
 }
 
-interface MetricProps {
-  label: string;
-  value: string;
-  s?: number | null;
-  edu?: TechSignal["edu"];
-}
-
 // ════════════════════════════════════════════════════════════════
 // COUCHE 4b — VUE ACTION / ETF
 // ════════════════════════════════════════════════════════════════
-function MetricCard({ label, value, s, edu }: MetricProps) {
-  const bg = s == null ? THEME.bgCard
-    : s >= 7 ? "#0a2e1a"
-    : s >= 4 ? "#2a1f00"
-    : "#2a0a0a";
-  const border = s == null ? THEME.borderPanel
-    : s >= 7 ? "#22c55e44"
-    : s >= 4 ? "#f59e0b44"
-    : "#ef444444";
-  return (
-    <div style={{
-      background: bg, border: `1px solid ${border}`,
-      borderRadius: 10, padding: "14px 16px",
-      cursor: "default",
-      transition: "border-color .15s",
-    }}>
-      <div style={{ fontSize: 10, color: THEME.textSecondary, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>
-        {label}
-      </div>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, minWidth: 0, overflow: "visible" }}>
-        <span style={{
-          fontSize: 24, fontWeight: 800,
-          color: s == null ? THEME.textPrimary : scoreColor(s),
-          fontFamily: "'IBM Plex Mono',monospace",
-          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%",
-        }}>
-          {value}
-        </span>
-        <div style={{ display:"flex", alignItems:"center", gap:6, flexShrink:0 }}>
-          {s != null && (
-            <span style={{
-              fontSize: 11, fontWeight: 800,
-              color: scoreColor(s), background: scoreColor(s) + "22",
-              borderRadius: 4, padding: "2px 7px",
-            }}>
-              {scoreEmoji(s)} {s}/10
-            </span>
-          )}
-          {edu && <EduTooltip edu={edu} id={`metric-${label}`}/>}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ── TEXTES CONTEXTUELS PAR PROFIL ────────────────────────────
 const PROFILE_CONTEXT: Record<string, {
   badge: string;
@@ -3493,44 +3442,142 @@ function FundamentalsPanel({ metrics, scores, sections, currency }: {
         </button>
       </div>
 
-      {/* Mode expert : sections MetricCard existantes */}
+      {/* Mode expert : tableau compact par groupe */}
       {expertMode && sections.map((sec: any) => (
-        <div key={sec.label}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", margin: "20px 0 10px" }}>
-            <SectionTitle icon={sec.icon} label={sec.label}/>
-            <span style={{ fontSize: 9, color: THEME.textMuted, fontStyle: "italic" }}>{sec.note}</span>
-          </div>
+        <div key={sec.label} style={{ marginTop: 16 }}>
+          {/* Header groupe */}
+          {(() => {
+            const groupScore =
+              sec.label === "Valorisation"     ? gValorisation :
+              sec.label === "Rentabilité"      ? gRentabilite  :
+              sec.label === "Santé Financière" ? gSante        :
+              sec.label === "Risque"           ? gRisque       :
+              null;
+            const gColor = groupScore != null ? scoreColor(groupScore) : THEME.textMuted;
+            return (
+              <div style={{
+                display: "flex", alignItems: "center",
+                justifyContent: "space-between",
+                paddingBottom: 8,
+                borderBottom: `2px solid ${gColor}33`,
+                marginBottom: 6,
+              }}>
+                <div style={{
+                  fontSize: 13, fontWeight: 800,
+                  color: THEME.textPrimary,
+                  display: "flex", alignItems: "center", gap: 8,
+                }}>
+                  <span style={{ fontSize: 15 }}>{sec.icon}</span>
+                  <span style={{ textTransform: "uppercase", letterSpacing: 1.5 }}>
+                    {sec.label}
+                  </span>
+                  {groupScore != null && (
+                    <span style={{
+                      fontSize: 14, fontWeight: 900,
+                      color: gColor,
+                      fontFamily: "'IBM Plex Mono',monospace",
+                      background: gColor + "18",
+                      borderRadius: 6, padding: "2px 10px",
+                    }}>
+                      {groupScore}/10
+                    </span>
+                  )}
+                </div>
+                <span style={{
+                  fontSize: 9, color: THEME.textMuted,
+                  fontStyle: "italic",
+                }}>{sec.note}</span>
+              </div>
+            );
+          })()}
+
+          {/* Avertissement secteur financier */}
           {sec.label === "Santé Financière" && metrics.isFinancial && (
             <div style={{
-              fontSize: 11, color: THEME.textSecondary, fontStyle: "italic",
-              marginBottom: 8, padding: "6px 10px",
+              fontSize: 10, color: THEME.textSecondary,
+              marginBottom: 6, padding: "5px 10px",
               background: THEME.bgCard, borderRadius: 6,
               borderLeft: `3px solid ${THEME.scoreAmber}`,
             }}>
-              ⚠️ Secteur financier — Dette/Equity et Current Ratio ne sont pas des indicateurs pertinents pour ce secteur et sont exclus du scoring.
+              ⚠️ Secteur financier — Dette/Equity et Current Ratio exclus du scoring.
             </div>
           )}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12 }}>
-            {sec.cards.map((c: any, i: number) => <MetricCard key={i} {...c}/>)}
+
+          {/* Lignes métriques compactes */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+            {sec.cards.map((card: any, i: number) => {
+              const s = card.s as number | null | undefined;
+              const barColor = s == null ? THEME.borderMid
+                : s >= 7 ? THEME.scoreGreen
+                : s >= 4 ? THEME.scoreAmber
+                : THEME.scoreRed;
+              const barWidth = s != null ? `${(s / 10) * 100}%` : "0%";
+              return (
+                <div key={i} style={{
+                  display: "flex", alignItems: "center",
+                  gap: 10, padding: "7px 10px",
+                  background: i % 2 === 0 ? THEME.bgCard : THEME.bgCardAlt,
+                  borderRadius: 6,
+                  borderLeft: `3px solid ${s != null ? barColor : THEME.borderSubtle}`,
+                }}>
+                  {/* Barre score inline */}
+                  <div style={{
+                    width: 48, height: 4,
+                    background: THEME.borderPanel,
+                    borderRadius: 2, flexShrink: 0, overflow: "hidden",
+                  }}>
+                    <div style={{
+                      width: barWidth, height: "100%",
+                      background: barColor, borderRadius: 2,
+                      transition: "width .4s ease",
+                    }}/>
+                  </div>
+
+                  {/* Label */}
+                  <span style={{
+                    fontSize: 11, color: THEME.textSecondary,
+                    flex: 1, minWidth: 0,
+                  }}>
+                    {card.label}
+                  </span>
+
+                  {/* Valeur */}
+                  <span style={{
+                    fontSize: 13, fontWeight: 800,
+                    color: s != null ? barColor : THEME.textPrimary,
+                    fontFamily: "'IBM Plex Mono',monospace",
+                    minWidth: 72, textAlign: "right",
+                    flexShrink: 0,
+                  }}>
+                    {card.value}
+                  </span>
+
+                  {/* Badge score */}
+                  {s != null && (
+                    <span style={{
+                      fontSize: 10, fontWeight: 800,
+                      color: barColor,
+                      background: barColor + "22",
+                      borderRadius: 4, padding: "2px 6px",
+                      minWidth: 38, textAlign: "center",
+                      flexShrink: 0,
+                      fontFamily: "'IBM Plex Mono',monospace",
+                    }}>
+                      {s}/10
+                    </span>
+                  )}
+
+                  {/* Tooltip éducatif */}
+                  {card.edu && (
+                    <EduTooltip edu={card.edu} id={`expert-${sec.label}-${i}`}/>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       ))}
 
-    </div>
-  );
-}
-
-function SectionTitle({ icon, label }: { icon: string; label: string }) {
-  return (
-    <div style={{
-      fontSize: 11, fontWeight: 800, color: THEME.textSecondary,
-      textTransform: "uppercase", letterSpacing: 2,
-      margin: "24px 0 12px",
-      display: "flex", alignItems: "center", gap: 8,
-      paddingBottom: 8,
-      borderBottom: `1px solid ${THEME.borderSubtle}`,
-    }}>
-      <span>{icon}</span> {label}
     </div>
   );
 }
@@ -4651,12 +4698,62 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
   );
   const [chartLoading, setChartLoading] = useState(false);
   const [showEur,      setShowEur]      = useState(false);
+  const [descFr, setDescFr] = useState<string>("");
+  const [descOpen, setDescOpen] = useState(false);
 
   // Sync chartData quand initialChartData change (nouvelle recherche)
   useEffect(() => {
     setChartData(initialChartData);
     setPeriod(defaultPeriod);
   }, [initialChartData]);
+
+  useEffect(() => {
+    setDescFr("");
+    setDescOpen(false);
+    const raw = (metrics?.longBusinessSummary || "").trim();
+    if (raw) {
+      translateToFr(raw).then(setDescFr);
+      return;
+    }
+    // Fallback : description générée localement selon le type
+    const qt = (metrics?.quoteType || "").toUpperCase();
+    const name = metrics?.name || "";
+    const exchange = metrics?.exchange || "";
+    const sector = metrics?.sector || "";
+    const industry = metrics?.industry || "";
+    const currency = metrics?.currency || "USD";
+    const mktCap = metrics?.mktCap;
+    const change52w = metrics?.change52w;
+    const divYield = metrics?.divYield;
+
+    let fallback = "";
+
+    if (qt === "ETF" || qt === "MUTUALFUND") {
+      const typeLabel = qt === "MUTUALFUND" ? "fonds commun de placement" : "fonds négocié en bourse (ETF)";
+      fallback = `${name} est un ${typeLabel} coté sur ${exchange || "un marché réglementé"}, libellé en ${currency}.`;
+      if (sector) fallback += ` Il est exposé au secteur ${sector}${industry ? ` — ${industry}` : ""}.`;
+      if (mktCap) fallback += ` Capitalisation totale : ${mktCap >= 1e9 ? (mktCap/1e9).toFixed(1)+"B" : (mktCap/1e6).toFixed(0)+"M"} ${currency}.`;
+      if (divYield && divYield > 0) fallback += ` Rendement de distribution : ${(divYield*100).toFixed(2)}%.`;
+      if (change52w != null) fallback += ` Performance sur 12 mois : ${change52w >= 0 ? "+" : ""}${(change52w*100).toFixed(1)}%.`;
+      fallback += " Les ETF permettent d'investir sur un panier diversifié de titres en une seule transaction, avec des frais généralement réduits.";
+    } else if (qt === "INDEX") {
+      fallback = `${name} est un indice boursier coté sur ${exchange || "un marché réglementé"}.`;
+      if (sector) fallback += ` Secteur de référence : ${sector}.`;
+      if (change52w != null) fallback += ` Performance sur 12 mois : ${change52w >= 0 ? "+" : ""}${(change52w*100).toFixed(1)}%.`;
+      fallback += " Un indice boursier mesure la performance agrégée d'un panier de titres représentatifs d'un marché, d'un secteur ou d'une thématique. Il sert de baromètre de l'état d'un marché et de référence (benchmark) pour évaluer la performance des portefeuilles.";
+    } else if (qt === "FUTURE") {
+      fallback = `${name} est un contrat à terme (future) coté sur ${exchange || "un marché dérivé"}, libellé en ${currency}.`;
+      fallback += " Les contrats à terme sont des instruments dérivés permettant d'acheter ou de vendre un actif sous-jacent à une date future et à un prix fixé aujourd'hui. Ils sont utilisés pour la couverture de risque (hedging) ou la spéculation sur les variations de prix.";
+    } else if (qt === "CURRENCY") {
+      fallback = `${name} représente le taux de change de la devise ${currency}.`;
+      fallback += " Le marché des changes (Forex) est le plus grand marché financier mondial. Les taux de change reflètent la valeur relative de deux monnaies et sont influencés par les politiques monétaires des banques centrales, l'inflation, la croissance économique et les flux de capitaux internationaux.";
+    } else if (qt === "BOND") {
+      fallback = `${name} est une obligation ou un instrument de taux coté sur ${exchange || "un marché obligataire"}.`;
+      fallback += " Les obligations sont des titres de dette émis par des États ou des entreprises. Le rendement d'une obligation évolue en sens inverse de son prix : quand les taux montent, le prix des obligations baisse. Elles sont utilisées pour diversifier un portefeuille et générer des revenus réguliers.";
+    }
+
+    if (fallback) setDescFr(fallback);
+  }, [metrics]);
 
   const loadChart = useCallback(async (p: string) => {
     setChartLoading(true);
@@ -4964,6 +5061,72 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
           )}
         </div>
       </div>
+
+      {/* DESCRIPTION ENTREPRISE */}
+      {descFr && (
+        <div style={{
+          background: THEME.bgPanel,
+          border: `1px solid ${THEME.borderPanel}`,
+          borderRadius: 12,
+          padding: "14px 18px",
+          marginBottom: 14,
+        }}>
+          <div
+            onClick={() => setDescOpen(o => !o)}
+            style={{
+              display: "flex", alignItems: "center",
+              justifyContent: "space-between",
+              cursor: "pointer", marginBottom: descOpen ? 10 : 0,
+            }}
+          >
+            <span style={{
+              fontSize: 12, fontWeight: 800,
+              color: THEME.textSecondary,
+              textTransform: "uppercase", letterSpacing: 2,
+            }}>
+              📖 À propos
+            </span>
+            <span style={{ fontSize: 10, color: THEME.textMuted }}>
+              {descOpen ? "▲" : "▼"}
+            </span>
+          </div>
+          {descOpen ? (
+            <div style={{
+              fontSize: 12, color: THEME.textSecondary,
+              lineHeight: 1.8, borderLeft: `3px solid ${THEME.accent}`,
+              paddingLeft: 12,
+            }}>
+              {descFr}
+              <div
+                onClick={() => setDescOpen(false)}
+                style={{
+                  marginTop: 8, fontSize: 10,
+                  color: THEME.textMuted, cursor: "pointer",
+                }}
+              >
+                ▲ Réduire
+              </div>
+            </div>
+          ) : (
+            <div
+              onClick={() => setDescOpen(true)}
+              style={{
+                fontSize: 12, color: THEME.textSecondary,
+                lineHeight: 1.7, cursor: "pointer",
+                borderLeft: `3px solid ${THEME.accent}`,
+                paddingLeft: 12,
+              }}
+            >
+              {descFr.slice(0, 320)}
+              {descFr.length > 320 && (
+                <span style={{ color: THEME.accent, fontWeight: 700 }}>
+                  {" "}… Lire la suite
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* CARTE VERDICT — score global */}
       {v ? (
