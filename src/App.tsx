@@ -1380,6 +1380,524 @@ function detectDivergence(
   return { type: null, strength: "weak" };
 }
 
+// ── PHASE DE MARCHÉ ──────────────────────────────────────────
+type MarketPhase =
+  | "accumulation"
+  | "breakout"
+  | "tendance_haussiere"
+  | "tendance_baissiere"
+  | "distribution"
+  | "exces"
+  | "chaos"
+  | "range"
+  | "undefined";
+
+interface MarketPhaseResult {
+  phase:       MarketPhase;
+  label:       string;
+  color:       string;
+  emoji:       string;
+  confidence:  number;   // 0-100
+  description: string;
+}
+
+// ── SQUEEZE DE VOLATILITÉ ────────────────────────────────────
+interface SqueezeResult {
+  isSqueeze:   boolean;
+  intensity:   "low" | "medium" | "high";
+  bbWidth:     number;   // largeur des bandes de Bollinger normalisée
+  atrRatio:    number;   // ATR actuel / ATR moyen
+  description: string;
+}
+
+function calcSqueeze(closes: (number|null)[]): SqueezeResult | null {
+  const c = closes.filter((v): v is number => v != null);
+  if (c.length < 50) return null;
+
+  // Bandes de Bollinger (20 périodes, 2 écarts-types)
+  const period = 20;
+  const slice  = c.slice(-period);
+  const mean   = slice.reduce((a, b) => a + b, 0) / period;
+  const variance = slice.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / period;
+  const stdDev = Math.sqrt(variance);
+  const upperBB = mean + 2 * stdDev;
+  const lowerBB = mean - 2 * stdDev;
+  const bbWidth = mean > 0 ? (upperBB - lowerBB) / mean : 0;
+
+  // Largeur BB historique (50 périodes) pour comparaison
+  const historical: number[] = [];
+  for (let i = period; i <= c.length; i++) {
+    const s   = c.slice(i - period, i);
+    const m   = s.reduce((a, b) => a + b, 0) / period;
+    const sd  = Math.sqrt(s.reduce((a, b) => a + Math.pow(b - m, 2), 0) / period);
+    const w   = m > 0 ? (4 * sd) / m : 0;
+    historical.push(w);
+  }
+  const bbMean = historical.length > 0
+    ? historical.reduce((a, b) => a + b, 0) / historical.length
+    : bbWidth;
+
+  // ATR ratio
+  const h = c.map((v, i) => i > 0 ? Math.max(v, c[i-1]) : v);
+  const l = c.map((v, i) => i > 0 ? Math.min(v, c[i-1]) : v);
+  const trs: number[] = [];
+  for (let i = 1; i < c.length; i++) {
+    trs.push(Math.max(h[i]-l[i], Math.abs(h[i]-c[i-1]), Math.abs(l[i]-c[i-1])));
+  }
+  const atr14    = trs.length >= 14 ? trs.slice(-14).reduce((a,b)=>a+b)/14 : null;
+  const atrMean  = trs.length >= 50 ? trs.slice(-50).reduce((a,b)=>a+b)/50 : atr14;
+  const atrRatio = (atr14 != null && atrMean != null && atrMean > 0)
+    ? parseFloat((atr14 / atrMean).toFixed(2))
+    : 1;
+
+  // Squeeze : BB width < 60% de sa moyenne historique ET ATR faible
+  const bbRatio    = bbMean > 0 ? bbWidth / bbMean : 1;
+  const isSqueeze  = bbRatio < 0.6 && atrRatio < 0.8;
+  const intensity: "low" | "medium" | "high" =
+    bbRatio < 0.35 ? "high" :
+    bbRatio < 0.5  ? "medium" : "low";
+
+  return {
+    isSqueeze,
+    intensity,
+    bbWidth:  parseFloat(bbWidth.toFixed(4)),
+    atrRatio,
+    description: isSqueeze
+      ? `Compression de volatilité ${intensity === "high" ? "extrême" : intensity === "medium" ? "forte" : "modérée"} détectée — mouvement potentiellement imminent (direction indéterminée).`
+      : "Pas de compression de volatilité significative.",
+  };
+}
+
+// ── OBJECTIF DE BREAKOUT ─────────────────────────────────────
+interface BreakoutTargetResult {
+  hasTarget:       boolean;
+  targetPrice:     number | null;
+  targetPct:       number | null;   // % depuis le prix actuel
+  direction:       "up" | "down" | null;
+  validBars:       number;          // bougies de validité restantes (max 30)
+  barsElapsed:     number;          // bougies écoulées depuis le breakout
+  description:     string;
+}
+
+function calcBreakoutTarget(
+  closes:  (number|null)[],
+  highs:   (number|null)[],
+  lows:    (number|null)[],
+): BreakoutTargetResult {
+  const NONE: BreakoutTargetResult = {
+    hasTarget: false, targetPrice: null, targetPct: null,
+    direction: null, validBars: 0, barsElapsed: 0,
+    description: "Aucun breakout récent détecté.",
+  };
+
+  const c = closes.filter((v): v is number => v != null);
+  const h = highs.filter((v): v is number => v != null);
+  const l = lows.filter((v): v is number => v != null);
+  if (c.length < 50 || h.length < 50 || l.length < 50) return NONE;
+
+  const last = c[c.length - 1];
+
+  // Range de référence : 20 bougies avant les 10 dernières
+  const rangeSlice = c.slice(-30, -10);
+  if (rangeSlice.length < 10) return NONE;
+  const rangeHigh = Math.max(...h.slice(-30, -10));
+  const rangeLow  = Math.min(...l.slice(-30, -10));
+  const rangeAmp  = rangeHigh - rangeLow;
+  if (rangeAmp <= 0) return NONE;
+
+  // Détection breakout haussier : prix actuel > rangeHigh
+  if (last > rangeHigh * 1.005) {
+    const target     = rangeHigh + rangeAmp;
+    const targetPct  = ((target - last) / last) * 100;
+    // Estimer les bougies écoulées depuis le breakout
+    let barsElapsed = 0;
+    for (let i = c.length - 1; i >= Math.max(0, c.length - 30); i--) {
+      if ((c[i] ?? 0) > rangeHigh * 1.005) barsElapsed++;
+      else break;
+    }
+    const validBars = Math.max(0, 30 - barsElapsed);
+    if (validBars === 0) return NONE;
+    return {
+      hasTarget: true,
+      targetPrice: parseFloat(target.toFixed(2)),
+      targetPct:   parseFloat(targetPct.toFixed(1)),
+      direction:   "up",
+      validBars,
+      barsElapsed,
+      description: `Objectif potentiel indicatif : +${targetPct.toFixed(1)}% / ${target.toFixed(2)} (valide encore ~${validBars} bougies).`,
+    };
+  }
+
+  // Détection breakout baissier : prix actuel < rangeLow
+  if (last < rangeLow * 0.995) {
+    const target    = rangeLow - rangeAmp;
+    const targetPct = ((target - last) / last) * 100;
+    let barsElapsed = 0;
+    for (let i = c.length - 1; i >= Math.max(0, c.length - 30); i--) {
+      if ((c[i] ?? 0) < rangeLow * 0.995) barsElapsed++;
+      else break;
+    }
+    const validBars = Math.max(0, 30 - barsElapsed);
+    if (validBars === 0) return NONE;
+    return {
+      hasTarget: true,
+      targetPrice: parseFloat(target.toFixed(2)),
+      targetPct:   parseFloat(targetPct.toFixed(1)),
+      direction:   "down",
+      validBars,
+      barsElapsed,
+      description: `Objectif potentiel indicatif : ${targetPct.toFixed(1)}% / ${target.toFixed(2)} (valide encore ~${validBars} bougies).`,
+    };
+  }
+
+  return NONE;
+}
+
+// ── SCORE DE CONFLUENCE ──────────────────────────────────────
+interface ConfluenceResult {
+  score:       number;   // 0 à 4
+  priceOk:     boolean;
+  contextOk:   boolean;
+  momentumOk:  boolean;
+  sinewaveOk:  boolean;
+  label:       string;
+  color:       string;
+  details:     string[];
+}
+
+function calcConfluenceScore(
+  closes:  (number|null)[],
+  highs:   (number|null)[],
+  lows:    (number|null)[],
+  volumes: (number|null)[],
+): ConfluenceResult {
+  const c = closes.filter((v): v is number => v != null);
+
+  const rsi    = calcRSI(closes);
+  const ema200 = calcEMA(closes, 200);
+  const macd   = calcMACD(closes);
+  const sw     = calcSinewave(closes);
+  const reg    = calcRegressionDeviation(closes);
+  const phase  = c.length >= 50
+    ? calcMarketPhase(closes, highs, lows, volumes)
+    : null;
+  const last   = c.length > 0 ? c[c.length - 1] : null;
+
+  // PRICE OK : prix dans une zone d'intérêt
+  // → décote sur régression OU rebond depuis EMA200 OU RSI extrême
+  const nearEma200   = (ema200 != null && last != null)
+    ? Math.abs(last - ema200) / ema200 < 0.05
+    : false;
+  const rsiExtreme   = rsi != null && (rsi < 35 || rsi > 65);
+  const regDiscount  = reg != null && reg.r2 >= 0.4 && reg.deviation < -5;
+  const priceOk      = nearEma200 || rsiExtreme || regDiscount;
+
+  // CONTEXT OK : phase de marché identifiée et exploitable
+  const contextOk = phase != null &&
+    phase.phase !== "undefined" &&
+    phase.phase !== "chaos";
+
+  // MOMENTUM OK : RSI entre 35 et 65 ET MACD dans la bonne direction
+  const rsiNeutral  = rsi != null && rsi >= 35 && rsi <= 65;
+  const macdBull    = macd != null && macd.hist > 0;
+  const macdBear    = macd != null && macd.hist < 0;
+  const momentumOk  = rsiNeutral && (macdBull || macdBear);
+
+  // SINEWAVE OK : phase cyclique favorable
+  const sinewaveOk = sw != null &&
+    (sw.cycleTurn === "trough" || sw.sine < -0.3);
+
+  const score = [priceOk, contextOk, momentumOk, sinewaveOk]
+    .filter(Boolean).length;
+
+  const label =
+    score <= 1 ? "Conditions défavorables" :
+    score === 2 ? "Confluence partielle"   :
+    score === 3 ? "Setup intéressant"      :
+                  "Confluence maximale ✓";
+
+  const color =
+    score <= 1 ? "#ef4444" :
+    score === 2 ? "#f59e0b" :
+    score === 3 ? "#22c55e" :
+                  "#22c55e";
+
+  const details: string[] = [];
+  details.push(`${priceOk    ? "✅" : "❌"} Prix dans une zone d'intérêt`);
+  details.push(`${contextOk  ? "✅" : "❌"} Contexte de marché exploitable`);
+  details.push(`${momentumOk ? "✅" : "❌"} Momentum favorable (RSI + MACD)`);
+  details.push(`${sinewaveOk ? "✅" : "❌"} Phase cyclique favorable`);
+
+  return { score, priceOk, contextOk, momentumOk, sinewaveOk, label, color, details };
+}
+
+// ── DIVERGENCES STANDARDS ────────────────────────────────────
+interface DivergenceStandardResult {
+  hasDivergence:        boolean;
+  type:                 "bullish" | "bearish" | null;
+  strength:             "weak" | "medium";
+  requiresConfirmation: true;
+  description:          string;
+}
+
+function calcDivergenceStandard(
+  closes: (number|null)[],
+  period  = 14,
+): DivergenceStandardResult {
+  const NONE: DivergenceStandardResult = {
+    hasDivergence: false, type: null, strength: "weak",
+    requiresConfirmation: true,
+    description: "Aucune divergence standard détectée.",
+  };
+
+  const c = closes.filter((v): v is number => v != null);
+  if (c.length < period + 30) return NONE;
+
+  // Calcul série RSI sur les 60 dernières bougies
+  const window = 60;
+  const slice  = c.slice(-window - period);
+  const rsiSeries: number[] = [];
+  for (let i = period; i <= slice.length; i++) {
+    let gains = 0, losses = 0;
+    for (let j = i - period; j < i; j++) {
+      const d = slice[j] - (j > 0 ? slice[j-1] : slice[j]);
+      if (d > 0) gains += d; else losses -= d;
+    }
+    const rs = losses === 0 ? 100 : gains / losses;
+    rsiSeries.push(100 - 100 / (1 + rs));
+  }
+
+  const prices = slice.slice(period);
+  const N = Math.min(rsiSeries.length, prices.length);
+  if (N < 10) return NONE;
+
+  // Trouver pivots hauts et bas sur deux moitiés
+  const mid = Math.floor(N / 2);
+
+  // Divergence baissière : prix HH, RSI LH
+  const priceH1 = Math.max(...prices.slice(0, mid));
+  const priceH2 = Math.max(...prices.slice(mid));
+  const rsiH1   = Math.max(...rsiSeries.slice(0, mid));
+  const rsiH2   = Math.max(...rsiSeries.slice(mid));
+
+  if (priceH2 > priceH1 * 1.01 && rsiH2 < rsiH1 * 0.97) {
+    const priceDiff = (priceH2 / priceH1 - 1) * 100;
+    const rsiDiff   = (rsiH1 / rsiH2 - 1) * 100;
+    const strength: "weak" | "medium" =
+      priceDiff > 3 && rsiDiff > 3 ? "medium" : "weak";
+    return {
+      hasDivergence: true,
+      type: "bearish",
+      strength,
+      requiresConfirmation: true,
+      description: `Divergence baissière ${strength === "medium" ? "modérée" : "faible"} — prix HH, RSI LH. Validation horizontale requise avant toute décision.`,
+    };
+  }
+
+  // Divergence haussière : prix LL, RSI HL
+  const priceL1 = Math.min(...prices.slice(0, mid));
+  const priceL2 = Math.min(...prices.slice(mid));
+  const rsiL1   = Math.min(...rsiSeries.slice(0, mid));
+  const rsiL2   = Math.min(...rsiSeries.slice(mid));
+
+  if (priceL2 < priceL1 * 0.99 && rsiL2 > rsiL1 * 1.03) {
+    const priceDiff = (priceL1 / priceL2 - 1) * 100;
+    const rsiDiff   = (rsiL2 / rsiL1 - 1) * 100;
+    const strength: "weak" | "medium" =
+      priceDiff > 3 && rsiDiff > 3 ? "medium" : "weak";
+    return {
+      hasDivergence: true,
+      type: "bullish",
+      strength,
+      requiresConfirmation: true,
+      description: `Divergence haussière ${strength === "medium" ? "modérée" : "faible"} — prix LL, RSI HL. Validation horizontale requise avant toute décision.`,
+    };
+  }
+
+  return NONE;
+}
+
+// ── PHASE CYCLIQUE ───────────────────────────────────────────
+interface CyclePhaseResult {
+  cyclePosition:    number;          // 0 à 1+
+  phase:            "rising" | "peak" | "falling" | "trough";
+  bougiesEstimated: number;          // avant prochain retournement estimé
+  confidence:       "low" | "medium";
+  description:      string;
+}
+
+function calcCyclePhase(closes: (number|null)[]): CyclePhaseResult | null {
+  const c = closes.filter((v): v is number => v != null);
+  if (c.length < 50) return null;
+
+  // Approximation via RSI comme proxy de la Sinewave d'Ehlers
+  // LIMITE : ce n'est pas la vraie Sinewave — afficher avec ±30% de marge
+  const period = 14;
+  const rsiSeries: number[] = [];
+  for (let i = period; i <= c.length; i++) {
+    let gains = 0, losses = 0;
+    for (let j = i - period; j < i; j++) {
+      const d = c[j] - (j > 0 ? c[j-1] : c[j]);
+      if (d > 0) gains += d; else losses -= d;
+    }
+    const rs = losses === 0 ? 100 : gains / losses;
+    rsiSeries.push(100 - 100 / (1 + rs));
+  }
+
+  if (rsiSeries.length < 20) return null;
+
+  // Cycle dominant via Sinewave si disponible
+  const sw = calcSinewave(closes);
+  const dominantPeriod = sw?.dominantPeriod ?? 20;
+
+  // Position dans le cycle via RSI normalisé (0-100 → -1 à +1)
+  const lastRsi    = rsiSeries[rsiSeries.length - 1];
+  const cyclePos   = (lastRsi - 50) / 50;  // -1 (survente) à +1 (surachat)
+
+  // Détecter la phase via pente RSI sur 3 périodes
+  const rsiSlope = rsiSeries.length >= 4
+    ? rsiSeries[rsiSeries.length - 1] - rsiSeries[rsiSeries.length - 4]
+    : 0;
+
+  const phase: "rising" | "peak" | "falling" | "trough" =
+    lastRsi > 65 && rsiSlope <= 0  ? "peak"    :
+    lastRsi < 35 && rsiSlope >= 0  ? "trough"  :
+    rsiSlope > 2                   ? "rising"  :
+    rsiSlope < -2                  ? "falling" :
+    lastRsi > 50                   ? "peak"    : "trough";
+
+  // Estimation bougies avant prochain retournement
+  // Basé sur le cycle dominant et la position actuelle
+  const halfCycle = Math.round(dominantPeriod * 0.6);  // ratio 60/40 montée/descente
+  const posInCycle = Math.abs(cyclePos);
+  const bougiesEstimated = Math.max(1, Math.round(halfCycle * (1 - posInCycle)));
+
+  const phaseLabel = {
+    rising:  "montée",
+    peak:    "sommet",
+    falling: "descente",
+    trough:  "creux",
+  }[phase];
+
+  return {
+    cyclePosition:    parseFloat(cyclePos.toFixed(2)),
+    phase,
+    bougiesEstimated,
+    confidence:       "medium",
+    description:      `Phase cyclique estimée : ${phaseLabel} — ~${bougiesEstimated} bougies avant potentiel retournement (±30%). Cycle dominant ~${dominantPeriod}j.`,
+  };
+}
+
+function calcMarketPhase(
+  closes:  (number|null)[],
+  highs:   (number|null)[],
+  lows:    (number|null)[],
+  volumes: (number|null)[],
+): MarketPhaseResult {
+  const c = closes.filter((v): v is number => v != null);
+  if (c.length < 50) return {
+    phase: "undefined", label: "Indéterminée", color: "#64748b",
+    emoji: "❓", confidence: 0,
+    description: "Données insuffisantes pour déterminer la phase de marché.",
+  };
+
+  const ema50  = calcEMA(closes, 50);
+  const ema200 = calcEMA(closes, 200);
+  const adx    = calcADX(highs, lows, closes);
+  const rsi    = calcRSI(closes);
+  const struct = detectTrendStructure(highs, lows, closes);
+  const reg    = calcRegressionDeviation(closes);
+  const vol    = calcVolumeAnomaly(volumes);
+  const last   = c[c.length - 1];
+
+  const hArr = highs.filter((v): v is number => v != null);
+  const lArr = lows.filter((v): v is number => v != null);
+  const trArr: number[] = [];
+  for (let i = 1; i < Math.min(hArr.length, lArr.length, c.length); i++) {
+    trArr.push(Math.max(hArr[i]-lArr[i], Math.abs(hArr[i]-c[i-1]), Math.abs(lArr[i]-c[i-1])));
+  }
+  const atr14     = trArr.length >= 14 ? trArr.slice(-14).reduce((a,b)=>a+b)/14 : null;
+  const atrMean50 = trArr.length >= 50 ? trArr.slice(-50).reduce((a,b)=>a+b)/50 : null;
+  const isHighVol = atr14 != null && atrMean50 != null && atr14 > 3 * atrMean50;
+
+  const goldenCross = ema50 != null && ema200 != null && ema50 > ema200;
+  const deathCross  = ema50 != null && ema200 != null && ema50 < ema200;
+  const aboveEma50  = ema50 != null && last > ema50;
+  const deviation   = reg?.deviation ?? null;
+
+  // CHAOS
+  if (isHighVol && adx != null && adx < 20) return {
+    phase: "chaos", label: "Chaos", color: "#ef4444", emoji: "❌",
+    confidence: 75,
+    description: "Volatilité extrême sans direction claire — aucune structure exploitable. Ne pas trader.",
+  };
+
+  // EXCÈS
+  if (
+    adx != null && adx > 40 &&
+    goldenCross && aboveEma50 &&
+    rsi != null && rsi > 65 &&
+    deviation != null && deviation > 20
+  ) return {
+    phase: "exces", label: "Excès", color: "#f59e0b", emoji: "🚀",
+    confidence: Math.min(60 + Math.round((adx - 40) * 1.5), 88),
+    description: `Prix ${deviation.toFixed(0)}% au-dessus de sa tendance, RSI ${rsi}, ADX ${adx?.toFixed(0)} — excès de marché. Réservé aux expérimentés.`,
+  };
+
+  // TENDANCE HAUSSIÈRE
+  if (
+    goldenCross && aboveEma50 &&
+    struct.type === "bullish" &&
+    adx != null && adx > 20
+  ) return {
+    phase: "tendance_haussiere", label: "Tendance Haussière", color: "#22c55e", emoji: "📈",
+    confidence: Math.min(55 + Math.round(adx ?? 0), 90),
+    description: `Golden Cross actif, structure HH+HL confirmée, ADX ${adx?.toFixed(0)} — tendance haussière établie.`,
+  };
+
+  // TENDANCE BAISSIÈRE
+  if (
+    deathCross && !aboveEma50 &&
+    struct.type === "bearish" &&
+    adx != null && adx > 20
+  ) return {
+    phase: "tendance_baissiere", label: "Tendance Baissière", color: "#ef4444", emoji: "📉",
+    confidence: Math.min(55 + Math.round(adx ?? 0), 90),
+    description: `Death Cross actif, structure LL+LH confirmée, ADX ${adx?.toFixed(0)} — tendance baissière établie.`,
+  };
+
+  // ACCUMULATION (pré-breakout haussier)
+  if (
+    struct.type === "bullish" &&
+    adx != null && adx < 25 &&
+    rsi != null && rsi > 45 && rsi < 65 &&
+    vol != null && vol.ratio > 1.2
+  ) return {
+    phase: "accumulation", label: "Accumulation", color: "#60a5fa", emoji: "🔵",
+    confidence: 60,
+    description: "Structure haussière naissante avec volume en hausse et ADX faible — phase d'accumulation potentielle avant breakout.",
+  };
+
+  // DISTRIBUTION (pré-retournement baissier)
+  if (
+    struct.type === "bearish" &&
+    adx != null && adx < 25 &&
+    rsi != null && rsi < 55 && rsi > 35 &&
+    vol != null && vol.ratio > 1.2
+  ) return {
+    phase: "distribution", label: "Distribution", color: "#f97316", emoji: "🟠",
+    confidence: 60,
+    description: "Structure baissière avec volume anormal et ADX faible — phase de distribution, les mains fortes vendent.",
+  };
+
+  // RANGE
+  return {
+    phase: "range", label: "Range", color: "#4a90d9", emoji: "🔵",
+    confidence: adx != null && adx < 15 ? 80 : 60,
+    description: `Marché sans direction claire (ADX ${adx?.toFixed(0) ?? "—"}) — phase de consolidation ou range.`,
+  };
+}
+
 // ── MATURITÉ DE TENDANCE ──────────────────────────────────────
 function calcTrendMaturity(
   closes: (number|null)[],
@@ -4598,7 +5116,7 @@ const ENTRY_EDU: Record<string, TechSignal["edu"]> = {
   "Golden Cross actif — tendance haussière de fond confirmée": {
     concept: "Le Golden Cross confirme que la tendance haussière est installée sur le moyen terme — l'EMA50 est repassée au-dessus de l'EMA200.",
     howToRead: "Signal haussier structurel. Les corrections dans ce contexte sont généralement des opportunités d'achat tant que la structure HH+HL est maintenue.",
-    example: "Combiner Golden Cross + RSI non suracheté + creux de cycle Sinewave = configuration d'entrée optimale selon la méthode Pro Indicators.",
+    example: "Combiner Golden Cross + RSI non suracheté + creux de cycle Sinewave = configuration d'entrée optimale selon l'analyse technique.",
   },
   "RSI < 30 + creux Sinewave pour entrée tactique uniquement": {
     concept: "Le RSI (Relative Strength Index) mesure la vitesse des mouvements de prix. Sous 30, le marché est en zone de survente — les vendeurs ont peut-être exagéré la baisse.",
@@ -4608,7 +5126,7 @@ const ENTRY_EDU: Record<string, TechSignal["edu"]> = {
   "Creux de cycle Sinewave": {
     concept: "Le Sinewave d'Ehlers détecte les phases cycliques du marché. Un creux de cycle signale que la phase baissière du cycle arrive à son terme — retournement haussier probable à court terme.",
     howToRead: "La ligne Sine croise la LeadSine vers le bas = creux de cycle = signal haussier. Ce signal est plus fiable quand il coïncide avec un RSI bas et une structure de prix haussière.",
-    example: "En tendance haussière, le creux de cycle Sinewave est le point d'entrée optimal selon la méthode Pro Indicators — il correspond au pullback dans la tendance.",
+    example: "En tendance haussière, le creux de cycle Sinewave est le point d'entrée optimal — il correspond au pullback dans la tendance.",
   },
   "ADX passe au-dessus de 25": {
     concept: "L'ADX (Average Directional Index) mesure la force d'une tendance sans en indiquer la direction. Sous 25 = pas de tendance. Au-dessus de 25 = tendance directionnelle qui se met en place.",
@@ -5350,6 +5868,13 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
         <SentimentPanel metrics={metrics} macro={macro}/>
         <TechnicalPanel precomputed={techComputed} context={finalScoreResult?.context ?? null} />
         <SituationalPanel metrics={metrics} closes={chartData?.closes ?? []}/>
+        <ProjectionPanel
+          closes={chartData?.closes ?? []}
+          highs={chartData?.highs ?? []}
+          lows={chartData?.lows ?? []}
+          volumes={chartData?.volumes ?? []}
+          currency={metrics?.currency ?? "USD"}
+        />
         <NewsPanel ticker={ticker} quoteType={metrics?.quoteType}/>
       </div>
 
@@ -5437,6 +5962,168 @@ async function fetchNewsForTicker(ticker: string): Promise<NewsItem[]> {
 }
 
 // ── COMPOSANT NEWS PANEL ──────────────────────────────────────
+// ── COMPOSANT PROJECTION & CONFLUENCE ────────────────────────
+function ProjectionPanel({ closes, highs, lows, volumes, currency }: {
+  closes:   (number|null)[];
+  highs:    (number|null)[];
+  lows:     (number|null)[];
+  volumes:  (number|null)[];
+  currency: string;
+}) {
+  const c = closes.filter((v): v is number => v != null);
+  if (c.length < 50) return null;
+
+  const phase      = calcMarketPhase(closes, highs, lows, volumes);
+  const squeeze    = calcSqueeze(closes);
+  const breakout   = calcBreakoutTarget(closes, highs, lows);
+  const confluence = calcConfluenceScore(closes, highs, lows, volumes);
+  const divStd     = calcDivergenceStandard(closes);
+  const cycle      = calcCyclePhase(closes);
+
+  const panelColor =
+    confluence.score >= 3 ? "#22c55e" :
+    confluence.score >= 2 ? "#f59e0b" :
+    "#ef4444";
+
+  return (
+    <Panel
+      icon="🔭"
+      title="Projection & Confluence"
+      badge={{ label: confluence.label, color: panelColor }}
+      borderColor={panelColor}
+      defaultOpen={true}
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+
+        {/* Phase de marché */}
+        <div style={{
+          display: "flex", alignItems: "flex-start", gap: 10,
+          padding: "10px 12px", background: THEME.bgCard,
+          borderRadius: 8, borderLeft: `3px solid ${phase.color}`,
+        }}>
+          <span style={{ fontSize: 16, flexShrink: 0 }}>{phase.emoji}</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 12, fontWeight: 800, color: phase.color, marginBottom: 3 }}>
+              Phase de marché estimée : {phase.label}
+            </div>
+            <div style={{ fontSize: 11, color: THEME.textSecondary, lineHeight: 1.5 }}>
+              {phase.description}
+            </div>
+            <div style={{ fontSize: 9, color: THEME.textMuted, marginTop: 3 }}>
+              Confiance : {phase.confidence}%
+            </div>
+          </div>
+        </div>
+
+        {/* Score de confluence */}
+        <div style={{
+          padding: "10px 12px", background: THEME.bgCard,
+          borderRadius: 8, borderLeft: `3px solid ${panelColor}`,
+        }}>
+          <div style={{ fontSize: 10, fontWeight: 800, color: panelColor,
+            textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 8 }}>
+            Confluence — {confluence.score}/4 conditions
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {confluence.details.map((d, i) => (
+              <div key={i} style={{ fontSize: 11, color: THEME.textSecondary, lineHeight: 1.5 }}>
+                {d}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Objectif de breakout */}
+        {breakout.hasTarget && (
+          <div style={{
+            padding: "10px 12px", background: THEME.bgCard,
+            borderRadius: 8,
+            borderLeft: `3px solid ${breakout.direction === "up" ? "#22c55e" : "#ef4444"}`,
+          }}>
+            <div style={{ fontSize: 10, fontWeight: 800,
+              color: breakout.direction === "up" ? "#22c55e" : "#ef4444",
+              textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 4 }}>
+              {breakout.direction === "up" ? "📈" : "📉"} Objectif potentiel indicatif
+            </div>
+            <div style={{ fontSize: 13, fontWeight: 800, color: THEME.textPrimary,
+              fontFamily: "'IBM Plex Mono',monospace", marginBottom: 4 }}>
+              {breakout.targetPct != null && breakout.targetPct > 0 ? "+" : ""}
+              {breakout.targetPct?.toFixed(1)}% · {currency} {breakout.targetPrice?.toFixed(2)}
+            </div>
+            <div style={{ fontSize: 10, color: THEME.textMuted }}>
+              Valide encore ~{breakout.validBars} bougies · {breakout.barsElapsed} écoulées depuis le breakout
+            </div>
+            <div style={{ fontSize: 9, color: THEME.textMuted, marginTop: 4, fontStyle: "italic" }}>
+              ⚠️ Objectif indicatif uniquement — une target est invalidée après 30 bougies.
+            </div>
+          </div>
+        )}
+
+        {/* Squeeze */}
+        {squeeze?.isSqueeze && (
+          <div style={{
+            padding: "10px 12px", background: THEME.bgCard,
+            borderRadius: 8, borderLeft: "3px solid #f59e0b",
+          }}>
+            <div style={{ fontSize: 10, fontWeight: 800, color: "#f59e0b",
+              textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 4 }}>
+              ⚡ Compression de volatilité détectée
+            </div>
+            <div style={{ fontSize: 11, color: THEME.textSecondary, lineHeight: 1.5 }}>
+              {squeeze.description}
+            </div>
+            <div style={{ fontSize: 9, color: THEME.textMuted, marginTop: 3 }}>
+              Intensité : {squeeze.intensity === "high" ? "extrême" : squeeze.intensity === "medium" ? "forte" : "modérée"} · ATR ratio : {squeeze.atrRatio}
+            </div>
+          </div>
+        )}
+
+        {/* Divergence standard */}
+        {divStd.hasDivergence && (
+          <div style={{
+            padding: "10px 12px", background: THEME.bgCard,
+            borderRadius: 8,
+            borderLeft: `3px solid ${divStd.type === "bullish" ? "#22c55e" : "#ef4444"}`,
+          }}>
+            <div style={{ fontSize: 10, fontWeight: 800,
+              color: divStd.type === "bullish" ? "#22c55e" : "#ef4444",
+              textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 4 }}>
+              {divStd.type === "bullish" ? "🌱" : "⚠️"} Divergence standard {divStd.type === "bullish" ? "haussière" : "baissière"}
+            </div>
+            <div style={{ fontSize: 11, color: THEME.textSecondary, lineHeight: 1.5 }}>
+              {divStd.description}
+            </div>
+          </div>
+        )}
+
+        {/* Phase cyclique */}
+        {cycle != null && (
+          <div style={{
+            padding: "10px 12px", background: THEME.bgCard,
+            borderRadius: 8, borderLeft: "3px solid #a78bfa",
+          }}>
+            <div style={{ fontSize: 10, fontWeight: 800, color: "#a78bfa",
+              textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 4 }}>
+              〰️ Phase cyclique estimée
+            </div>
+            <div style={{ fontSize: 11, color: THEME.textSecondary, lineHeight: 1.5 }}>
+              {cycle.description}
+            </div>
+            <div style={{ fontSize: 9, color: THEME.textMuted, marginTop: 3, fontStyle: "italic" }}>
+              Approximation via RSI — marge d'erreur ±30%. Ne pas utiliser seul comme signal d'entrée.
+            </div>
+          </div>
+        )}
+
+        <div style={{ fontSize: 9, color: THEME.textMuted, fontStyle: "italic" }}>
+          Ces projections sont algorithmiques et indicatives. Elles ne constituent pas un conseil en investissement.
+        </div>
+
+      </div>
+    </Panel>
+  );
+}
+
 function NewsPanel({ ticker, quoteType }: { ticker: string; quoteType?: string }) {
   const [news, setNews]     = useState<NewsItem[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -6022,6 +6709,26 @@ function CryptoView({ data }: { data: any }) {
         </div>
       </div>
 
+      {/* ── À propos ── */}
+      {descFr && (
+        <div style={{
+          background: THEME.bgPanel,
+          border: `1px solid ${THEME.borderPanel}`,
+          borderRadius: 12,
+          padding: "14px 18px",
+          marginBottom: 14,
+        }}>
+          <div style={{ fontSize: 12, fontWeight: 800, color: THEME.textSecondary,
+            textTransform: "uppercase", letterSpacing: 2, marginBottom: 8 }}>
+            📖 À propos
+          </div>
+          <div style={{ fontSize: 12, color: THEME.textSecondary, lineHeight: 1.8,
+            borderLeft: `3px solid ${THEME.accent}`, paddingLeft: 12 }}>
+            {descFr.slice(0, 600)}{descFr.length > 600 ? "…" : ""}
+          </div>
+        </div>
+      )}
+
       {/* ── Carte verdict technique crypto ── */}
       {allChartData && allChartData.closes.filter((v: number|null) => v != null).length > 20 && (() => {
         const cryptoInterval: "1d" | "1wk" | "1mo" =
@@ -6492,17 +7199,17 @@ function CryptoView({ data }: { data: any }) {
         </Panel>
       )}
 
-      {/* ── Description ── */}
-      {(() => {
-        const description = descFr;
-        if (!description) return null;
-        return (
-          <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:16, fontSize:12, color:THEME.textSecondary, lineHeight:1.8 }}>
-            <div style={{ color:THEME.accent, fontWeight:700, marginBottom:8 }}>À propos</div>
-            {description.slice(0, 600)}…
-          </div>
-        );
-      })()}
+      {/* ── Projection & Confluence ── */}
+      {!chartLoading && allChartData && allChartData.closes.filter((v: number|null) => v != null).length >= 50 && (
+        <ProjectionPanel
+          closes={allChartData.closes}
+          highs={allChartData.highs}
+          lows={allChartData.lows}
+          volumes={allChartData.volumes}
+          currency="USD"
+        />
+      )}
+
     </div>
   );
 }
