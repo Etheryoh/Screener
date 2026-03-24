@@ -1477,9 +1477,10 @@ function classifyMarketContext(
       ? "exces_final" : undefined;
   }
   // ── TENDANCE ─────────────────────────────────────────────────
-  // Condition primaire : structure récente directionnelle
-  // Condition secondaire : alignement EMA long terme fort (ltBull/ltBear) + slope prononcé
-  // → capte les tendances où la structure 20-bars est mixte mais le momentum est intact
+  // Priorité EMA long terme : Death Cross (EMA50 < EMA200) force la direction baissière
+  // indépendamment de la structure courte terme (pivots 20-40 barres).
+  // Une structure HH/HL locale peut exister dans une tendance baissière de fond —
+  // c'est un rebond, pas un retournement.
   else if (
     adx != null && adx > 25 &&
     Math.abs(ema50Slope) > 0.8 &&
@@ -1487,7 +1488,10 @@ function classifyMarketContext(
      (ltBull && ema50Slope > 2.0) || (ltBear && ema50Slope < -2.0))
   ) {
     type = "tendance";
-    const bullish = struct.type === "bullish";
+    // Si Death Cross actif (EMA50 < EMA200), la direction structurelle est baissière
+    // même si les pivots courts termes sont haussiers (rebond dans baisse).
+    const deathCrossActive = ema50 != null && ema200 != null && ema50 < ema200;
+    const bullish = deathCrossActive ? false : struct.type === "bullish";
     if (div.type === (bullish ? "bearish" : "bullish")) {
       subtype = "divergence";
       confidence = 55;
@@ -1500,8 +1504,8 @@ function classifyMarketContext(
     }
   }
   // ── ESSOUFFLEMENT — tendance directionnelle mais momentum déclinant ──
-  // ADX >= 10 suffit quand la structure récente est explicitement directionnelle (bullish/bearish)
-  // ADX >= 15 requis quand on s'appuie uniquement sur l'alignement EMA long terme
+  // Priorité Death Cross : si EMA50 < EMA200, la structure haussière courte terme
+  // est un rebond dans une baisse — on force la direction baissière.
   else if (
     (struct.type === "bullish" || struct.type === "bearish" || ltBull || ltBear) &&
     adx != null &&
@@ -1510,10 +1514,16 @@ function classifyMarketContext(
   ) {
     type = "tendance";
     subtype = "essoufflement";
-    // Direction opposée à la structure = divergence aggravante
+    // Si Death Cross actif, forcer direction baissière indépendamment des pivots courts
+    const deathCrossActive = ema50 != null && ema200 != null && ema50 < ema200;
+    const effectiveStructType = deathCrossActive ? "bearish" : struct.type;
     const hasDivergence = div.type !== null &&
-      div.type !== (struct.type === "bullish" ? "bullish" : "bearish");
+      div.type !== (effectiveStructType === "bullish" ? "bullish" : "bearish");
     confidence = hasDivergence ? 70 : adx >= 20 ? 62 : 52;
+    // Propager la direction corrigée dans la structure pour l'affichage
+    if (deathCrossActive && struct.type === "bullish") {
+      struct.type = "bearish";
+    }
   }
   // ── RANGE ─────────────────────────────────────────────────────
   else {
@@ -3629,7 +3639,7 @@ function MarketContextPanel({
     : CONTEXT_COLORS[context.type] || CONTEXT_COLORS["range"];
 
   const typeLabel =
-    isEssoufflement             ? "Essoufflement"    :
+    isEssoufflement             ? (isBearDir ? "Tendance ↓" : "Tendance ↑") :
     context.type === "range"    ? "Range"            :
     context.type === "tendance" ? (isBearDir ? "Tendance ↓" : "Tendance ↑") :
     context.type === "exces"    ? "Excès"            : "Chaos";
@@ -3640,7 +3650,7 @@ function MarketContextPanel({
   const subtypeLabel = (() => {
     if (!context.subtype) return null;
     if (context.subtype === "accumulation") return isBearDir ? "Momentum Baissier" : "Momentum Haussier";
-    if (context.subtype === "suivi")        return isBearDir ? "Tendance Baissière" : "Tendance Haussière";
+    if (context.subtype === "suivi")        return isBearDir ? "Tendance Active ↓" : "Tendance Active ↑";
     return SUBTYPE_LABELS[context.subtype] ?? null;
   })();
 
