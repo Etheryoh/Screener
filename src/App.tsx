@@ -5340,6 +5340,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
         <SentimentPanel metrics={metrics} macro={macro}/>
         <TechnicalPanel precomputed={techComputed} context={finalScoreResult?.context ?? null} />
         <SituationalPanel metrics={metrics} closes={chartData?.closes ?? []}/>
+        <NewsPanel ticker={ticker} quoteType={metrics?.quoteType}/>
       </div>
 
       {/* FONDAMENTAUX — masqués pour les types sans données d'entreprise */}
@@ -5386,6 +5387,116 @@ function FearGreedGauge({ value }: { value: number }) {
       <text x={cx} y={cy - 4} textAnchor="middle" fontSize={22} fontWeight={900}
         fill={color} fontFamily="'IBM Plex Mono',monospace">{value}</text>
     </svg>
+  );
+}
+
+// ── INTERFACE NEWS ────────────────────────────────────────────
+interface NewsItem {
+  title:     string;
+  source:    string;
+  date:      string;
+  url:       string;
+  timestamp: number;
+}
+
+async function fetchNewsForTicker(ticker: string): Promise<NewsItem[]> {
+  try {
+    const d = await getJson(
+      `${PROXY}?q=${encodeURIComponent(ticker)}&type=search`
+    );
+    const raw = (d?.news ?? []).slice(0, 5) as any[];
+    if (raw.length === 0) return [];
+    return raw.map((n: any) => {
+      const ts  = n.providerPublishTime ?? 0;
+      const now = Math.floor(Date.now() / 1000);
+      const diff = now - ts;
+      const dateLabel =
+        diff < 3600   ? `Il y a ${Math.floor(diff / 60)} min` :
+        diff < 86400  ? `Il y a ${Math.floor(diff / 3600)}h`  :
+        diff < 604800 ? `Il y a ${Math.floor(diff / 86400)}j` :
+        new Date(ts * 1000).toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+      return {
+        title:     n.title     ?? "",
+        source:    n.publisher ?? "—",
+        date:      dateLabel,
+        url:       n.link      ?? "#",
+        timestamp: ts,
+      };
+    }).filter(n => n.title && n.url !== "#");
+  } catch { return []; }
+}
+
+// ── COMPOSANT NEWS PANEL ──────────────────────────────────────
+function NewsPanel({ ticker, quoteType }: { ticker: string; quoteType?: string }) {
+  const [news, setNews]     = useState<NewsItem[]>([]);
+  const [loaded, setLoaded] = useState(false);
+
+  const qt     = (quoteType || "").toUpperCase();
+  const hidden = qt === "CURRENCY" || qt === "FOREX";
+
+  useEffect(() => {
+    if (hidden || !ticker) return;
+    fetchNewsForTicker(ticker).then(items => {
+      setNews(items);
+      setLoaded(true);
+    });
+  }, [ticker, hidden]);
+
+  if (hidden) return null;
+  if (loaded && news.length === 0) return null;
+  if (!loaded) return null;
+
+  return (
+    <Panel
+      icon="📰"
+      title="Actualités"
+      badge2={{ label: `Yahoo Finance · ${news.length} article${news.length > 1 ? "s" : ""}`, color: THEME.textMuted }}
+      borderColor={THEME.borderPanel}
+      defaultOpen={false}
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {news.map((n, i) => (
+          <a
+            key={i}
+            href={n.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              display: "flex", alignItems: "flex-start",
+              gap: 10, padding: "10px 12px",
+              background: THEME.bgCard,
+              borderRadius: 8,
+              borderLeft: `3px solid ${THEME.borderMid}`,
+              textDecoration: "none",
+              transition: "border-color .15s",
+            }}
+            onMouseEnter={e => (e.currentTarget.style.borderLeftColor = THEME.accent)}
+            onMouseLeave={e => (e.currentTarget.style.borderLeftColor = THEME.borderMid)}
+          >
+            <span style={{ fontSize: 14, flexShrink: 0, marginTop: 1 }}>📄</span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{
+                fontSize: 12, fontWeight: 700,
+                color: THEME.textPrimary, lineHeight: 1.5, marginBottom: 4,
+                overflow: "hidden", display: "-webkit-box",
+                WebkitLineClamp: 2, WebkitBoxOrient: "vertical",
+              }}>
+                {n.title}
+              </div>
+              <div style={{ fontSize: 10, color: THEME.textMuted }}>
+                <span style={{ color: THEME.textSecondary, fontWeight: 600 }}>{n.source}</span>
+                {" · "}
+                <span>{n.date}</span>
+              </div>
+            </div>
+            <span style={{ fontSize: 10, color: THEME.textMuted, flexShrink: 0, marginTop: 2 }}>↗</span>
+          </a>
+        ))}
+        <div style={{ fontSize: 9, color: THEME.textMuted, marginTop: 4 }}>
+          Source : Yahoo Finance · Actualités en temps réel
+        </div>
+      </div>
+    </Panel>
   );
 }
 
