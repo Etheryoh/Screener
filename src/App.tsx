@@ -2078,6 +2078,7 @@ function computeFinalScore(
   context: MarketContext,
   techSignals: TechSignal[] = [],
   closes: (number|null)[] = [],
+  confluenceScore: number | null = null,
 ): FinalScoreResult {
   // ── Score de base selon le contexte ──────────────────────────
   let base: number;
@@ -2254,6 +2255,20 @@ function computeFinalScore(
       mod += regMod;
       const sign = regMod > 0 ? "+" : "";
       modifiers.push(`${sign}${regMod} Régression linéaire — prix ${d >= 0 ? "+" : ""}${d.toFixed(0)}% / tendance (R²=${reg.r2.toFixed(2)})`);
+    }
+  }
+
+  // ── Modificateur confluence (0-4 conditions PRO Indicators) ──
+  if (confluenceScore != null) {
+    const conflMod =
+      confluenceScore === 4 ?  0.5 :
+      confluenceScore === 3 ?  0.25 :
+      confluenceScore === 1 ? -0.25 :
+      confluenceScore === 0 ? -0.5  : 0;
+    if (conflMod !== 0) {
+      mod += conflMod;
+      const sign = conflMod > 0 ? "+" : "";
+      modifiers.push(`${sign}${conflMod} Confluence PRO — ${confluenceScore}/4 conditions remplies`);
     }
   }
 
@@ -5523,8 +5538,11 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
     ? computeTechSignals(closes, volumes, highs, lows, chartInterval)
     : { signals: [], sinewave: null };
 
+  const confluenceResult = (closes.length > 0 && highs.length > 0 && lows.length > 0)
+    ? calcConfluenceScore(closes, highs, lows, volumes)
+    : null;
   const finalScoreResult = marketCtx
-    ? computeFinalScore(metrics, marketCtx, techComputed.signals, closes)
+    ? computeFinalScore(metrics, marketCtx, techComputed.signals, closes, confluenceResult?.score ?? null)
     : null;
   const finalScore = finalScoreResult?.score ?? null;
   const v = getVerdict(finalScore);
@@ -5874,6 +5892,8 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
           lows={chartData?.lows ?? []}
           volumes={chartData?.volumes ?? []}
           currency={metrics?.currency ?? "USD"}
+          chartInterval={chartInterval}
+          period={period}
         />
         <NewsPanel ticker={ticker} quoteType={metrics?.quoteType}/>
       </div>
@@ -5963,15 +5983,39 @@ async function fetchNewsForTicker(ticker: string): Promise<NewsItem[]> {
 
 // ── COMPOSANT NEWS PANEL ──────────────────────────────────────
 // ── COMPOSANT PROJECTION & CONFLUENCE ────────────────────────
-function ProjectionPanel({ closes, highs, lows, volumes, currency }: {
-  closes:   (number|null)[];
-  highs:    (number|null)[];
-  lows:     (number|null)[];
-  volumes:  (number|null)[];
-  currency: string;
+function ProjectionPanel({ closes, highs, lows, volumes, currency, chartInterval = "1d", period = "1a" }: {
+  closes:         (number|null)[];
+  highs:          (number|null)[];
+  lows:           (number|null)[];
+  volumes:        (number|null)[];
+  currency:       string;
+  chartInterval?: "1d" | "1wk" | "1mo";
+  period?:        string;
 }) {
   const c = closes.filter((v): v is number => v != null);
   if (c.length < 50) return null;
+
+  const CANDLE_TO_DAYS: Record<string, number> = { "1d": 1, "1wk": 7, "1mo": 30 };
+  const daysPerCandle = CANDLE_TO_DAYS[chartInterval] ?? 1;
+
+  function bougiesLabel(n: number): string {
+    const days        = Math.round(n * daysPerCandle);
+    const marginDays  = Math.round(days * 0.30);
+    const target      = new Date(Date.now() + days * 86400 * 1000);
+    const dateStr     = target.toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" });
+
+    const marginStr =
+      marginDays < 14 ? `±${marginDays} jour${marginDays > 1 ? "s" : ""}` :
+      marginDays < 60 ? `±${Math.round(marginDays / 7)} semaine${Math.round(marginDays / 7) > 1 ? "s" : ""}` :
+                        `±${parseFloat((marginDays / 30).toFixed(1))} mois`;
+
+    const durationStr =
+      days <= 14 ? `~${days} jour${days > 1 ? "s" : ""}` :
+      days <= 90 ? `~${Math.round(days / 7)} semaine${Math.round(days / 7) > 1 ? "s" : ""}` :
+                   `~${parseFloat((days / 30).toFixed(1))} mois`;
+
+    return `~${n} bougie${n > 1 ? "s" : ""} soit ${durationStr} — autour du ${dateStr}, marge d'erreur ${marginStr}`;
+  }
 
   const phase      = calcMarketPhase(closes, highs, lows, volumes);
   const squeeze    = calcSqueeze(closes);
@@ -6051,7 +6095,7 @@ function ProjectionPanel({ closes, highs, lows, volumes, currency }: {
               {breakout.targetPct?.toFixed(1)}% · {currency} {breakout.targetPrice?.toFixed(2)}
             </div>
             <div style={{ fontSize: 10, color: THEME.textMuted }}>
-              Valide encore ~{breakout.validBars} bougies · {breakout.barsElapsed} écoulées depuis le breakout
+              {bougiesLabel(breakout.validBars)} · {breakout.barsElapsed} bougies écoulées depuis le breakout
             </div>
             <div style={{ fontSize: 9, color: THEME.textMuted, marginTop: 4, fontStyle: "italic" }}>
               ⚠️ Objectif indicatif uniquement — une target est invalidée après 30 bougies.
@@ -6108,6 +6152,9 @@ function ProjectionPanel({ closes, highs, lows, volumes, currency }: {
             </div>
             <div style={{ fontSize: 11, color: THEME.textSecondary, lineHeight: 1.5 }}>
               {cycle.description}
+            </div>
+            <div style={{ fontSize: 11, color: "#a78bfa", marginTop: 4, fontWeight: 600 }}>
+              {bougiesLabel(cycle.bougiesEstimated)}
             </div>
             <div style={{ fontSize: 9, color: THEME.textMuted, marginTop: 3, fontStyle: "italic" }}>
               Approximation via RSI — marge d'erreur ±30%. Ne pas utiliser seul comme signal d'entrée.
@@ -6767,7 +6814,8 @@ function CryptoView({ data }: { data: any }) {
         const upperBearish  = upperCtx != null &&
           (upperCtx.structure.type === "bearish" || upperCtx.type === "chaos" ||
            (upperCtx.subtype === "essoufflement" && upperCtx.structure.type === "bullish"));
-        const _finalScoreRaw = computeFinalScore(null, _marketCtx, _techComputed.signals, cryptoData.closes);
+        const _confluenceResult = calcConfluenceScore(cryptoData.closes, cryptoData.highs, cryptoData.lows, cryptoData.volumes);
+        const _finalScoreRaw = computeFinalScore(null, _marketCtx, _techComputed.signals, cryptoData.closes, _confluenceResult?.score ?? null);
         const _finalScore    = {
           ..._finalScoreRaw,
           score: upperBearish && _finalScoreRaw.score > 5
@@ -6951,7 +6999,8 @@ function CryptoView({ data }: { data: any }) {
           : null;
         const marketCtx    = classifyMarketContext(cryptoData.closes, cryptoData.highs, cryptoData.lows, cryptoData.volumes);
         const techComputed = computeTechSignals(cryptoData.closes, cryptoData.volumes, cryptoData.highs, cryptoData.lows, cryptoInterval);
-        const finalScoreResult = computeFinalScore(null, marketCtx, techComputed.signals, cryptoData.closes);
+        const confluenceResult2 = calcConfluenceScore(cryptoData.closes, cryptoData.highs, cryptoData.lows, cryptoData.volumes);
+        const finalScoreResult = computeFinalScore(null, marketCtx, techComputed.signals, cryptoData.closes, confluenceResult2?.score ?? null);
         const upperBearish = upperCtx != null &&
           (upperCtx.structure.type === "bearish" || upperCtx.type === "chaos" ||
            (upperCtx.subtype === "essoufflement" && upperCtx.structure.type === "bullish"));
@@ -7200,15 +7249,22 @@ function CryptoView({ data }: { data: any }) {
       )}
 
       {/* ── Projection & Confluence ── */}
-      {!chartLoading && allChartData && allChartData.closes.filter((v: number|null) => v != null).length >= 50 && (
-        <ProjectionPanel
-          closes={allChartData.closes}
-          highs={allChartData.highs}
-          lows={allChartData.lows}
-          volumes={allChartData.volumes}
-          currency="USD"
-        />
-      )}
+      {!chartLoading && allChartData && allChartData.closes.filter((v: number|null) => v != null).length >= 50 && (() => {
+        const cryptoCI: "1d" | "1wk" | "1mo" =
+          (period === "5a" || period === "max") && allChartDataWeekly ? "1wk" :
+          period === "3a" && allChartDataWeekly ? "1mo" : "1d";
+        return (
+          <ProjectionPanel
+            closes={allChartData.closes}
+            highs={allChartData.highs}
+            lows={allChartData.lows}
+            volumes={allChartData.volumes}
+            currency="USD"
+            chartInterval={cryptoCI}
+            period={period}
+          />
+        );
+      })()}
 
     </div>
   );
