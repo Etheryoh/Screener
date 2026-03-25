@@ -1631,91 +1631,6 @@ function calcConfluenceScore(
   return { score, priceOk, contextOk, momentumOk, sinewaveOk, label, color, details };
 }
 
-// ── DIVERGENCES STANDARDS ────────────────────────────────────
-interface DivergenceStandardResult {
-  hasDivergence:        boolean;
-  type:                 "bullish" | "bearish" | null;
-  strength:             "weak" | "medium";
-  requiresConfirmation: true;
-  description:          string;
-}
-
-function calcDivergenceStandard(
-  closes: (number|null)[],
-  period  = 14,
-): DivergenceStandardResult {
-  const NONE: DivergenceStandardResult = {
-    hasDivergence: false, type: null, strength: "weak",
-    requiresConfirmation: true,
-    description: "Aucune divergence standard détectée.",
-  };
-
-  const c = closes.filter((v): v is number => v != null);
-  if (c.length < period + 30) return NONE;
-
-  // Calcul série RSI sur les 60 dernières bougies
-  const window = 60;
-  const slice  = c.slice(-window - period);
-  const rsiSeries: number[] = [];
-  for (let i = period; i <= slice.length; i++) {
-    let gains = 0, losses = 0;
-    for (let j = i - period; j < i; j++) {
-      const d = slice[j] - (j > 0 ? slice[j-1] : slice[j]);
-      if (d > 0) gains += d; else losses -= d;
-    }
-    const rs = losses === 0 ? 100 : gains / losses;
-    rsiSeries.push(100 - 100 / (1 + rs));
-  }
-
-  const prices = slice.slice(period);
-  const N = Math.min(rsiSeries.length, prices.length);
-  if (N < 10) return NONE;
-
-  // Trouver pivots hauts et bas sur deux moitiés
-  const mid = Math.floor(N / 2);
-
-  // Divergence baissière : prix HH, RSI LH
-  const priceH1 = Math.max(...prices.slice(0, mid));
-  const priceH2 = Math.max(...prices.slice(mid));
-  const rsiH1   = Math.max(...rsiSeries.slice(0, mid));
-  const rsiH2   = Math.max(...rsiSeries.slice(mid));
-
-  if (priceH2 > priceH1 * 1.01 && rsiH2 < rsiH1 * 0.97) {
-    const priceDiff = (priceH2 / priceH1 - 1) * 100;
-    const rsiDiff   = (rsiH1 / rsiH2 - 1) * 100;
-    const strength: "weak" | "medium" =
-      priceDiff > 3 && rsiDiff > 3 ? "medium" : "weak";
-    return {
-      hasDivergence: true,
-      type: "bearish",
-      strength,
-      requiresConfirmation: true,
-      description: `Divergence baissière ${strength === "medium" ? "modérée" : "faible"} — prix HH, RSI LH. Validation horizontale requise avant toute décision.`,
-    };
-  }
-
-  // Divergence haussière : prix LL, RSI HL
-  const priceL1 = Math.min(...prices.slice(0, mid));
-  const priceL2 = Math.min(...prices.slice(mid));
-  const rsiL1   = Math.min(...rsiSeries.slice(0, mid));
-  const rsiL2   = Math.min(...rsiSeries.slice(mid));
-
-  if (priceL2 < priceL1 * 0.99 && rsiL2 > rsiL1 * 1.03) {
-    const priceDiff = (priceL1 / priceL2 - 1) * 100;
-    const rsiDiff   = (rsiL2 / rsiL1 - 1) * 100;
-    const strength: "weak" | "medium" =
-      priceDiff > 3 && rsiDiff > 3 ? "medium" : "weak";
-    return {
-      hasDivergence: true,
-      type: "bullish",
-      strength,
-      requiresConfirmation: true,
-      description: `Divergence haussière ${strength === "medium" ? "modérée" : "faible"} — prix LL, RSI HL. Validation horizontale requise avant toute décision.`,
-    };
-  }
-
-  return NONE;
-}
 
 // ── PHASE CYCLIQUE ───────────────────────────────────────────
 interface CyclePhaseResult {
@@ -2268,7 +2183,7 @@ function computeFinalScore(
     if (conflMod !== 0) {
       mod += conflMod;
       const sign = conflMod > 0 ? "+" : "";
-      modifiers.push(`${sign}${conflMod} Confluence PRO — ${confluenceScore}/4 conditions remplies`);
+      modifiers.push(`${sign}${conflMod} Confluence — ${confluenceScore}/4 conditions remplies`);
     }
   }
 
@@ -5894,6 +5809,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
           currency={metrics?.currency ?? "USD"}
           chartInterval={chartInterval}
           period={period}
+          marketContext={finalScoreResult?.context ?? null}
         />
         <NewsPanel ticker={ticker} quoteType={metrics?.quoteType}/>
       </div>
@@ -5983,7 +5899,7 @@ async function fetchNewsForTicker(ticker: string): Promise<NewsItem[]> {
 
 // ── COMPOSANT NEWS PANEL ──────────────────────────────────────
 // ── COMPOSANT PROJECTION & CONFLUENCE ────────────────────────
-function ProjectionPanel({ closes, highs, lows, volumes, currency, chartInterval = "1d", period = "1a" }: {
+function ProjectionPanel({ closes, highs, lows, volumes, currency, chartInterval = "1d", period = "1a", marketContext }: {
   closes:         (number|null)[];
   highs:          (number|null)[];
   lows:           (number|null)[];
@@ -5991,6 +5907,7 @@ function ProjectionPanel({ closes, highs, lows, volumes, currency, chartInterval
   currency:       string;
   chartInterval?: "1d" | "1wk" | "1mo";
   period?:        string;
+  marketContext?: MarketContext | null;
 }) {
   const c = closes.filter((v): v is number => v != null);
   if (c.length < 50) return null;
@@ -6017,11 +5934,36 @@ function ProjectionPanel({ closes, highs, lows, volumes, currency, chartInterval
     return `~${n} bougie${n > 1 ? "s" : ""} soit ${durationStr} — autour du ${dateStr}, marge d'erreur ${marginStr}`;
   }
 
-  const phase      = calcMarketPhase(closes, highs, lows, volumes);
+  // Convertir MarketContext → MarketPhaseResult si disponible, sinon recalculer
+  const phase: MarketPhaseResult = marketContext ? (() => {
+    const phaseMap: Record<string, { phase: MarketPhase; label: string; color: string; emoji: string }> = {
+      "tendance_haussiere": { phase: "tendance_haussiere", label: "Tendance Haussière", color: "#22c55e", emoji: "📈" },
+      "tendance_baissiere": { phase: "tendance_baissiere", label: "Tendance Baissière", color: "#ef4444", emoji: "📉" },
+      "exces":              { phase: "exces",              label: "Excès",              color: "#f59e0b", emoji: "🚀" },
+      "chaos":              { phase: "chaos",              label: "Chaos",              color: "#ef4444", emoji: "❌" },
+      "range":              { phase: "range",              label: "Range",              color: "#4a90d9", emoji: "🔵" },
+      "accumulation":       { phase: "accumulation",       label: "Accumulation",       color: "#60a5fa", emoji: "🔵" },
+    };
+    const isBear = marketContext.structure.type === "bearish";
+    const key = marketContext.type === "tendance"
+      ? (isBear ? "tendance_baissiere" : "tendance_haussiere")
+      : marketContext.type;
+    const mapped = phaseMap[key] ?? phaseMap["range"];
+    return {
+      ...mapped,
+      confidence: marketContext.confidence,
+      description: marketContext.type === "chaos"
+        ? "Volatilité extrême sans direction claire — aucune structure exploitable."
+        : marketContext.type === "exces"
+        ? `Excès de marché détecté — ADX ${marketContext.adx?.toFixed(0) ?? "—"}.`
+        : marketContext.type === "tendance"
+        ? `${isBear ? "Tendance baissière" : "Tendance haussière"} — ${marketContext.subtype ?? ""}, ADX ${marketContext.adx?.toFixed(0) ?? "—"}.`
+        : `Marché sans direction claire (ADX ${marketContext.adx?.toFixed(0) ?? "—"}) — phase de consolidation ou range.`,
+    };
+  })() : calcMarketPhase(closes, highs, lows, volumes);
   const squeeze    = calcSqueeze(closes);
   const breakout   = calcBreakoutTarget(closes, highs, lows);
   const confluence = calcConfluenceScore(closes, highs, lows, volumes);
-  const divStd     = calcDivergenceStandard(closes);
   const cycle      = calcCyclePhase(closes);
 
   const panelColor =
@@ -6122,23 +6064,6 @@ function ProjectionPanel({ closes, highs, lows, volumes, currency, chartInterval
           </div>
         )}
 
-        {/* Divergence standard */}
-        {divStd.hasDivergence && (
-          <div style={{
-            padding: "10px 12px", background: THEME.bgCard,
-            borderRadius: 8,
-            borderLeft: `3px solid ${divStd.type === "bullish" ? "#22c55e" : "#ef4444"}`,
-          }}>
-            <div style={{ fontSize: 10, fontWeight: 800,
-              color: divStd.type === "bullish" ? "#22c55e" : "#ef4444",
-              textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 4 }}>
-              {divStd.type === "bullish" ? "🌱" : "⚠️"} Divergence standard {divStd.type === "bullish" ? "haussière" : "baissière"}
-            </div>
-            <div style={{ fontSize: 11, color: THEME.textSecondary, lineHeight: 1.5 }}>
-              {divStd.description}
-            </div>
-          </div>
-        )}
 
         {/* Phase cyclique */}
         {cycle != null && (
@@ -7253,15 +7178,37 @@ function CryptoView({ data }: { data: any }) {
         const cryptoCI: "1d" | "1wk" | "1mo" =
           (period === "5a" || period === "max") && allChartDataWeekly ? "1wk" :
           period === "3a" && allChartDataWeekly ? "1mo" : "1d";
+        const rawDataProj =
+          cryptoCI === "1wk" && allChartDataWeekly ? allChartDataWeekly :
+          cryptoCI === "1mo" && allChartDataWeekly ? resampleToMonthly(allChartDataWeekly) :
+          allChartData;
+        const PERIOD_DAYS_PROJ: Record<string, number> = {
+          "7j": 7, "1m": 30, "3m": 90, "6m": 180, "1a": 365,
+          "2a": 730, "3a": 1095, "5a": 1825, "max": 99999,
+        };
+        const cutoffTsProj = Math.floor(Date.now() / 1000) - (PERIOD_DAYS_PROJ[period] ?? 365) * 86400;
+        const indicesProj: number[] = [];
+        rawDataProj.timestamps.forEach((ts, i) => { if (ts >= cutoffTsProj) indicesProj.push(i); });
+        const slicedProj = indicesProj.length >= 20 ? {
+          closes:     indicesProj.map(i => rawDataProj.closes[i]),
+          highs:      indicesProj.map(i => rawDataProj.highs[i]),
+          lows:       indicesProj.map(i => rawDataProj.lows[i]),
+          volumes:    indicesProj.map(i => rawDataProj.volumes[i]),
+          timestamps: indicesProj.map(i => rawDataProj.timestamps[i]),
+        } : rawDataProj;
+        const marketCtxProj = classifyMarketContext(
+          slicedProj.closes, slicedProj.highs, slicedProj.lows, slicedProj.volumes
+        );
         return (
           <ProjectionPanel
-            closes={allChartData.closes}
-            highs={allChartData.highs}
-            lows={allChartData.lows}
-            volumes={allChartData.volumes}
+            closes={slicedProj.closes}
+            highs={slicedProj.highs}
+            lows={slicedProj.lows}
+            volumes={slicedProj.volumes}
             currency="USD"
             chartInterval={cryptoCI}
             period={period}
+            marketContext={marketCtxProj}
           />
         );
       })()}
