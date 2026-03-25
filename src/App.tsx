@@ -5940,9 +5940,15 @@ async function fetchNewsForTicker(ticker: string, quoteType?: string, companySho
   }
 
   try {
-    const companyName = companyShortName ?? ticker;
-    const q = `${companyName} action bourse`;
-    const url = `${PROXY}/?type=genericnews&q=${encodeURIComponent(q)}`;
+    const rawName = companyShortName ?? ticker;
+    const shortQuery = rawName.split(" ").slice(0, 3).join(" ");
+    // Détecter la langue selon le suffixe du ticker
+    const isJapanese = ticker.endsWith(".T");
+    const isUS = !ticker.includes(".") || ticker.endsWith("=X");
+    const lang = isJapanese ? "ja&gl=JP&ceid=JP:ja" : isUS ? "en&gl=US&ceid=US:en" : "fr&gl=FR&ceid=FR:fr";
+    const suffix = isJapanese ? "株価" : isUS ? "stock news" : "action bourse";
+    const q = `${shortQuery} ${suffix}`;
+    const url = `${PROXY}/?type=genericnews&q=${encodeURIComponent(q)}&lang=${lang}`;
     const res = await fetch(url);
     if (!res.ok) throw new Error("genericnews failed");
     const data = await res.json();
@@ -6174,12 +6180,12 @@ function NewsPanel({ ticker, quoteType, shortName }: { ticker: string; quoteType
   const hidden = qt === "FOREX";
 
   useEffect(() => {
-    if (hidden || !ticker) return;
+    if (!ticker) return;
     fetchNewsForTicker(ticker, quoteType, shortName).then(items => {
       setNews(items);
       setLoaded(true);
     });
-  }, [ticker, hidden]);
+  }, [ticker, shortName]);
 
   if (hidden) return null;
   if (loaded && news.length === 0) return null;

@@ -7,7 +7,13 @@
       "WebFetch(domain:api.github.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "WebFetch(domain:github.com)",
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "Bash(curl -s \"https://screener.etheryoh.workers.dev/?type=search&q=6981.T&quotesCount=1&newsCount=0\" -o \"$TEMP/yf_result.json\")",
+      "Bash(node -e \"const j=require\\(''$TEMP/yf_result.json''.replace\\(/\\\\/g,''/''\\)\\); const q=j?.quotes?.[0]||{}; console.log\\(JSON.stringify\\({symbol:q.symbol,shortName:q.shortName,longName:q.longName},null,2\\)\\);\")",
+      "Bash(curl -s \"https://screener.etheryoh.workers.dev/?type=search&q=6981.T&quotesCount=1&newsCount=0\" -o \"C:/Temp/yf_result.json\")",
+      "Bash(node -e \"const j=require\\(''C:/Temp/yf_result.json''\\); const q=j?.quotes?.[0]||{}; console.log\\(JSON.stringify\\({symbol:q.symbol,shortName:q.shortName,longName:q.longName},null,2\\)\\);\")",
+      "Bash(curl -s \"https://screener.etheryoh.workers.dev/?type=search&q=6981.T&quotesCount=1&newsCount=0\")",
+      "Bash(node -e \"let d=''''''''; process.stdin.on\\(''''data'''',c=>d+=c\\); process.stdin.on\\(''''end'''',\\(\\)=>{const j=JSON.parse\\(d\\); const q=j?.quotes?.[0]||{}; console.log\\(JSON.stringify\\({symbol:q.symbol,shortName:q.shortName,longName:q.longName},null,2\\)\\);}\\)\")"
     ]
   }
 }
