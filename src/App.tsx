@@ -7313,17 +7313,78 @@ export default function App() {
       return ecbRatesData[currency] ? 1 / ecbRatesData[currency] : null;
     })();
 
-    // Détermination UT optimale par cycle dominant (Ehlers Sinewave)
+    // ── UT OPTIMALE MULTI-TIMEFRAME ───────────────────────────
+    // 1. Cycle Sinewave daily → UT candidate
+    // 2. Contexte daily vs weekly → correction si contradiction
     let optimalUTKey = "5a";
     const dailyC = (yfDataDaily?.closes ?? []) as (number|null)[];
+    const weeklyC = (yfDataWeekly?.closes ?? []) as (number|null)[];
+
+    // Étape 1 : cycle dominant sur daily
+    let cycleBasedUT = "5a";
+    let dominantPeriod = 30;
     if (dailyC.filter((v: number|null): v is number => v != null).length >= 50) {
       const swUT = calcSinewave(dailyC);
-      const dp = swUT?.dominantPeriod ?? 30;
-      if (dp <= 10)      { optimalUTKey = "2a";  addLog(`  📊 Cycle ~${dp}j → UT: Journalier (2 ans)`); }
-      else if (dp <= 50) { optimalUTKey = "5a";  addLog(`  📊 Cycle ~${dp}j → UT: Hebdomadaire (5 ans)`); }
-      else               { optimalUTKey = "10a"; addLog(`  📊 Cycle ~${dp}j → UT: Mensuel (10 ans)`); }
+      dominantPeriod = swUT?.dominantPeriod ?? 30;
+      if (dominantPeriod <= 10)      cycleBasedUT = "2a";
+      else if (dominantPeriod <= 50) cycleBasedUT = "5a";
+      else                           cycleBasedUT = "10a";
+    }
+
+    // Étape 2 : contexte daily et weekly pour vérification cohérence
+    const ctxDaily = dailyC.filter((v: number|null): v is number => v != null).length >= 20
+      ? classifyMarketContext(
+          yfDataDaily?.closes ?? [],
+          yfDataDaily?.highs  ?? [],
+          yfDataDaily?.lows   ?? [],
+          yfDataDaily?.volumes ?? [],
+        )
+      : null;
+
+    const ctxWeekly = weeklyC.filter((v: number|null): v is number => v != null).length >= 20
+      ? classifyMarketContext(
+          yfDataWeekly?.closes  ?? [],
+          yfDataWeekly?.highs   ?? [],
+          yfDataWeekly?.lows    ?? [],
+          yfDataWeekly?.volumes ?? [],
+        )
+      : null;
+
+    // Étape 3 : règle de sélection multi-TF
+    if (ctxDaily == null) {
+      // Données insuffisantes
+      optimalUTKey = cycleBasedUT;
+      addLog(`  📊 Cycle ~${dominantPeriod}j → UT: ${cycleBasedUT} (données daily insuffisantes)`);
+    } else if (ctxDaily.type === "chaos") {
+      // Chaos daily → forcer weekly
+      optimalUTKey = "5a";
+      addLog(`  📊 Chaos daily → UT forcée : Hebdomadaire (5 ans)`);
+    } else if (ctxWeekly == null) {
+      // Pas de données weekly → garder cycle daily
+      optimalUTKey = cycleBasedUT;
+      addLog(`  📊 Cycle ~${dominantPeriod}j → UT: ${cycleBasedUT} (weekly indisponible)`);
     } else {
-      addLog(`  📊 Données insuffisantes pour cycle analysis — UT défaut: Hebdomadaire`);
+      // Les deux TF disponibles → vérifier cohérence directionnelle
+      const dailyBear  = ctxDaily.structure.type  === "bearish";
+      const dailyBull  = ctxDaily.structure.type  === "bullish";
+      const weeklyBear = ctxWeekly.structure.type === "bearish";
+      const weeklyBull = ctxWeekly.structure.type === "bullish";
+
+      const contradiction = (dailyBear && weeklyBull) || (dailyBull && weeklyBear);
+
+      if (!contradiction) {
+        // Alignés → cycle daily fait foi
+        optimalUTKey = cycleBasedUT;
+        addLog(`  📊 Cycle ~${dominantPeriod}j, TF alignés → UT: ${cycleBasedUT}`);
+      } else if (dailyBear && weeklyBull) {
+        // Daily baissier, weekly haussier → TF supérieur (long terme) dominant
+        optimalUTKey = "5a";
+        addLog(`  📊 Contradiction TF : daily ↓ / weekly ↑ → UT Hebdomadaire (contexte long terme haussier)`);
+      } else {
+        // Daily haussier, weekly baissier → prudence, rester sur daily
+        optimalUTKey = cycleBasedUT === "2a" ? "2a" : "5a";
+        addLog(`  📊 Contradiction TF : daily ↑ / weekly ↓ → UT Daily (prudence)`);
+      }
     }
 
     let yfDataMonthly: any = null;
