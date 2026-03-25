@@ -74,8 +74,8 @@ function scoreVal(val: number, low: number, mid: number, high: number, invert = 
 }
 function scoreColor(s: number | null): string {
   if (s == null) return "#555";
-  if (s >= 7) return "#22c55e";
-  if (s >= 4) return "#f59e0b";
+  if (s >= 6.67) return "#22c55e";
+  if (s >= 3.34) return "#f59e0b";
   return "#ef4444";
 }
 function getVerdict(g: number | null) {
@@ -3809,7 +3809,7 @@ function FundamentalsPanel({ metrics, scores, sections, currency }: {
   ];
 
   return (
-    <div style={{ marginTop: 20 }}>
+    <div style={{ marginTop: 10 }}>
 
       {/* Bloc profil */}
       <div style={{
@@ -5811,7 +5811,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
           period={period}
           marketContext={finalScoreResult?.context ?? null}
         />
-        <NewsPanel ticker={ticker} quoteType={metrics?.quoteType}/>
+        <NewsPanel ticker={ticker} quoteType={metrics?.quoteType} shortName={metrics?.shortName ?? metrics?.longName}/>
       </div>
 
       {/* FONDAMENTAUX — masqués pour les types sans données d'entreprise */}
@@ -5870,15 +5870,84 @@ interface NewsItem {
   timestamp: number;
 }
 
-async function fetchNewsForTicker(ticker: string): Promise<NewsItem[]> {
+async function fetchNewsForTicker(ticker: string, quoteType?: string, companyShortName?: string): Promise<NewsItem[]> {
+  const qt = (quoteType ?? "").toUpperCase();
+
+  // ── Sources spécialisées par type ──────────────────────────
+  if (qt === "CRYPTOCURRENCY") {
+    try {
+      const symbol = ticker.replace("-USD", "").replace("-USDT", "").toLowerCase();
+      const url = `${PROXY}/?type=cryptonews&coin=${encodeURIComponent(symbol)}`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error("cryptonews failed");
+      const data = await res.json();
+      const articles: NewsItem[] = (data.articles ?? []).map((a: any) => {
+        const ts = a.pubDate ? Math.floor(new Date(a.pubDate).getTime() / 1000) : 0;
+        const now = Math.floor(Date.now() / 1000);
+        const diff = now - ts;
+        const dateLabel =
+          diff < 3600   ? `Il y a ${Math.floor(diff / 60)} min` :
+          diff < 86400  ? `Il y a ${Math.floor(diff / 3600)}h`  :
+          diff < 604800 ? `Il y a ${Math.floor(diff / 86400)}j` :
+          new Date(ts * 1000).toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+        return {
+          title:     a.title ?? "",
+          source:    "Cointelegraph",
+          date:      dateLabel,
+          url:       a.link ?? "#",
+          timestamp: ts,
+        };
+      }).filter((n: NewsItem) => n.title && n.url !== "#");
+      if (articles.length > 0) return articles;
+    } catch { /* fallback Yahoo ci-dessous */ }
+  }
+
+  if (qt === "CURRENCY" || qt === "INDEX" || qt === "FUTURE") {
+    try {
+      const queryMap: Record<string, string> = {
+        "EURUSD=X": "EUR USD forex", "GBPUSD=X": "GBP USD forex",
+        "USDJPY=X": "USD JPY forex", "USDCHF=X": "USD CHF forex",
+        "^FCHI": "CAC 40 bourse", "^STOXX50E": "Euro Stoxx 50",
+        "^GDAXI": "DAX bourse", "^FTSE": "FTSE 100",
+        "^N225": "Nikkei 225", "^GSPC": "S&P 500",
+        "^DJI": "Dow Jones", "^IXIC": "Nasdaq",
+        "^VIX": "VIX volatilité marchés",
+      };
+      const q = queryMap[ticker.toUpperCase()] ?? `${ticker} finance`;
+      const url = `${PROXY}/?type=genericnews&q=${encodeURIComponent(q)}`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error("genericnews failed");
+      const data = await res.json();
+      const articles: NewsItem[] = (data.articles ?? []).map((a: any) => {
+        const ts = a.pubDate ? Math.floor(new Date(a.pubDate).getTime() / 1000) : 0;
+        const now = Math.floor(Date.now() / 1000);
+        const diff = now - ts;
+        const dateLabel =
+          diff < 3600   ? `Il y a ${Math.floor(diff / 60)} min` :
+          diff < 86400  ? `Il y a ${Math.floor(diff / 3600)}h`  :
+          diff < 604800 ? `Il y a ${Math.floor(diff / 86400)}j` :
+          new Date(ts * 1000).toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+        return {
+          title:     a.title ?? "",
+          source:    a.description ?? "Google News",
+          date:      dateLabel,
+          url:       a.link ?? "#",
+          timestamp: ts,
+        };
+      }).filter((n: NewsItem) => n.title && n.url !== "#");
+      if (articles.length > 0) return articles;
+    } catch { /* fallback Yahoo ci-dessous */ }
+  }
+
   try {
-    const d = await getJson(
-      `${PROXY}?q=${encodeURIComponent(ticker)}&type=search`
-    );
-    const raw = (d?.news ?? []).slice(0, 5) as any[];
-    if (raw.length === 0) return [];
-    return raw.map((n: any) => {
-      const ts  = n.providerPublishTime ?? 0;
+    const companyName = companyShortName ?? ticker;
+    const q = `${companyName} action bourse`;
+    const url = `${PROXY}/?type=genericnews&q=${encodeURIComponent(q)}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("genericnews failed");
+    const data = await res.json();
+    const articles: NewsItem[] = (data.articles ?? []).map((a: any) => {
+      const ts = a.pubDate ? Math.floor(new Date(a.pubDate).getTime() / 1000) : 0;
       const now = Math.floor(Date.now() / 1000);
       const diff = now - ts;
       const dateLabel =
@@ -5887,13 +5956,14 @@ async function fetchNewsForTicker(ticker: string): Promise<NewsItem[]> {
         diff < 604800 ? `Il y a ${Math.floor(diff / 86400)}j` :
         new Date(ts * 1000).toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
       return {
-        title:     n.title     ?? "",
-        source:    n.publisher ?? "—",
+        title:     a.title ?? "",
+        source:    a.description ?? "Google News",
         date:      dateLabel,
-        url:       n.link      ?? "#",
+        url:       a.link ?? "#",
         timestamp: ts,
       };
-    }).filter(n => n.title && n.url !== "#");
+    }).filter((n: NewsItem) => n.title && n.url !== "#");
+    return articles;
   } catch { return []; }
 }
 
@@ -6096,16 +6166,16 @@ function ProjectionPanel({ closes, highs, lows, volumes, currency, chartInterval
   );
 }
 
-function NewsPanel({ ticker, quoteType }: { ticker: string; quoteType?: string }) {
+function NewsPanel({ ticker, quoteType, shortName }: { ticker: string; quoteType?: string; shortName?: string }) {
   const [news, setNews]     = useState<NewsItem[]>([]);
   const [loaded, setLoaded] = useState(false);
 
   const qt     = (quoteType || "").toUpperCase();
-  const hidden = qt === "CURRENCY" || qt === "FOREX";
+  const hidden = qt === "FOREX";
 
   useEffect(() => {
     if (hidden || !ticker) return;
-    fetchNewsForTicker(ticker).then(items => {
+    fetchNewsForTicker(ticker, quoteType, shortName).then(items => {
       setNews(items);
       setLoaded(true);
     });
@@ -6115,11 +6185,14 @@ function NewsPanel({ ticker, quoteType }: { ticker: string; quoteType?: string }
   if (loaded && news.length === 0) return null;
   if (!loaded) return null;
 
+  const sourceLabel = quoteType === "CRYPTOCURRENCY" ? "Cointelegraph"
+    : "Google News";
+
   return (
     <Panel
       icon="📰"
       title="Actualités"
-      badge2={{ label: `Yahoo Finance · ${news.length} article${news.length > 1 ? "s" : ""}`, color: THEME.textMuted }}
+      badge2={{ label: `${sourceLabel} · ${news.length} article${news.length > 1 ? "s" : ""}`, color: THEME.textMuted }}
       borderColor={THEME.borderPanel}
       defaultOpen={false}
     >
@@ -6162,7 +6235,7 @@ function NewsPanel({ ticker, quoteType }: { ticker: string; quoteType?: string }
           </a>
         ))}
         <div style={{ fontSize: 9, color: THEME.textMuted, marginTop: 4 }}>
-          Source : Yahoo Finance · Actualités en temps réel
+          Source : {sourceLabel} · Actualités en temps réel
         </div>
       </div>
     </Panel>
@@ -7213,6 +7286,9 @@ function CryptoView({ data }: { data: any }) {
         );
       })()}
 
+      {/* ── Actualités crypto ── */}
+      <NewsPanel ticker={data.id ?? ""} quoteType="CRYPTOCURRENCY" />
+
     </div>
   );
 }
@@ -7540,6 +7616,7 @@ export default function App() {
   }, []);
 
   const ForexView = ({ currency, rate, allRates }: { currency: string; rate: number; allRates: Record<string, number> }) => (
+    <>
     <div style={{ animation:"fadeIn .4s ease" }}>
       <div style={{ marginBottom:20 }}>
         <div style={{ fontSize:11, color:"#445", textTransform:"uppercase", letterSpacing:1.5, marginBottom:4 }}>
@@ -7571,6 +7648,10 @@ export default function App() {
         Source : Banque Centrale Européenne · Temps réel
       </div>
     </div>
+
+      {/* ── Actualités Forex ── */}
+      <NewsPanel ticker={query} quoteType="CURRENCY" />
+    </>
   );
 
   return (
