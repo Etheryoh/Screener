@@ -142,6 +142,50 @@ const CHART_RANGES: Record<string, { range: string; interval: string; label: str
   "10a": { range: "10y",  interval: "1mo", label: "10 ans" },
 };
 
+// ── DÉTECTION UNIFIÉE DU TYPE D'ACTIF ────────────────────────
+const KNOWN_CRYPTO_SYMBOLS = new Set([
+  "BTC","ETH","SOL","BNB","XRP","ADA","DOGE","AVAX","DOT","MATIC",
+  "LINK","UNI","ATOM","LTC","BCH","XLM","ALGO","VET","ICP","FIL",
+  "HBAR","ETC","MANA","SAND","AXS","THETA","XTZ","EOS","AAVE","MKR",
+  "COMP","SNX","CRV","YFI","SUSHI","1INCH","GRT","ENJ","CHZ","BAT",
+  "ZEC","DASH","XMR","NEO","WAVES","QTUM","ONT","ZIL","ICX","IOTA",
+  "OP","ARB","APT","SUI","SEI","TIA","INJ","PYTH","JUP","WIF",
+]);
+
+const FOREX_CURRENCY_CODES = new Set([
+  "USD","EUR","GBP","JPY","CHF","CAD","AUD","NZD","SEK","NOK",
+  "DKK","PLN","HUF","CZK","TRY","ZAR","SGD","HKD","MXN","BRL",
+  "CNY","INR","KRW","THB","IDR","MYR","PHP","AED","SAR","ILS",
+]);
+
+const INDEX_PREFIXES = ["^", "^GSPC","^FCHI","^GDAXI","^FTSE","^N225","^DJI","^IXIC","^STOXX50E","^VIX","^TNX","^IRX","^HSI"];
+
+function detectAssetType(raw: string, mode?: string): "crypto" | "forex" | "index" | "stock" {
+  const upper = raw.trim().toUpperCase();
+
+  // Mode explicite (sélection via filtre UI)
+  if (mode === "crypto")  return "crypto";
+  if (mode === "forex")   return "forex";
+  if (mode === "index")   return "index";
+
+  // Index : commence par ^ ou ticker connu
+  if (upper.startsWith("^")) return "index";
+
+  // Forex : ticker =X, paire slash, devise iso 3 lettres connue, 6 lettres devises
+  if (upper.endsWith("=X")) return "forex";
+  if (/^[A-Z]{3}[/][A-Z]{3}$/.test(upper)) return "forex";
+  if (FOREX_CURRENCY_CODES.has(upper)) return "forex";
+  if (/^[A-Z]{6}$/.test(upper) &&
+      FOREX_CURRENCY_CODES.has(upper.slice(0,3)) &&
+      FOREX_CURRENCY_CODES.has(upper.slice(3,6))) return "forex";
+
+  // Crypto : symbole connu ou pattern -USD/-USDT
+  if (KNOWN_CRYPTO_SYMBOLS.has(upper)) return "crypto";
+  if (/^[A-Z0-9]{2,10}-(USD|USDT|EUR|BTC)$/i.test(raw)) return "crypto";
+
+  return "stock";
+}
+
 // ── MODES DE RECHERCHE ────────────────────────────────────────
 type SearchMode = "all" | "equity" | "etf" | "futures" | "forex" | "crypto" | "index" | "bond";
 
@@ -5414,13 +5458,38 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
             bad: "Au-dessus de 2 : très spéculatif — en marché baissier, les pertes peuvent être sévères et rapides. Bêta élevé combiné à une valorisation tendue : risque maximal, position réduite recommandée.",
             example: "",
           }},
-        { label: "Short Ratio", value: fmt(metrics.shortRatio), s: null,
+        { label: "Short Ratio (days to cover)", value: fmt(metrics.shortRatio), s: null,
           edu: {
             concept: "Le short ratio (ou Days to Cover) = nombre de jours nécessaires pour que tous les vendeurs à découvert rachètent leurs positions, basé sur le volume quotidien moyen. Les vendeurs à découvert parient professionnellement sur la baisse du titre — ce sont souvent des hedge funds ou institutionnels bien informés.",
             howToRead: "Un short ratio élevé signifie que beaucoup d'investisseurs professionnels parient contre l'action. Mais c'est une arme à double tranchant : si une bonne nouvelle arrive (résultats meilleurs que prévu, acquisition...), ces vendeurs sont forcés de racheter en urgence, ce qui peut déclencher un 'short squeeze' — une hausse violente et explosive du cours.",
             good: "Sous 3 jours : niveau normal, peu de pression baissière structurelle. Faible short ratio sur une action décotée = le marché ne la déteste pas, signal potentiellement positif.",
             bad: "Au-dessus de 10 jours : forte conviction des professionnels baissiers. À surveiller de très près : soit ils ont raison sur un problème fondamental, soit un squeeze violent est possible si le sentiment tourne.",
             example: "",
+          }},
+        { label: "Short % Float", value: metrics.shortPercentFloat != null ? (metrics.shortPercentFloat * 100).toFixed(2) + "%" : "—",
+          s: metrics.shortPercentFloat != null
+            ? metrics.shortPercentFloat < 0.03 ? 8
+            : metrics.shortPercentFloat < 0.08 ? 5
+            : metrics.shortPercentFloat < 0.15 ? 3 : 1
+            : null,
+          edu: {
+            concept: "Le Short % Float mesure la part du flottant (actions disponibles à la vente) vendue à découvert. Un niveau élevé indique que des investisseurs professionnels parient sur la baisse du titre.",
+            howToRead: "Sous 3% : très peu de pression short. Entre 3% et 8% : pression modérée. Entre 8% et 15% : pression élevée — conviction baissière des professionnels. Au-dessus de 15% : signal extrême, potentiel short squeeze si bonne nouvelle.",
+            good: "Sous 3% : les professionnels ne parient pas contre ce titre — signal de confiance.",
+            bad: "Au-dessus de 10% : forte conviction baissière institutionnelle. Vérifier si les fondamentaux justifient cette méfiance.",
+            example: metrics.shortPercentFloat != null
+              ? `${(metrics.shortPercentFloat * 100).toFixed(2)}% du flottant est vendu à découvert. ${metrics.shortPercentFloat < 0.03 ? "Niveau très faible — signal positif." : metrics.shortPercentFloat < 0.08 ? "Niveau modéré à surveiller." : "Niveau élevé — conviction baissière notable."}`
+              : "Données non disponibles.",
+          }},
+        { label: "Flottant", value: fmt(metrics.floatShares, 0), s: null,
+          edu: {
+            concept: "Le flottant représente le nombre d'actions réellement disponibles à l'achat sur le marché — hors actions détenues par les insiders, institutionnels bloqués ou auto-détention. C'est la liquidité structurelle du titre.",
+            howToRead: "Un flottant faible (<10% des actions totales) rend le titre plus volatil — une petite quantité d'acheteurs peut faire bouger le prix significativement. Un flottant large assure une liquidité stable.",
+            good: "Flottant large : liquidité élevée, spreads serrés, moins de manipulation possible.",
+            bad: "Flottant très faible : volatilité amplifiée, risque de manipulation, spreads larges à l'achat/vente.",
+            example: metrics.floatShares != null
+              ? `${fmt(metrics.floatShares, 0)} actions disponibles sur le marché.`
+              : "Données non disponibles.",
           }},
         { label: "Perf. 52 sem.", value: metrics.change52w != null ? (metrics.change52w * 100).toFixed(1) + "%" : "—",
           s: scores.perf52w,
@@ -6057,6 +6126,125 @@ function ProjectionPanel({ closes, highs, lows, volumes, currency, chartInterval
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
 
+        {/* ── Encadré "Ce que ça signifie pour toi" ── */}
+        {(() => {
+          const ph  = phase.phase;
+          const cs  = confluence.score;
+          const cyc = cycle?.phase ?? null;
+
+          let emoji = "📊", color: string = THEME.textSecondary, bg: string = THEME.bgCard;
+          let border: string = THEME.borderMid, title = "", body = "";
+
+          if (ph === "chaos") {
+            emoji = "⛔"; color = "#ef4444"; bg = "#1e0808"; border = "#ef4444";
+            title = "Contexte chaotique — ne pas agir";
+            body  = "Le marché évolue sans direction stable avec une volatilité extrême. C'est le pire moment pour entrer en position : les règles habituelles ne s'appliquent plus. Attendre que la situation se stabilise avant toute décision.";
+          } else if (ph === "tendance_baissiere") {
+            // Cas spécial : essoufflement baissier avec confluence élevée → message nuancé
+            if (phase.label?.includes("Essoufflement") || phase.description?.includes("essouffle")) {
+              if (cs >= 3) {
+                emoji = "⚠️"; color = "#f59e0b"; bg = "#1a1000"; border = "#f59e0b";
+                title = "Tendance baissière qui s'essouffle — surveiller un retournement";
+                body  = `La baisse perd de la force (${cs}/4 conditions alignées), mais la structure baissière reste active. Ce n'est pas encore le moment d'acheter — attendre un signal de retournement confirmé : Golden Cross ou premier Higher High. Un positionnement très partiel est envisageable uniquement si la structure HL se forme.`;
+              } else {
+                emoji = "⏸️"; color = "#f97316"; bg = "#1e0a00"; border = "#f97316";
+                title = "Essoufflement baissier — attendre confirmation";
+                body  = "La tendance baissière perd de la vitesse mais les conditions d'un retournement ne sont pas encore réunies. Rester en dehors du marché et attendre des signaux plus clairs avant d'agir.";
+              }
+            } else {
+              emoji = "📉"; color = "#ef4444"; bg = "#1e0808"; border = "#ef4444";
+              title = "Tendance baissière confirmée — éviter les achats";
+              body  = "Le marché évolue structurellement à la baisse : les prix font des sommets et des creux de plus en plus bas. Acheter dans ce contexte revient à nager à contre-courant. Attendre un signal de retournement clair (Golden Cross + structure haussière) avant d'envisager une position.";
+            }
+          } else if (ph === "exces") {
+            emoji = "🚀"; color = "#f59e0b"; bg = "#1a1000"; border = "#f59e0b";
+            title = "Marché en excès — prudence extrême";
+            body  = "Le marché monte très fort et les indicateurs signalent un excès de momentum. Entrer maintenant expose à un risque de correction brutale. Si vous êtes déjà en position, protéger les gains avec un stop serré plutôt que d'en rajouter.";
+          } else if (ph === "tendance_haussiere" || ph === "accumulation") {
+            if (cs >= 3 && (cyc === "trough" || cyc === "rising")) {
+              emoji = "✅"; color = "#22c55e"; bg = "#0a1e0f"; border = "#22c55e";
+              title = "Configuration favorable — bonne fenêtre d'entrée";
+              body  = "La tendance de fond est haussière, plusieurs conditions techniques sont alignées et le cycle est en phase favorable. C'est le type de configuration qui offre le meilleur rapport risque/rendement. Ne pas investir tout d'un coup — fragmenter en 2 ou 3 tranches espacées.";
+            } else if (cs >= 2 && cyc !== "peak") {
+              emoji = "⚠️"; color = "#f59e0b"; bg = "#1a1000"; border = "#f59e0b";
+              title = "Tendance haussière mais conditions partielles";
+              body  = `La tendance de fond est positive mais seulement ${cs}/4 conditions sont réunies. Le contexte est correct sans être optimal. Une entrée fractionnée est envisageable avec un stop bien placé — attendre idéalement un creux cyclique pour améliorer le point d'entrée.`;
+            } else if (cyc === "peak" || cyc === "falling") {
+              emoji = "⏸️"; color = "#f59e0b"; bg = "#1a1000"; border = "#f59e0b";
+              title = "Tendance haussière — cycle en phase haute";
+              body  = "La tendance de fond est positive, mais le cycle est actuellement dans sa phase haute ou en retournement. C'est souvent le mauvais moment pour entrer : attendre que le cycle repasse en phase basse (creux) pour bénéficier d'un meilleur prix dans la tendance.";
+            } else {
+              emoji = "🔵"; color = "#60a5fa"; bg = "#111d30"; border = "#60a5fa";
+              title = "Phase d'accumulation — surveiller le breakout";
+              body  = "Le marché montre des signes d'accumulation : structure haussière naissante avec momentum encore faible. Pas encore le moment d'entrer en force — surveiller un breakout confirmé (prix au-dessus d'une résistance + volume en hausse) avant d'agir.";
+            }
+          } else {
+            if (cs >= 3 && (cyc === "trough" || cyc === "rising")) {
+              emoji = "⚠️"; color = "#f59e0b"; bg = "#1a1000"; border = "#f59e0b";
+              title = "Range avec signal de creux — opportunité limitée";
+              body  = `Le marché est sans direction claire, mais ${cs}/4 conditions sont alignées et le cycle est en phase basse. Une entrée tactique sur support est envisageable avec taille réduite et stop strict. Le potentiel reste limité tant que le range n'est pas cassé.`;
+            } else {
+              emoji = "⏳"; color = THEME.textSecondary; bg = THEME.bgCard; border = THEME.borderMid;
+              title = "Marché en range — patience recommandée";
+              body  = "Le marché oscille sans tendance claire. C'est la phase la plus difficile pour investir. La meilleure approche : attendre soit un breakout haussier confirmé, soit un signal de creux cyclique pour une entrée sur support.";
+            }
+          }
+
+          if (!title) return null;
+
+          return (
+            <div style={{
+              padding: "14px 16px",
+              background: bg,
+              borderRadius: 10,
+              border: `1px solid ${border}55`,
+              borderLeft: `4px solid ${border}`,
+            }}>
+              <div style={{
+                fontSize: 10, fontWeight: 800, color: border,
+                textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 8,
+              }}>
+                {emoji} Ce que ça signifie pour toi
+              </div>
+              <div style={{
+                fontSize: 13, fontWeight: 700, color, marginBottom: 8, lineHeight: 1.4,
+              }}>
+                {title}
+              </div>
+              <div style={{ fontSize: 12, color: THEME.textSecondary, lineHeight: 1.8 }}>
+                {body}
+              </div>
+              {squeeze?.isSqueeze && (
+                <div style={{
+                  marginTop: 10, padding: "8px 12px",
+                  background: "#1a1000", borderRadius: 8,
+                  borderLeft: "3px solid #f59e0b",
+                  fontSize: 11, color: "#f59e0b", lineHeight: 1.6,
+                }}>
+                  ⚡ <strong>Compression de volatilité active</strong> — un mouvement fort est imminent dans un sens ou dans l'autre. Ne pas supposer la direction.
+                </div>
+              )}
+              {breakout.hasTarget && (
+                <div style={{
+                  marginTop: 10, padding: "8px 12px",
+                  background: breakout.direction === "up" ? "#0a1e0f" : "#1e0808",
+                  borderRadius: 8,
+                  borderLeft: `3px solid ${breakout.direction === "up" ? "#22c55e" : "#ef4444"}`,
+                  fontSize: 11,
+                  color: breakout.direction === "up" ? "#22c55e" : "#ef4444",
+                  lineHeight: 1.6,
+                }}>
+                  {breakout.direction === "up" ? "📈" : "📉"}{" "}
+                  <strong>Objectif de breakout actif</strong> — cible indicative à{" "}
+                  {breakout.targetPct != null && breakout.targetPct > 0 ? "+" : ""}
+                  {breakout.targetPct?.toFixed(1)}% ({currency} {breakout.targetPrice?.toFixed(2)}).
+                  Valide encore ~{breakout.validBars} bougies.
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
         {/* Phase de marché */}
         <div style={{
           display: "flex", alignItems: "flex-start", gap: 10,
@@ -6629,6 +6817,7 @@ function CryptoView({ data }: { data: any }) {
   const [tvl,           setTvl]           = useState<number | null>(null);
   const [funding,       setFunding]       = useState<{ rate: number; markPrice: number } | null>(null);
   const [openInterest,  setOpenInterest]  = useState<number | null>(null);
+  const [longShort,     setLongShort]     = useState<{ ratio: number; longPct: number; shortPct: number } | null>(null);
   const [cgGlobal,      setCgGlobal]      = useState<{ btc: number; eth: number; totalMktCap: number; active_cryptocurrencies: number } | null>(null);
   const [showEur,       setShowEur]       = useState(false);
   const totalCoins  = cgGlobal?.active_cryptocurrencies ?? 15000;
@@ -6682,7 +6871,16 @@ function CryptoView({ data }: { data: any }) {
       Promise.all([
         fetch(`${PROXY}?type=coinglass&symbol=${encodeURIComponent(sym.toUpperCase())}`).then(r => r.json()).catch(() => null),
         fetch(`${PROXY}?type=openinterest&symbol=${encodeURIComponent(sym.toUpperCase())}`).then(r => r.json()).catch(() => null),
-      ]).then(([fundingData, oiData]) => {
+        fetch(`${PROXY}?type=longshort&symbol=${encodeURIComponent(sym.toUpperCase())}`).then(r => r.json()).catch(() => null),
+      ]).then(([fundingData, oiData, lsData]) => {
+        const lsEntry = Array.isArray(lsData) ? lsData[0] : null;
+        if (lsEntry?.longShortRatio != null) {
+          setLongShort({
+            ratio:    parseFloat(lsEntry.longShortRatio),
+            longPct:  parseFloat(lsEntry.longAccount)  * 100,
+            shortPct: parseFloat(lsEntry.shortAccount) * 100,
+          });
+        }
         const entry = fundingData?.fundingRate?.[0];
         if (entry) {
           const rate      = parseFloat(entry.fundingRate);
@@ -7191,6 +7389,51 @@ function CryptoView({ data }: { data: any }) {
                 )}
               </div>
             )}
+          {/* Long/Short Ratio */}
+          {longShort != null && (
+            <div style={{ width:"100%", paddingTop:12, borderTop:`1px solid ${THEME.borderPanel}` }}>
+              <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:6 }}>Ratio Long/Short (comptes Binance Futures)</div>
+              <div style={{ display:"flex", alignItems:"baseline", gap:8, marginBottom:6 }}>
+                <span style={{
+                  fontSize:28, fontWeight:900, fontFamily:"'IBM Plex Mono',monospace",
+                  color: longShort.ratio > 1.5 ? THEME.scoreRed : longShort.ratio < 0.7 ? THEME.scoreGreen : THEME.scoreAmber,
+                }}>
+                  {longShort.ratio.toFixed(2)}
+                </span>
+                <span style={{ fontSize:11, color:THEME.textMuted }}>longs / shorts</span>
+              </div>
+              <div style={{ height:8, borderRadius:4, background:"#1e2a3a", overflow:"hidden", marginBottom:6 }}>
+                <div style={{
+                  height:"100%", borderRadius:4,
+                  width:`${longShort.longPct}%`,
+                  background:`linear-gradient(90deg, ${THEME.scoreGreen}, ${THEME.scoreRed})`,
+                  transition:"width .4s ease",
+                }}/>
+              </div>
+              <div style={{ display:"flex", justifyContent:"space-between", fontSize:10, fontWeight:700, marginBottom:6 }}>
+                <span style={{ color:THEME.scoreGreen }}>Longs {longShort.longPct.toFixed(1)}%</span>
+                <span style={{ color:THEME.scoreRed }}>Shorts {longShort.shortPct.toFixed(1)}%</span>
+              </div>
+              <div style={{ fontSize:10, fontWeight:600, color:
+                longShort.ratio > 2    ? THEME.scoreRed   :
+                longShort.ratio > 1.5  ? "#f97316"        :
+                longShort.ratio < 0.67 ? THEME.scoreGreen :
+                longShort.ratio < 0.8  ? "#4ade80"        :
+                THEME.scoreAmber,
+              }}>
+                {longShort.ratio > 2    ? "Euphorie haussière — majorité écrasante de longs, risque de liquidation" :
+                 longShort.ratio > 1.5  ? "Dominance haussière — les longs sont majoritaires"                       :
+                 longShort.ratio < 0.67 ? "Dominance baissière — les shorts dominent, short squeeze possible"       :
+                 longShort.ratio < 0.8  ? "Légère dominance baissière"                                              :
+                 "Ratio équilibré — pas de signal dominant"}
+              </div>
+              <div style={{ fontSize:9, color:THEME.textMuted, marginTop:6, lineHeight:1.6 }}>
+                Mesure la proportion de comptes en position longue vs courte sur les contrats perpétuels Binance.
+                Un ratio très élevé (longs {">"} shorts) peut précéder une liquidation en cascade si le prix baisse.
+              </div>
+            </div>
+          )}
+
           {/* Open Interest */}
           {openInterest != null && (
             <div style={{ width:"100%", paddingTop:12, borderTop:`1px solid ${THEME.borderPanel}` }}>
@@ -7305,7 +7548,7 @@ function CryptoView({ data }: { data: any }) {
 type ResultType =
   | { type: "stock";  metrics: any; chartData: any; ticker: string; optimalUTKey?: string; macro?: MacroContext | null; zone?: MacroZone; eurRate?: number | null }
   | { type: "crypto"; data: any }
-  | { type: "forex";  currency: string; rate: number; allRates: Record<string, number> };
+  | { type: "forex";  currency: string; rate: number; allRates: Record<string, number>; ticker?: string };
 
 export default function App() {
   const [query,   setQuery]   = useState("");
@@ -7329,13 +7572,10 @@ export default function App() {
     setLoading(true); setResult(null); setLog([]); setError("");
     addLog(`🔍 Analyse : ${raw}`);
 
-    const isForexPattern =
-      /^[A-Z]{3}$/.test(upper) ||
-      /^[A-Z]{3}[/][A-Z]{3}$/.test(upper) ||
-      /^[A-Z]{6}$/.test(upper) ||
-      upper.endsWith("=X");
+    const assetType = detectAssetType(raw, mode);
+    const isForexPattern = assetType === "forex";
 
-    const KNOWN_CRYPTO_SYMBOLS = new Set([
+    const KNOWN_CRYPTO_SYMBOLS_LOCAL = new Set([
       "BTC","ETH","SOL","BNB","XRP","ADA","DOGE","AVAX","DOT","MATIC",
       "LINK","UNI","ATOM","LTC","BCH","XLM","ALGO","VET","ICP","FIL",
       "HBAR","ETC","MANA","SAND","AXS","THETA","XTZ","EOS","AAVE","MKR",
@@ -7345,7 +7585,8 @@ export default function App() {
     ]);
 
     const looksLikeCrypto =
-      KNOWN_CRYPTO_SYMBOLS.has(upper) ||
+      assetType === "crypto" ||
+      KNOWN_CRYPTO_SYMBOLS_LOCAL.has(upper) ||
       (/^[A-Z0-9]{2,10}-USD$/i.test(raw) && !isForexPattern);
 
     if (looksLikeCrypto || forceType?.toUpperCase() === "CRYPTOCURRENCY") {
@@ -7371,7 +7612,8 @@ export default function App() {
       const rate = rates[cur];
       if (rate) {
         addLog(`✅ EUR/${cur} = ${rate}`);
-        setResult({ type:"forex", currency:cur, rate, allRates:rates });
+        const forexTicker = `EUR${cur}=X`;
+        setResult({ type:"forex", currency:cur, rate, allRates:rates, ticker: forexTicker });
         setLoading(false); return;
       }
       addLog(`  → ${cur} absent ECB, on continue`);
@@ -7484,7 +7726,7 @@ export default function App() {
       if (d?.market_data?.current_price?.usd) {
         const isCryptoETF = yfQuoteType === "ETF" && (
           upper === "BTC" || upper === "ETH" || upper === "SOL"
-          || d.symbol?.toUpperCase() === upper
+          || (d.symbol?.toUpperCase() === upper && (d.market_cap_rank ?? 9999) <= 500)
         );
         if (!yfData?.meta?.regularMarketPrice || isCryptoETF) {
           addLog(`✅ CoinGecko : ${cgId}`);
@@ -7532,7 +7774,9 @@ export default function App() {
       setShowSuggestions(true);
       return;
     }
+    const suggestAssetType = detectAssetType(q, m);
     const isForexPattern =
+      suggestAssetType === "forex" ||
       q_upper.includes("=") ||
       /^[A-Z]{3}[\/][A-Z]{3}$/.test(q_upper) ||
       CURRENCY_CODES.has(q_upper) ||
@@ -7621,44 +7865,204 @@ export default function App() {
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
-  const ForexView = ({ currency, rate, allRates }: { currency: string; rate: number; allRates: Record<string, number> }) => (
-    <>
-    <div style={{ animation:"fadeIn .4s ease" }}>
-      <div style={{ marginBottom:20 }}>
-        <div style={{ fontSize:11, color:"#445", textTransform:"uppercase", letterSpacing:1.5, marginBottom:4 }}>
-          Banque Centrale Européenne · Officiel
+  const ForexView = ({ currency, rate, allRates, ticker: forexTicker }: { currency: string; rate: number; allRates: Record<string, number>; ticker?: string }) => {
+    const yfTicker = forexTicker ?? `EUR${currency}=X`;
+    const defaultPeriod = "1a";
+    const [period,       setPeriod]    = useState(defaultPeriod);
+    const [chartData,    setChartData] = useState<{ closes:(number|null)[]; timestamps:number[]; opens:(number|null)[]; highs:(number|null)[]; lows:(number|null)[]; volumes:(number|null)[] } | null>(null);
+    const [chartLoading, setChartLoading] = useState(false);
+
+    useEffect(() => {
+      setChartData(null);
+      setChartLoading(true);
+      const { range, interval } = CHART_RANGES[defaultPeriod] || CHART_RANGES["1a"];
+      const url = `${PROXY}?ticker=${encodeURIComponent(yfTicker)}&type=chart&range=${range}&interval=${interval}`;
+      fetch(url).then(r => r.json()).then(d => {
+        const res = d?.chart?.result?.[0];
+        if (res) {
+          const q = res.indicators?.quote?.[0] || {};
+          setChartData({
+            closes:     res.indicators?.adjclose?.[0]?.adjclose || q.close || [],
+            timestamps: res.timestamp || [],
+            opens:      q.open   || [],
+            highs:      q.high   || [],
+            lows:       q.low    || [],
+            volumes:    q.volume || [],
+          });
+        }
+      }).catch(() => {}).finally(() => setChartLoading(false));
+    }, [yfTicker]);
+
+    const loadChart = async (p: string) => {
+      setChartLoading(true);
+      try {
+        const { range, interval } = CHART_RANGES[p] || CHART_RANGES["1a"];
+        const url = `${PROXY}?ticker=${encodeURIComponent(yfTicker)}&type=chart&range=${range}&interval=${interval}`;
+        const d   = await (await fetch(url)).json();
+        const res = d?.chart?.result?.[0];
+        if (res) {
+          const q = res.indicators?.quote?.[0] || {};
+          setChartData({
+            closes:     res.indicators?.adjclose?.[0]?.adjclose || q.close || [],
+            timestamps: res.timestamp || [],
+            opens:      q.open   || [],
+            highs:      q.high   || [],
+            lows:       q.low    || [],
+            volumes:    q.volume || [],
+          });
+        }
+      } catch {}
+      setChartLoading(false);
+    };
+
+    const closes  = chartData?.closes  ?? [];
+    const highs   = chartData?.highs   ?? [];
+    const lows    = chartData?.lows    ?? [];
+    const volumes = chartData?.volumes ?? [];
+    const chartInterval: "1d" | "1wk" | "1mo" =
+      period === "10a" ? "1mo" : period === "3a" || period === "5a" ? "1wk" : "1d";
+
+    const marketCtx = (closes.length > 20 && highs.length > 20 && lows.length > 20)
+      ? classifyMarketContext(closes, highs, lows, volumes)
+      : null;
+    const techComputed = closes.length > 0
+      ? computeTechSignals(closes, volumes, highs, lows, chartInterval)
+      : { signals: [], sinewave: null };
+    const confluenceResult = (closes.length > 0 && highs.length > 0 && lows.length > 0)
+      ? calcConfluenceScore(closes, highs, lows, volumes)
+      : null;
+    const finalScoreResult = marketCtx
+      ? computeFinalScore(null, marketCtx, techComputed.signals, closes, confluenceResult?.score ?? null)
+      : null;
+    const finalScore = finalScoreResult?.score ?? null;
+    const v = getVerdict(finalScore);
+
+    const entryRec = (finalScoreResult && techComputed)
+      ? computeEntryRecommendation(
+          null,
+          finalScoreResult.context,
+          techComputed.signals,
+          techComputed.sinewave,
+          null,
+          finalScore,
+          null,
+        )
+      : { type: "none" as const, icon: "", title: "", reasons: [], triggers: [] };
+
+    return (
+      <>
+      <div style={{ animation:"fadeIn .4s ease" }}>
+        {/* En-tête */}
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize:11, color:"#445", textTransform:"uppercase", letterSpacing:1.5, marginBottom:4 }}>
+            Banque Centrale Européenne · Officiel
+          </div>
+          <div style={{ fontSize:22, fontWeight:800, color:THEME.textPrimary, marginBottom:8 }}>
+            EUR / {currency}<TypeBadge type="CURRENCY"/>
+          </div>
+          <div style={{ display:"flex", alignItems:"baseline", gap:12, flexWrap:"wrap" }}>
+            <span style={{ fontSize:38, fontWeight:900, color:THEME.accent, fontFamily:"'IBM Plex Mono',monospace" }}>
+              {parseFloat(String(rate)).toFixed(4)}
+            </span>
+            <span style={{ fontSize:13, color:"#556" }}>1 EUR = {rate} {currency}</span>
+          </div>
         </div>
-        <div style={{ fontSize:22, fontWeight:800, color:THEME.textPrimary, marginBottom:8 }}>
-          EUR / {currency}<TypeBadge type="CURRENCY"/>
-        </div>
-        <span style={{ fontSize:38, fontWeight:900, color:THEME.accent, fontFamily:"'IBM Plex Mono',monospace" }}>
-          {parseFloat(String(rate)).toFixed(4)}
-        </span>
-        <span style={{ fontSize:13, color:"#556", marginLeft:8 }}>1 EUR = {rate} {currency}</span>
-      </div>
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(120px,1fr))", gap:7 }}>
-        {Object.entries(allRates).sort().map(([cur, r]) => (
-          <div key={cur} style={{
-            background:THEME.bgCardAlt,
-            border:`1px solid ${cur === currency ? THEME.accent : THEME.borderMid}`,
-            borderRadius:8, padding:"8px 12px"
+
+        {/* Verdict technique */}
+        {v && finalScore != null && (
+          <div style={{
+            background: v.color + "0f", border: `1px solid ${v.color}33`,
+            borderRadius: 14, padding: "14px 18px", marginBottom: 14,
           }}>
-            <div style={{ fontSize:9, color:"#445" }}>EUR / {cur}</div>
-            <div style={{ fontSize:13, fontWeight:700, fontFamily:"'IBM Plex Mono',monospace" }}>
-              {parseFloat(String(r)).toFixed(4)}
+            <div style={{ fontSize:18, fontWeight:900, color:v.color, marginBottom:4 }}>{v.emoji} {v.label}</div>
+            <div style={{ fontSize:11, color:THEME.textSecondary, lineHeight:1.4 }}>{v.desc}</div>
+            <div style={{ display:"flex", alignItems:"baseline", gap:6, marginTop:8 }}>
+              <span style={{ fontSize:30, fontWeight:900, color:scoreColor(finalScore), fontFamily:"'IBM Plex Mono',monospace" }}>{finalScore}</span>
+              <span style={{ fontSize:12, color:THEME.textSecondary }}>/10 · Timing Technique</span>
             </div>
           </div>
-        ))}
-      </div>
-      <div style={{ marginTop:10, fontSize:10, color:"#333", textAlign:"right" }}>
-        Source : Banque Centrale Européenne · Temps réel
-      </div>
-    </div>
+        )}
 
-      {/* ── Actualités Forex ── */}
-      <NewsPanel ticker={query} quoteType="CURRENCY" />
-    </>
-  );
+        {/* Recommandation d'entrée */}
+        <EntryRecommendationPanel rec={entryRec}/>
+
+        {/* Graphique */}
+        <div style={{ background:THEME.bgPanel, border:`1px solid ${THEME.borderPanel}`, borderRadius:12, padding:"14px 18px", marginBottom:10 }}>
+          <div style={{ fontSize:10, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.2, marginBottom:8 }}>
+            Performance historique · {yfTicker}
+          </div>
+          {chartLoading && (
+            <div style={{ color:THEME.textMuted, fontSize:12, padding:"30px 0", textAlign:"center" }}>Chargement…</div>
+          )}
+          {!chartLoading && chartData && (
+            <InteractiveChart
+              chartData={chartData}
+              currency={currency}
+              quoteType="CURRENCY"
+              period={period}
+              onPeriodChange={p => { setPeriod(p); loadChart(p); }}
+              loading={chartLoading}
+            />
+          )}
+          {!chartLoading && !chartData && (
+            <div style={{ color:THEME.textMuted, fontSize:12, padding:"20px 0", textAlign:"center" }}>
+              Données graphique indisponibles pour {yfTicker}
+            </div>
+          )}
+        </div>
+
+        {/* Contexte de marché */}
+        {marketCtx && finalScoreResult && (
+          <MarketContextPanel context={finalScoreResult.context} modifiers={finalScoreResult.modifiers}/>
+        )}
+
+        {/* Signaux oscillateurs */}
+        <TechnicalPanel precomputed={techComputed} context={finalScoreResult?.context ?? null}/>
+
+        {/* Projection & Confluence */}
+        {closes.length >= 50 && (
+          <ProjectionPanel
+            closes={closes}
+            highs={highs}
+            lows={lows}
+            volumes={volumes}
+            currency={currency}
+            chartInterval={chartInterval}
+            period={period}
+            marketContext={finalScoreResult?.context ?? null}
+          />
+        )}
+
+        {/* Grille taux ECB */}
+        <div style={{ marginTop:14 }}>
+          <div style={{ fontSize:10, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:8 }}>
+            Taux de change ECB · Toutes devises
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(120px,1fr))", gap:7 }}>
+            {Object.entries(allRates).sort().map(([cur, r]) => (
+              <div key={cur} style={{
+                background:THEME.bgCardAlt,
+                border:`1px solid ${cur === currency ? THEME.accent : THEME.borderMid}`,
+                borderRadius:8, padding:"8px 12px"
+              }}>
+                <div style={{ fontSize:9, color:"#445" }}>EUR / {cur}</div>
+                <div style={{ fontSize:13, fontWeight:700, fontFamily:"'IBM Plex Mono',monospace" }}>
+                  {parseFloat(String(r)).toFixed(4)}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div style={{ marginTop:8, fontSize:10, color:"#333", textAlign:"right" }}>
+            Source : Banque Centrale Européenne · Temps réel
+          </div>
+        </div>
+
+        {/* Actualités */}
+        <NewsPanel ticker={yfTicker} quoteType="CURRENCY"/>
+      </div>
+      </>
+    );
+  };
 
   return (
     <div style={{ minHeight:"100vh", background:THEME.bgPage, fontFamily:"'IBM Plex Sans','Segoe UI',sans-serif", color:THEME.textPrimary, overflowX:"hidden", maxWidth:"100vw" }}>
