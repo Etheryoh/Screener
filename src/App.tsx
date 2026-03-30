@@ -6698,6 +6698,108 @@ function resampleToMonthly(weekly: {
   };
 }
 
+// ── SYNTHÈSE SENTIMENT CRYPTO (lecture croisée) ───────────────
+interface CryptoSentimentSynthesis {
+  emoji:   string;
+  color:   string;
+  bg:      string;
+  border:  string;
+  title:   string;
+  body:    string;
+  badge:   string;
+}
+
+function computeCryptoSentimentSynthesis(
+  fearGreed:    { value: number; label: string } | null,
+  longShort:    { ratio: number; longPct: number; shortPct: number } | null,
+  funding:      { rate: number; markPrice: number } | null,
+  openInterest: number | null,
+): CryptoSentimentSynthesis | null {
+  const fg  = fearGreed?.value   ?? null;
+  const ls  = longShort?.ratio   ?? null;
+  const fr  = funding?.rate      ?? null;
+  const lp  = longShort?.longPct ?? null;
+
+  // Données insuffisantes
+  if (fg == null && ls == null && fr == null) return null;
+
+  // ── MATRICE DE LECTURE CROISÉE ────────────────────────────
+  // Priorité 1 : Peur extrême + longs piégés + funding négatif → capitulation
+  if (fg != null && fg <= 15 && ls != null && ls > 1.8 && fr != null && fr < -0.0001) {
+    return {
+      emoji: "💥", color: "#ef4444", bg: "#1e0808", border: "#ef4444",
+      badge: "Risque de cascade",
+      title: "Peur extrême + longs piégés + shorts dominants",
+      body: `Fear & Greed à ${fg}/100, ${lp?.toFixed(1) ?? "—"}% de longs, funding négatif (${fr != null ? (fr*100).toFixed(4)+"%" : "—"}) — configuration classique de cascade baissière avant capitulation. Les longs n'ont pas encore liquidé, ce qui amplifie le risque de chute brutale.`,
+    };
+  }
+
+  // Priorité 2 : Peur extrême + shorts dominants + funding négatif → rebond violent possible
+  if (fg != null && fg <= 15 && ls != null && ls < 0.7 && fr != null && fr < -0.0002) {
+    return {
+      emoji: "🌀", color: "#22c55e", bg: "#0a1e0f", border: "#22c55e",
+      badge: "Short squeeze potentiel",
+      title: "Peur extrême + shorts écrasants + funding très négatif",
+      body: `Fear & Greed à ${fg}/100, ${longShort?.shortPct?.toFixed(1) ?? "—"}% de shorts, funding à ${fr != null ? (fr*100).toFixed(4)+"%" : "—"} — capitulation des acheteurs proche de son terme. Quand tout le monde est vendu et que le funding est très négatif, le prochain catalyseur haussier peut déclencher un short squeeze violent.`,
+    };
+  }
+
+  // Priorité 3 : Euphorie + longs dominants + funding positif → retournement imminent
+  if (fg != null && fg >= 80 && ls != null && ls > 2.0 && fr != null && fr > 0.0003) {
+    return {
+      emoji: "⚠️", color: "#ef4444", bg: "#1e0808", border: "#ef4444",
+      badge: "Euphorie dangereuse",
+      title: "Extreme Greed + longs en surchauffe + funding élevé",
+      body: `Fear & Greed à ${fg}/100, ${lp?.toFixed(1) ?? "—"}% de longs, funding à ${fr != null ? "+"+( fr*100).toFixed(4)+"%" : "—"} — euphorie généralisée. Les longs paient cher pour maintenir leurs positions. Historiquement, cette configuration précède des corrections de 15 à 40% en quelques semaines.`,
+    };
+  }
+
+  // Priorité 4 : Greed élevé + longs dominants mais funding modéré → prudence
+  if (fg != null && fg >= 70 && ls != null && ls > 1.6) {
+    return {
+      emoji: "🔶", color: "#f59e0b", bg: "#1a1000", border: "#f59e0b",
+      badge: "Optimisme excessif",
+      title: "Greed élevé + dominance haussière",
+      body: `Fear & Greed à ${fg}/100 avec ${lp?.toFixed(1) ?? "—"}% de longs — le marché est optimiste mais pas encore en euphorie complète. ${fr != null ? `Funding à ${(fr*100).toFixed(4)}% — ` : ""}Les entrées à ce niveau offrent un rapport risque/rendement dégradé. Attendre un repli vers des niveaux plus neutres (F&G 40-60).`,
+    };
+  }
+
+  // Priorité 5 : Fear modéré + shorts dominants + funding négatif → opportunité en construction
+  if (fg != null && fg <= 30 && ls != null && ls < 0.85 && fr != null && fr < 0) {
+    return {
+      emoji: "🔍", color: "#60a5fa", bg: "#111d30", border: "#60a5fa",
+      badge: "Zone d'accumulation",
+      title: "Peur modérée + shorts dominants + funding négatif",
+      body: `Fear & Greed à ${fg}/100, ${longShort?.shortPct?.toFixed(1) ?? "—"}% de shorts, funding négatif (${(fr*100).toFixed(4)}%) — les acheteurs sont pessimistes et les vendeurs à découvert abondants. Cette configuration précède souvent une phase d'accumulation avant rebond. Confirmer avec un signal technique (creux de cycle ou RSI < 35).`,
+    };
+  }
+
+  // Priorité 6 : Neutralité — signaux contradictoires ou peu lisibles
+  if (fg != null && fg >= 40 && fg <= 60 && ls != null && ls >= 0.9 && ls <= 1.3) {
+    return {
+      emoji: "⚖️", color: "#94a3b8", bg: THEME.bgCard, border: THEME.borderMid,
+      badge: "Sentiment neutre",
+      title: "Marché en équilibre — pas de signal dominant",
+      body: `Fear & Greed à ${fg}/100, ratio Long/Short à ${ls?.toFixed(2) ?? "—"}${fr != null ? `, funding à ${(fr*100).toFixed(4)}%` : ""} — le sentiment est équilibré. Aucun excès détecté dans un sens ou dans l'autre. Le prochain mouvement directionnel sera probablement déclenché par un catalyseur externe (macro, réglementation, liquidation de grande taille).`,
+    };
+  }
+
+  // Fallback : au moins Fear & Greed disponible
+  if (fg != null) {
+    const fgColor = fg <= 25 ? "#ef4444" : fg <= 45 ? "#f97316" : fg <= 55 ? "#94a3b8" : fg <= 75 ? "#f59e0b" : "#22c55e";
+    const fgDesc  = fg <= 25 ? "Peur extrême" : fg <= 45 ? "Peur" : fg <= 55 ? "Neutre" : fg <= 75 ? "Greed" : "Extreme Greed";
+    return {
+      emoji: fg <= 45 ? "😨" : fg <= 55 ? "😐" : "😄",
+      color: fgColor, bg: THEME.bgCard, border: fgColor,
+      badge: fgDesc,
+      title: `Fear & Greed à ${fg}/100 — ${fgDesc}`,
+      body: `${ls != null ? `Ratio Long/Short : ${ls.toFixed(2)} (${lp?.toFixed(1) ?? "—"}% longs). ` : ""}${fr != null ? `Funding : ${fr > 0 ? "+" : ""}${(fr*100).toFixed(4)}%. ` : ""}${fg <= 25 ? "Le marché est dans un état de peur prononcée — surveiller un signal technique de retournement pour envisager une entrée." : fg >= 75 ? "L'optimisme est élevé — la marge de sécurité pour entrer est réduite." : "Sentiment intermédiaire — croiser avec l'analyse technique."}`,
+    };
+  }
+
+  return null;
+}
+
 function CryptoView({ data }: { data: any }) {
   const md     = data.market_data || {};
   const price    = md.current_price?.usd as number | undefined;
@@ -7337,6 +7439,54 @@ function CryptoView({ data }: { data: any }) {
       {(fearGreed != null || funding != null) && (
         <Panel icon="🌡️" title="Sentiment de marché" borderColor={THEME.borderPanel} defaultOpen={true}>
           <div style={{ display:"flex", flexWrap:"wrap", gap:24, alignItems:"flex-start" }}>
+
+            {/* ── Synthèse de lecture croisée ── */}
+            {(() => {
+              const synth = computeCryptoSentimentSynthesis(fearGreed, longShort, funding, openInterest);
+              if (!synth) return null;
+              return (
+                <div style={{
+                  width: "100%",
+                  padding: "14px 16px",
+                  background: synth.bg,
+                  borderRadius: 10,
+                  border: `1px solid ${synth.border}55`,
+                  borderLeft: `4px solid ${synth.border}`,
+                  marginBottom: 4,
+                }}>
+                  <div style={{
+                    display: "flex", alignItems: "center", gap: 10, marginBottom: 8,
+                  }}>
+                    <span style={{ fontSize: 18 }}>{synth.emoji}</span>
+                    <div>
+                      <span style={{
+                        fontSize: 10, fontWeight: 800,
+                        color: synth.color,
+                        background: synth.color + "22",
+                        borderRadius: 4, padding: "2px 8px",
+                        textTransform: "uppercase", letterSpacing: 1.2,
+                        marginRight: 8,
+                      }}>{synth.badge}</span>
+                    </div>
+                    <div style={{ fontSize: 9, color: THEME.textMuted, textTransform: "uppercase", letterSpacing: 1.5, marginLeft: "auto" }}>
+                      Lecture croisée
+                    </div>
+                  </div>
+                  <div style={{
+                    fontSize: 13, fontWeight: 700, color: synth.color,
+                    lineHeight: 1.4, marginBottom: 8,
+                  }}>
+                    {synth.title}
+                  </div>
+                  <div style={{
+                    fontSize: 12, color: THEME.textSecondary,
+                    lineHeight: 1.8,
+                  }}>
+                    {synth.body}
+                  </div>
+                </div>
+              );
+            })()}
 
             {fearGreed != null && (
               <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4, minWidth:130 }}>
