@@ -964,6 +964,49 @@ function calcEMA(closes: (number|null)[], period: number): number | null {
   return parseFloat(ema.toFixed(2));
 }
 
+function calcBollingerBands(
+  closes: (number|null)[],
+  period = 20,
+  mult   = 2,
+): { upper: (number|null)[]; middle: (number|null)[]; lower: (number|null)[] } | null {
+  const validPairs: { val: number; origIdx: number }[] = [];
+  for (let i = 0; i < closes.length; i++) {
+    if (closes[i] != null) validPairs.push({ val: closes[i] as number, origIdx: i });
+  }
+  if (validPairs.length < period) return null;
+
+  const upper:  (number|null)[] = new Array(closes.length).fill(null);
+  const middle: (number|null)[] = new Array(closes.length).fill(null);
+  const lower:  (number|null)[] = new Array(closes.length).fill(null);
+
+  for (let j = period - 1; j < validPairs.length; j++) {
+    const slice = validPairs.slice(j - period + 1, j + 1).map(p => p.val);
+    const mean  = slice.reduce((a, b) => a + b, 0) / period;
+    const std   = Math.sqrt(slice.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / period);
+    const oi    = validPairs[j].origIdx;
+    upper[oi]   = parseFloat((mean + mult * std).toFixed(4));
+    middle[oi]  = parseFloat(mean.toFixed(4));
+    lower[oi]   = parseFloat((mean - mult * std).toFixed(4));
+  }
+  return { upper, middle, lower };
+}
+
+function calcEMASeries(closes: (number|null)[], period: number): (number|null)[] {
+  const result: (number|null)[] = new Array(closes.length).fill(null);
+  const validPairs: { val: number; origIdx: number }[] = [];
+  for (let i = 0; i < closes.length; i++) {
+    if (closes[i] != null) validPairs.push({ val: closes[i] as number, origIdx: i });
+  }
+  if (validPairs.length < period) return result;
+  const k = 2 / (period + 1);
+  let ema = validPairs.slice(0, period).reduce((a, b) => a + b.val, 0) / period;
+  for (let j = period; j < validPairs.length; j++) {
+    ema = validPairs[j].val * k + ema * (1 - k);
+    result[validPairs[j].origIdx] = parseFloat(ema.toFixed(4));
+  }
+  return result;
+}
+
 function calcMACD(closes: (number|null)[]): { macd: number; signal: number; hist: number } | null {
   const c = closes.filter((v): v is number => v != null);
   if (c.length < 35) return null;
@@ -3356,8 +3399,475 @@ interface ChartData {
   timestamps: number[];
 }
 
-function InteractiveChart({
+// ── GRAPHIQUE TECHNIQUE EN CHANDELIERS ──────────────────────────
+type OverlayKey = "bb" | "ema20" | "ema50" | "ema200" | "target" | "regression";
+
+function CandleChart({
   chartData,
+  currency,
+  breakoutTarget,
+}: {
+  chartData: {
+    closes:     (number|null)[];
+    opens:      (number|null)[];
+    highs:      (number|null)[];
+    lows:       (number|null)[];
+    volumes:    (number|null)[];
+    timestamps: number[];
+  } | null;
+  currency:      string;
+  breakoutTarget?: { hasTarget: boolean; targetPrice: number | null; direction: "up" | "down" | null } | null;
+}) {
+  const svgRef = useRef<SVGSVGElement>(null);
+
+  const [activeOverlays, setActiveOverlays] = useState<Set<OverlayKey>>(
+    new Set(["bb", "ema20", "ema50", "ema200", "target"] as OverlayKey[])
+  );
+  const [tooltip, setTooltip] = useState<{
+    x: number; o: number; h: number; l: number; c: number; v: number; date: string;
+  } | null>(null);
+
+  const toggleOverlay = (key: OverlayKey) => {
+    setActiveOverlays(prev => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+  };
+
+  if (!chartData) return (
+    <div style={{ color: THEME.textMuted, fontSize: 12, padding: "30px 0", textAlign: "center" }}>
+      Données OHLCV indisponibles
+    </div>
+  );
+
+  const { closes, opens, highs, lows, volumes, timestamps } = chartData;
+
+  // Bougies valides
+  const candles: { o:number; h:number; l:number; c:number; v:number; ts:number; origIdx:number }[] = [];
+  for (let i = 0; i < closes.length; i++) {
+    const o = opens[i], h = highs[i], l = lows[i], c = closes[i];
+    if (o != null && h != null && l != null && c != null) {
+      candles.push({ o, h, l, c, v: volumes[i] ?? 0, ts: timestamps[i] ?? 0, origIdx: i });
+    }
+  }
+  if (candles.length < 10) return (
+    <div style={{ color: THEME.textMuted, fontSize: 12, padding: "30px 0", textAlign: "center" }}>
+      Données insuffisantes (minimum 10 bougies OHLC)
+    </div>
+  );
+
+  // Limiter aux 120 dernières bougies
+  const display = candles.slice(-120);
+  const N       = display.length;
+
+  // ── OVERLAYS (calculés sur closes complets) ──
+  const bb        = calcBollingerBands(closes);
+  const ema20S    = calcEMASeries(closes, 20);
+  const ema50S    = calcEMASeries(closes, 50);
+  const ema200S   = calcEMASeries(closes, 200);
+  const reg       = calcRegressionDeviation(closes);
+  const swData    = calcSinewave(closes);
+
+  // Sinewave series pour le sous-panel
+  const sineSeriesDisplay: (number|null)[] = new Array(N).fill(null);
+  const leadSeriesDisplay: (number|null)[] = new Array(N).fill(null);
+  const momSeriesDisplay:  (number|null)[] = new Array(N).fill(null);
+  (() => {
+    const c = closes.filter((v): v is number => v != null);
+    if (c.length < 50) return;
+    const last120 = display.map(d => d.c);
+    // ROC-14 momentum sur les 120 dernières bougies
+    for (let i = 14; i < last120.length; i++) {
+      const roc = ((last120[i] - last120[i - 14]) / last120[i - 14]) * 100;
+      momSeriesDisplay[i] = parseFloat(roc.toFixed(2));
+    }
+    // Sinewave sur toutes les closes valides, puis extraire les 120 dernières
+    const N2 = c.length;
+    const sp = new Array(N2).fill(0);
+    for (let i = 3; i < N2; i++) sp[i] = (c[i] + 2*c[i-1] + 2*c[i-2] + c[i-3]) / 6;
+    const Per = new Array(N2).fill(10), Smp = new Array(N2).fill(10);
+    const Det = new Array(N2).fill(0), Q1 = new Array(N2).fill(0);
+    const I1 = new Array(N2).fill(0), jI = new Array(N2).fill(0), jQ = new Array(N2).fill(0);
+    const I2 = new Array(N2).fill(0), Q2 = new Array(N2).fill(0);
+    const Re = new Array(N2).fill(0), Im = new Array(N2).fill(0);
+    const Ph = new Array(N2).fill(0), Sn = new Array(N2).fill(0), LSn = new Array(N2).fill(0);
+    for (let i = 10; i < N2; i++) {
+      const a = 0.075 * Smp[i-1] + 0.54;
+      Det[i] = (0.0962*sp[i]+0.5769*sp[i-2]-0.5769*sp[i-4]-0.0962*sp[i-6])*a;
+      Q1[i]  = (0.0962*Det[i]+0.5769*Det[i-2]-0.5769*Det[i-4]-0.0962*Det[i-6])*a;
+      I1[i]  = Det[i-3];
+      jI[i]  = 0.33*I1[i]+0.67*I1[i-1];
+      jQ[i]  = 0.33*Q1[i]+0.67*Q1[i-1];
+      I2[i]  = 0.2*(I1[i]-jQ[i])+0.8*I2[i-1];
+      Q2[i]  = 0.2*(Q1[i]+jI[i])+0.8*Q2[i-1];
+      Re[i]  = 0.2*(I2[i]*I2[i-1]+Q2[i]*Q2[i-1])+0.8*Re[i-1];
+      Im[i]  = 0.2*(I2[i]*Q2[i-1]-Q2[i]*I2[i-1])+0.8*Im[i-1];
+      let p  = Per[i-1];
+      if (Im[i]!==0&&Re[i]!==0){const ang=Math.atan(Im[i]/Re[i]);if(ang!==0)p=2*Math.PI/Math.abs(ang);}
+      if(p>1.5*Per[i-1])p=1.5*Per[i-1];if(p<0.67*Per[i-1])p=0.67*Per[i-1];
+      if(p<6)p=6;if(p>50)p=50;
+      Per[i]=p; Smp[i]=0.33*p+0.67*Smp[i-1];
+      Ph[i] = I1[i]!==0?(180/Math.PI)*Math.atan(Q1[i]/I1[i]):Ph[i-1];
+      Sn[i] = Math.sin(Ph[i]*Math.PI/180);
+      LSn[i]= Math.sin((Ph[i]+45)*Math.PI/180);
+    }
+    const validOrigIdxs = candles.map(d => d.origIdx);
+    const displayOrigIdxs = display.map(d => d.origIdx);
+    displayOrigIdxs.forEach((origIdx, dispI) => {
+      const posInValid = validOrigIdxs.indexOf(origIdx);
+      if (posInValid >= 0 && posInValid < N2) {
+        sineSeriesDisplay[dispI] = parseFloat(Sn[posInValid].toFixed(3));
+        leadSeriesDisplay[dispI] = parseFloat(LSn[posInValid].toFixed(3));
+      }
+    });
+  })();
+
+  // ── DIMENSIONS ──
+  const W = 800, HPRICE = 240, HOSC = 70, HVOL = 44;
+  const PAD_L = 62, PAD_R = 14, PAD_T = 10, PAD_B = 20, SEP = 8;
+  const chartW = W - PAD_L - PAD_R;
+
+  // Y prix (inclure BB dans l'échelle si actif)
+  const pricePts = display.flatMap(d => [d.h, d.l]);
+  const bbPts: number[] = activeOverlays.has("bb")
+    ? display.flatMap(d => [
+        bb?.upper[d.origIdx] ?? d.h,
+        bb?.lower[d.origIdx] ?? d.l,
+      ])
+    : [];
+  const allPriceVals = [...pricePts, ...bbPts].filter(v => v != null && isFinite(v));
+  const yPriceMin = Math.min(...allPriceVals) * 0.9985;
+  const yPriceMax = Math.max(...allPriceVals) * 1.0015;
+  const yPriceRange = yPriceMax - yPriceMin || 1;
+
+  const toX      = (i: number) => PAD_L + (i + 0.5) * (chartW / N);
+  const toPriceY = (v: number) => PAD_T + HPRICE - ((v - yPriceMin) / yPriceRange) * HPRICE;
+
+  // Y oscillateur
+  const oscTop  = PAD_T + HPRICE + SEP + HVOL + SEP;
+  const oscBot  = oscTop + HOSC;
+  const toSineY  = (v: number) => oscTop + HOSC/2 - (v * HOSC/2);
+  const toMomY   = (v: number) => {
+    const clamped = Math.max(-30, Math.min(30, v));
+    return oscTop + HOSC/2 - (clamped / 30) * (HOSC/2);
+  };
+
+  // Y volume
+  const volTop  = PAD_T + HPRICE + SEP;
+  const maxVol  = Math.max(...display.map(d => d.v), 1);
+  const toVolY  = (v: number) => volTop + HVOL - (v / maxVol) * (HVOL - 2);
+
+  // Candlestick width
+  const cw = Math.max(2, Math.min(10, (chartW / N) * 0.72));
+
+  // Ticks Y (5 niveaux prix)
+  const yTicks = Array.from({ length: 5 }, (_, i) => {
+    const val = yPriceMin + (i / 4) * yPriceRange;
+    return { val, y: toPriceY(val) };
+  });
+
+  // Ticks X (max 5)
+  const xStep = Math.max(1, Math.floor(N / 5));
+  const xTicks = display
+    .filter((_, i) => i === 0 || i === N-1 || i % xStep === 0)
+    .slice(0, 6)
+    .map(d => {
+      const date = new Date(d.ts * 1000);
+      return { x: toX(display.indexOf(d)), label: date.toLocaleDateString("fr-FR", { month:"short", year:"2-digit" }) };
+    });
+
+  const fmtP = (n: number) => n >= 1000 ? n.toFixed(0) : n >= 10 ? n.toFixed(2) : n.toFixed(4);
+
+  // Polyline builder
+  const polyline = (vals: (number|null)[], toY: (v: number) => number) =>
+    vals.map((v, i) => v != null ? `${toX(i)},${toY(v)}` : null)
+        .filter(Boolean).join(" ");
+
+  // Régression : droite de tendance
+  const regY1 = reg && reg.r2 >= 0.4
+    ? toPriceY(reg.trendPrice * (1 + (reg.deviation / 100) * (1 - (N / Math.max(N, 252)))))
+    : null;
+  const regY2 = reg && reg.r2 >= 0.4 ? toPriceY(reg.trendPrice) : null;
+
+  // Breakout target
+  const btY = breakoutTarget?.hasTarget && breakoutTarget.targetPrice != null
+    ? toPriceY(breakoutTarget.targetPrice)
+    : null;
+  const btColor = breakoutTarget?.direction === "up" ? "#22c55e" : "#ef4444";
+
+  const totalH = oscBot + PAD_B;
+
+  const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const svgX = ((e.clientX - rect.left) / rect.width) * W;
+    const relX = svgX - PAD_L;
+    if (relX < 0 || relX > chartW) { setTooltip(null); return; }
+    const idx = Math.min(Math.max(Math.floor((relX / chartW) * N), 0), N-1);
+    const d   = display[idx];
+    const date = new Date(d.ts * 1000).toLocaleDateString("fr-FR", { day:"numeric", month:"short", year:"numeric" });
+    setTooltip({ x: toX(idx), o: d.o, h: d.h, l: d.l, c: d.c, v: d.v, date });
+  };
+
+  // ── OVERLAY DEFINITIONS (pills) ──
+  const OVERLAYS: { key: OverlayKey; label: string; color: string }[] = [
+    { key: "bb",         label: "BB",         color: "#f59e0b" },
+    { key: "ema20",      label: "EMA 20",     color: "#22c55e" },
+    { key: "ema50",      label: "EMA 50",     color: "#60a5fa" },
+    { key: "ema200",     label: "EMA 200",    color: "#a78bfa" },
+    { key: "regression", label: "Régression", color: "#fb923c" },
+    { key: "target",     label: "Target",     color: "#ef4444" },
+  ];
+
+  return (
+    <div>
+      {/* Pills overlays */}
+      <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:10, alignItems:"center" }}>
+        {OVERLAYS.map(ov => {
+          const active = activeOverlays.has(ov.key);
+          return (
+            <button
+              key={ov.key}
+              onClick={() => toggleOverlay(ov.key)}
+              style={{
+                padding:"3px 10px",
+                borderRadius:20,
+                border:`1px solid ${active ? ov.color : THEME.borderMid}`,
+                background: active ? ov.color + "22" : "transparent",
+                color: active ? ov.color : THEME.textMuted,
+                fontSize:10, fontWeight:700, cursor:"pointer",
+                transition:"all .15s",
+              }}
+            >
+              {ov.label}
+            </button>
+          );
+        })}
+        <span style={{ fontSize:9, color:THEME.textMuted, marginLeft:"auto" }}>
+          120 bougies · {currency}
+        </span>
+      </div>
+
+      {/* SVG principal */}
+      <div style={{ position:"relative" }}>
+        <svg
+          ref={svgRef}
+          width="100%"
+          viewBox={`0 0 ${W} ${totalH}`}
+          style={{ overflow:"visible", cursor:"crosshair", display:"block" }}
+          onMouseMove={handleMouseMove}
+          onMouseLeave={() => setTooltip(null)}
+        >
+          {/* ── GRILLE PRIX ── */}
+          {yTicks.map((t, i) => (
+            <g key={i}>
+              <line x1={PAD_L} y1={t.y} x2={W-PAD_R} y2={t.y}
+                stroke={THEME.borderPanel} strokeWidth="1" strokeDasharray="3,4"/>
+              <text x={PAD_L-5} y={t.y+4} textAnchor="end"
+                fontSize="9" fill="#556" fontFamily="'IBM Plex Mono',monospace">
+                {fmtP(t.val)}
+              </text>
+            </g>
+          ))}
+
+          {/* ── GRILLE X ── */}
+          {xTicks.map((t, i) => (
+            <text key={i} x={t.x} y={PAD_T + HPRICE + SEP + HVOL + 14}
+              textAnchor="middle" fontSize="9" fill="#556">
+              {t.label}
+            </text>
+          ))}
+
+          {/* ── OVERLAY RÉGRESSION ── */}
+          {activeOverlays.has("regression") && regY1 != null && regY2 != null && (
+            <line
+              x1={PAD_L} y1={regY1} x2={W-PAD_R} y2={regY2}
+              stroke="#fb923c" strokeWidth="1.5" strokeOpacity="0.7" strokeDasharray="6,3"
+            />
+          )}
+
+          {/* ── OVERLAY BB ── */}
+          {activeOverlays.has("bb") && bb && (() => {
+            const upPts  = polyline(display.map(d => bb.upper[d.origIdx]),  toPriceY);
+            const midPts = polyline(display.map(d => bb.middle[d.origIdx]), toPriceY);
+            const lowPts = polyline(display.map(d => bb.lower[d.origIdx]),  toPriceY);
+            return (
+              <>
+                <polyline points={upPts}  fill="none" stroke="#f59e0b" strokeWidth="1" strokeOpacity="0.55" strokeDasharray="3,2"/>
+                <polyline points={midPts} fill="none" stroke="#f59e0b" strokeWidth="1.2" strokeOpacity="0.85"/>
+                <polyline points={lowPts} fill="none" stroke="#f59e0b" strokeWidth="1" strokeOpacity="0.55" strokeDasharray="3,2"/>
+              </>
+            );
+          })()}
+
+          {/* ── OVERLAY EMA 20 ── */}
+          {activeOverlays.has("ema20") && (() => {
+            const pts = polyline(display.map(d => ema20S[d.origIdx]), toPriceY);
+            return pts ? <polyline points={pts} fill="none" stroke="#22c55e" strokeWidth="1.5" strokeOpacity="0.85"/> : null;
+          })()}
+
+          {/* ── OVERLAY EMA 50 ── */}
+          {activeOverlays.has("ema50") && (() => {
+            const pts = polyline(display.map(d => ema50S[d.origIdx]), toPriceY);
+            return pts ? <polyline points={pts} fill="none" stroke="#60a5fa" strokeWidth="1.5" strokeOpacity="0.8" strokeDasharray="5,2"/> : null;
+          })()}
+
+          {/* ── OVERLAY EMA 200 ── */}
+          {activeOverlays.has("ema200") && (() => {
+            const pts = polyline(display.map(d => ema200S[d.origIdx]), toPriceY);
+            return pts ? <polyline points={pts} fill="none" stroke="#a78bfa" strokeWidth="2" strokeOpacity="0.8" strokeDasharray="7,3"/> : null;
+          })()}
+
+          {/* ── OVERLAY BREAKOUT TARGET ── */}
+          {activeOverlays.has("target") && btY != null
+            && btY >= PAD_T && btY <= PAD_T + HPRICE && (
+            <>
+              <line x1={PAD_L} y1={btY} x2={W-PAD_R} y2={btY}
+                stroke={btColor} strokeWidth="1.5" strokeOpacity="0.9" strokeDasharray="8,4"/>
+              <text x={W-PAD_R-4} y={btY-4} textAnchor="end"
+                fontSize="9" fill={btColor} fontFamily="'IBM Plex Mono',monospace">
+                cible {fmtP(breakoutTarget?.targetPrice ?? 0)}
+              </text>
+            </>
+          )}
+
+          {/* ── CHANDELIERS ── */}
+          {display.map((d, i) => {
+            const up      = d.c >= d.o;
+            const col     = up ? "#22c55e" : "#ef4444";
+            const bodyTop = toPriceY(Math.max(d.o, d.c));
+            const bodyBot = toPriceY(Math.min(d.o, d.c));
+            const bodyH   = Math.max(1, bodyBot - bodyTop);
+            const x       = toX(i);
+            return (
+              <g key={i}>
+                <line x1={x} y1={toPriceY(d.h)} x2={x} y2={toPriceY(d.l)}
+                  stroke={col} strokeWidth="1" strokeOpacity="0.75"/>
+                <rect x={x-cw/2} y={bodyTop} width={cw} height={bodyH}
+                  fill={col} fillOpacity={up ? 0.8 : 0.75}
+                  stroke={col} strokeWidth="0.4"/>
+              </g>
+            );
+          })}
+
+          {/* ── CURSEUR VERTICAL ── */}
+          {tooltip && (
+            <line x1={tooltip.x} y1={PAD_T} x2={tooltip.x} y2={oscBot}
+              stroke="#ffffff18" strokeWidth="1" strokeDasharray="3,3"/>
+          )}
+
+          {/* ── SÉPARATEUR VOLUME ── */}
+          <line x1={PAD_L} y1={volTop} x2={W-PAD_R} y2={volTop}
+            stroke={THEME.borderSubtle} strokeWidth="0.5"/>
+
+          {/* ── BARRES VOLUME ── */}
+          {display.map((d, i) => {
+            const up    = d.c >= d.o;
+            const col   = up ? "#22c55e" : "#ef4444";
+            const x     = toX(i);
+            const barH  = (d.v / maxVol) * (HVOL - 4);
+            return (
+              <rect key={i}
+                x={x-cw/2} y={volTop + HVOL - barH}
+                width={cw} height={barH}
+                fill={col} fillOpacity="0.3"
+              />
+            );
+          })}
+
+          {/* ── SÉPARATEUR OSCILLATEUR ── */}
+          <line x1={PAD_L} y1={oscTop} x2={W-PAD_R} y2={oscTop}
+            stroke={THEME.borderSubtle} strokeWidth="0.5"/>
+
+          {/* ── OSC : LABELS ── */}
+          <text x={PAD_L-5} y={oscTop + HOSC/2 + 4} textAnchor="end"
+            fontSize="8" fill="#556">0</text>
+          <text x={PAD_L-5} y={oscTop + 8} textAnchor="end"
+            fontSize="8" fill="#60a5fa">+30</text>
+          <text x={PAD_L-5} y={oscBot - 2} textAnchor="end"
+            fontSize="8" fill="#ef4444">-30</text>
+
+          {/* ── OSC : GRILLE 0 ── */}
+          <line x1={PAD_L} y1={oscTop + HOSC/2} x2={W-PAD_R} y2={oscTop + HOSC/2}
+            stroke={THEME.borderSubtle} strokeWidth="0.5"/>
+
+          {/* ── OSC : ZONES SEUIL MOMENTUM (±5) ── */}
+          {[5, -5].map((v, i) => (
+            <line key={i}
+              x1={PAD_L} y1={toMomY(v)} x2={W-PAD_R} y2={toMomY(v)}
+              stroke="#60a5fa" strokeWidth="0.5" strokeOpacity="0.4" strokeDasharray="3,3"/>
+          ))}
+
+          {/* ── OSC : MOMENTUM ROC-14 (bleu) ── */}
+          {(() => {
+            const pts = polyline(momSeriesDisplay, toMomY);
+            return pts ? (
+              <polyline points={pts} fill="none" stroke="#60a5fa" strokeWidth="1.5" strokeOpacity="0.9"/>
+            ) : null;
+          })()}
+
+          {/* ── OSC : SINEWAVE (rouge) ── */}
+          {(() => {
+            const sinePts = polyline(sineSeriesDisplay, toSineY);
+            const leadPts = polyline(leadSeriesDisplay, toSineY);
+            return (
+              <>
+                {sinePts && <polyline points={sinePts} fill="none" stroke="#ef4444" strokeWidth="1.5" strokeOpacity="0.85"/>}
+                {leadPts && <polyline points={leadPts} fill="none" stroke="#ef444488" strokeWidth="1" strokeOpacity="0.7" strokeDasharray="4,2"/>}
+              </>
+            );
+          })()}
+
+          {/* ── OSC : LABELS LÉGENDE ── */}
+          <text x={PAD_L+6}   y={oscTop+10} fontSize="9" fill="#60a5fa" fontWeight="700">Momentum</text>
+          <text x={PAD_L+72}  y={oscTop+10} fontSize="9" fill="#ef4444" fontWeight="700">· Sinewave</text>
+          <text x={PAD_L+130} y={oscTop+10} fontSize="9" fill="#ef444488">· Lead</text>
+
+        </svg>
+
+        {/* ── TOOLTIP ── */}
+        {tooltip && (
+          <div style={{
+            position:"absolute",
+            left:`${(tooltip.x / W) * 100}%`,
+            top: 4,
+            transform: tooltip.x / W > 0.68
+              ? "translateX(-100%) translateX(-8px)"
+              : "translateX(8px)",
+            background: THEME.bgCard,
+            border:`1px solid ${tooltip.c >= tooltip.o ? "#22c55e44" : "#ef444444"}`,
+            borderRadius:7, padding:"7px 12px",
+            pointerEvents:"none", whiteSpace:"nowrap", zIndex:10,
+            fontSize:10, fontFamily:"'IBM Plex Mono',monospace",
+          }}>
+            <div style={{ fontSize:9, color:THEME.textMuted, marginBottom:5 }}>{tooltip.date}</div>
+            <div style={{ display:"grid", gridTemplateColumns:"auto auto", gap:"2px 14px" }}>
+              {[["O", tooltip.o, THEME.textSecondary],
+                ["H", tooltip.h, "#22c55e"],
+                ["L", tooltip.l, "#ef4444"],
+                ["C", tooltip.c, tooltip.c >= tooltip.o ? "#22c55e" : "#ef4444"],
+                ["V", tooltip.v, THEME.textMuted],
+              ].map(([lbl, val, col]) => (
+                <>
+                  <span style={{ color: THEME.textMuted }}>{lbl as string}</span>
+                  <span style={{ color: col as string, fontWeight: lbl === "C" ? 700 : 400 }}>
+                    {lbl === "V" ? fmt(val as number, 0) : fmtP(val as number)}
+                  </span>
+                </>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── PERFCHART — graphique de performance unifié (remplace InteractiveChart + CryptoChart) ──
+function PerfChart({
+  chartData,
+  chartDataWeekly,
   currency,
   quoteType,
   onPeriodChange,
@@ -3366,272 +3876,199 @@ function InteractiveChart({
   optimalUTKey,
   periods: periodsProp,
 }: {
-  chartData:      ChartData | null;
-  currency:       string;
-  quoteType?:     string;
-  onPeriodChange: (p: string) => void;
-  period:         string;
-  loading:        boolean;
-  optimalUTKey?:  string;
-  periods?:       { key: string; label: string }[];
+  chartData:        { closes:(number|null)[]; timestamps:number[] } | null;
+  chartDataWeekly?: { closes:(number|null)[]; opens:(number|null)[]; highs:(number|null)[]; lows:(number|null)[]; volumes:(number|null)[]; timestamps:number[] } | null;
+  currency:         string;
+  quoteType?:       string;
+  onPeriodChange:   (p: string) => void;
+  period:           string;
+  loading:          boolean;
+  optimalUTKey?:    string;
+  periods?:         { key: string; label: string }[];
 }) {
-  const svgRef  = useRef<SVGSVGElement>(null);
-  const [tooltip, setTooltip] = useState<{ x: number; y: number; price: number; date: string } | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+  const [tooltip, setTooltip] = useState<{ x:number; y:number; price:number; date:string } | null>(null);
 
-  const PERIODS = periodsProp ?? (quoteType === "CRYPTOCURRENCY"
-    ? [{ key:"7j", label:"7j" }, { key:"1m", label:"1m" }, { key:"3m", label:"3m" }, { key:"6m", label:"6m" }, { key:"1a", label:"1a" }]
-    : [{ key:"3m", label:"3 mois" }, { key:"1a", label:"1 an" }, { key:"2a", label:"2 ans" }, { key:"3a", label:"3 ans" }, { key:"5a", label:"5 ans" }, { key:"10a", label:"10 ans" }]);
+  const PERIODS_DEFAULT = periodsProp ?? (quoteType === "CRYPTOCURRENCY"
+    ? [{ key:"7j",  label:"7j" }, { key:"1m",  label:"1m" }, { key:"3m",  label:"3m" },
+       { key:"6m",  label:"6m" }, { key:"1a",  label:"1a" }, { key:"2a",  label:"2a" },
+       { key:"3a",  label:"3a" }, { key:"5a",  label:"5a" }, { key:"max", label:"Max" }]
+    : [{ key:"3m",  label:"3 mois" }, { key:"1a",  label:"1 an" },
+       { key:"2a",  label:"2 ans" },  { key:"3a",  label:"3 ans" },
+       { key:"5a",  label:"5 ans" },  { key:"10a", label:"10 ans" }]);
 
-  const closes     = chartData?.closes     ?? [];
-  const timestamps = chartData?.timestamps ?? [];
+  const useWeekly    = (period === "5a" || period === "max") && chartDataWeekly != null;
+  const use3aMonthly = period === "3a" && chartDataWeekly != null;
+  const sourceRaw    =
+    use3aMonthly ? resampleToMonthly(chartDataWeekly!) :
+    useWeekly    ? chartDataWeekly! :
+                   chartData;
 
-  // Paires (timestamp, prix) filtrées
-  // Fallback : si timestamps absent (proxy ne les transmet pas), on les génère
-  const now = Math.floor(Date.now() / 1000);
   const PERIOD_SECS: Record<string, number> = {
-    "7j": 7*86400, "1m": 30*86400, "3m": 90*86400, "6m": 180*86400,
-    "1a": 365*86400, "2a": 2*365*86400, "3a": 3*365*86400, "5a": 5*365*86400, "10a": 10*365*86400,
+    "7j":7*86400,"1m":30*86400,"3m":90*86400,"6m":180*86400,
+    "1a":365*86400,"2a":730*86400,"3a":1095*86400,"5a":1825*86400,"max":Infinity,
   };
   const periodSecs = PERIOD_SECS[period] ?? 365*86400;
-  const hasTimestamps = timestamps.length > 0;
+  const nowSec     = Math.floor(Date.now()/1000);
+  const cutoffTs   = isFinite(periodSecs) ? nowSec - periodSecs : 0;
 
-  const points: { ts: number; price: number }[] = [];
+  const source     = sourceRaw ?? chartData;
+  const closes     = source?.closes     ?? [];
+  const timestamps = source?.timestamps ?? [];
+
+  const points: { ts:number; price:number }[] = [];
   for (let i = 0; i < closes.length; i++) {
-    const p = closes[i];
-    if (p == null || isNaN(p)) continue;
-    const ts = hasTimestamps && timestamps[i] != null
-      ? timestamps[i]
-      : Math.floor((now - periodSecs) + (i / Math.max(closes.length - 1, 1)) * periodSecs);
+    const p  = closes[i];
+    const ts = timestamps[i];
+    if (p == null || isNaN(p) || ts == null) continue;
+    if (cutoffTs > 0 && ts < cutoffTs) continue;
     points.push({ ts, price: p });
   }
-
-  // Filtrage côté client selon la période demandée
-  // (le Worker peut retourner plus de données que nécessaire)
-  const PERIOD_DAYS: Record<string, number> = {
-    "3m": 92, "1a": 366, "2a": 2*366, "3a": 3*366, "5a": 5*366, "10a": 10*366
-  };
-  const cutoffDays = PERIOD_DAYS[period] ?? 366;
-  const cutoffTs   = Math.floor(Date.now() / 1000) - cutoffDays * 86400;
-  const filtered   = points.filter(p => p.ts >= cutoffTs);
-  const displayPts = filtered.length >= 2 ? filtered : points;
+  const displayPts = points.length >= 2 ? points : [];
 
   if (displayPts.length < 2) return (
-    <div style={{ color:"#334", fontSize:12, padding:"30px 0", textAlign:"center" }}>
+    <div style={{ color:THEME.textMuted, fontSize:12, padding:"30px 0", textAlign:"center" }}>
       {loading ? "Chargement…" : "Données graphique indisponibles"}
     </div>
   );
 
-  // ── BASE 100 (style TradingView) ────────────────────────────────
-  // Chaque point est exprimé relativement au premier : base100[i] = prix[i] / prix[0] * 100
-  const base0 = displayPts[0].price;
+  const base0   = displayPts[0].price || 1;
   const indexed = displayPts.map(p => (p.price / base0) * 100);
-
-  const minI = Math.min(...indexed);
-  const maxI = Math.max(...indexed);
-  const yPad  = (maxI - minI) * 0.08; // 8% de marge haut et bas
-  const yMin  = Math.max(0, minI - yPad);
-  const yMax  = maxI + yPad;
-  const yRange = yMax - yMin || 1;
+  const minI    = Math.min(...indexed), maxI = Math.max(...indexed);
+  const yPad    = (maxI - minI) * 0.08;
+  const yMin    = Math.max(0, minI - yPad), yMax = maxI + yPad;
+  const yRange  = yMax - yMin || 1;
 
   const W = 800, H = 260, PAD_L = 52, PAD_R = 12, PAD_T = 12, PAD_B = 28;
-  const chartW = W - PAD_L - PAD_R;
-  const chartH = H - PAD_T - PAD_B;
+  const chartW = W - PAD_L - PAD_R, chartH = H - PAD_T - PAD_B;
 
-  const toX = (i: number) => PAD_L + (i / (displayPts.length - 1)) * chartW;
-  const toY = (val: number) => PAD_T + chartH - ((val - yMin) / yRange) * chartH;
+  const toX = (i:number) => PAD_L + (i / (displayPts.length-1)) * chartW;
+  const toY = (v:number) => PAD_T + chartH - ((v-yMin)/yRange)*chartH;
 
-  const polyPts = indexed.map((v, i) => `${toX(i)},${toY(v)}`).join(" ");
+  const up      = indexed[indexed.length-1] >= 100;
+  const c       = up ? "#22c55e" : "#ef4444";
+  const chgPct  = (indexed[indexed.length-1]-100).toFixed(1);
+  const polyPts = indexed.map((v,i) => `${toX(i)},${toY(v)}`).join(" ");
   const areaBot = H - PAD_B;
   const areaPts = `${PAD_L},${areaBot} ${polyPts} ${toX(displayPts.length-1)},${areaBot}`;
-
-  const up = indexed[indexed.length-1] >= 100;
-  const c  = up ? "#22c55e" : "#ef4444";
-  const chgPct = (indexed[indexed.length-1] - 100).toFixed(1);
-
-  // Ligne de base 100 (prix de départ = référence)
   const baseLineY = toY(100);
 
-  // Axe Y : repères ronds dans le range visible
   const amplitude = maxI - minI;
   const tickStep  = amplitude > 150 ? 50 : amplitude > 60 ? 25 : amplitude > 25 ? 10 : 5;
   const firstTick = Math.ceil(yMin / tickStep) * tickStep;
-  const yTicks = Array.from(
+  const yTicks    = Array.from(
     { length: Math.floor((yMax - firstTick) / tickStep) + 1 },
     (_, i) => firstTick + i * tickStep
-  )
-  .filter(v => v >= yMin && v <= yMax)
-  .map(v => ({ val: v, y: toY(v) }));
+  ).filter(v => v >= yMin && v <= yMax).map(v => ({ val:v, y:toY(v) }));
 
-  // Axe X : repères temporels (max 5)
-  const xStep = Math.max(1, Math.floor(displayPts.length / 5));
+  const xStep  = Math.max(1, Math.floor(displayPts.length / 5));
   const xTicks = displayPts
-    .filter((_, i) => i === 0 || i === displayPts.length - 1 || i % xStep === 0)
+    .filter((_,i) => i===0 || i===displayPts.length-1 || i%xStep===0)
     .slice(0, 6)
-    .map((p, _, arr) => {
+    .map(p => {
       const i = displayPts.indexOf(p);
       const d = new Date(p.ts * 1000);
       const label = period === "3m"
-        ? d.toLocaleDateString("fr-FR", { day:"numeric", month:"short" })
+        ? d.toLocaleDateString("fr-FR",{day:"numeric",month:"short"})
         : period === "1a"
-        ? d.toLocaleDateString("fr-FR", { month:"short", year:"2-digit" })
-        : d.toLocaleDateString("fr-FR", { month:"short", year:"numeric" });
-      return { x: toX(i), label };
+        ? d.toLocaleDateString("fr-FR",{month:"short",year:"2-digit"})
+        : d.toLocaleDateString("fr-FR",{month:"short",year:"numeric"});
+      return { x:toX(i), label };
     });
 
-  // Formatage prix
-  const fmtPrice = (n: number) => {
-    if (n >= 1000) return n.toFixed(0);
-    if (n >= 100)  return n.toFixed(1);
-    if (n >= 1)    return n.toFixed(2);
-    return n.toFixed(4);
-  };
+  const fmtPrice = (n:number) =>
+    n>=1000 ? n.toFixed(0) : n>=100 ? n.toFixed(1) : n>=1 ? n.toFixed(2) : n.toFixed(4);
 
-  const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
+  const handleMouseMove = (e:React.MouseEvent<SVGSVGElement>) => {
     const rect = svgRef.current?.getBoundingClientRect();
     if (!rect) return;
-    const svgX = ((e.clientX - rect.left) / rect.width) * W;
+    const svgX = ((e.clientX-rect.left)/rect.width)*W;
     const relX = svgX - PAD_L;
-    if (relX < 0 || relX > chartW) { setTooltip(null); return; }
-    const idx    = Math.min(Math.max(Math.round((relX / chartW) * (displayPts.length - 1)), 0), displayPts.length - 1);
+    if (relX<0||relX>chartW){setTooltip(null);return;}
+    const idx    = Math.min(Math.max(Math.round((relX/chartW)*(displayPts.length-1)),0),displayPts.length-1);
     const pt     = displayPts[idx];
-    const idxVal = indexed[idx]; // valeur base 100 — utilisée pour le point SVG
-    const d      = new Date(pt.ts * 1000);
-    const dateStr = d.toLocaleDateString("fr-FR", { day:"numeric", month:"long", year:"numeric" });
-    setTooltip({ x: toX(idx), y: toY(idxVal), price: pt.price, date: dateStr });
+    const idxVal = indexed[idx];
+    const dateStr = new Date(pt.ts*1000).toLocaleDateString("fr-FR",{day:"numeric",month:"long",year:"numeric"});
+    setTooltip({x:toX(idx),y:toY(idxVal),price:pt.price,date:dateStr});
   };
+
+  const periodLabel = PERIODS_DEFAULT.find(p=>p.key===period)?.label ?? period;
 
   return (
     <div>
-      {/* Barre titre + boutons période */}
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10, flexWrap:"wrap", gap:8 }}>
-        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-          <span style={{ fontSize:11, color:c, fontWeight:700 }}>
-            {up ? "▲" : "▼"} {Math.abs(parseFloat(chgPct))}% sur {CHART_RANGES[period]?.label ?? period}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10,flexWrap:"wrap",gap:8}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <span style={{fontSize:11,color:c,fontWeight:700}}>
+            {up?"▲":"▼"} {Math.abs(parseFloat(chgPct))}% sur {periodLabel}
           </span>
-          <span style={{ fontSize:10, color:THEME.textSecondary }}>
+          <span style={{fontSize:10,color:THEME.textSecondary}}>
             {fmtPrice(displayPts[0].price)} → {fmtPrice(displayPts[displayPts.length-1].price)} {currency}
-
           </span>
         </div>
-        <div style={{ display:"flex", gap:4, overflowX:"auto", flexShrink:1, minWidth:0, paddingBottom:2 }}>
-          {PERIODS.map(p => (
-            <button
-              key={p.key}
-              onClick={() => onPeriodChange(p.key)}
-              disabled={loading}
-              style={{
-                background: period === p.key ? c + "22" : "transparent",
-                border: `1px solid ${period === p.key ? c : THEME.borderMid}`,
-                color:  period === p.key ? c : "#556",
-                borderRadius: 5, padding: "3px 9px",
-                fontSize: 10, fontWeight: 700, cursor: "pointer",
-                transition: "all .15s",
-              }}
-            >
+        <div style={{display:"flex",gap:4,overflowX:"auto",flexShrink:1,minWidth:0,paddingBottom:2}}>
+          {PERIODS_DEFAULT.map(p => (
+            <button key={p.key} onClick={()=>onPeriodChange(p.key)} disabled={loading} style={{
+              background: period===p.key ? c+"22" : "transparent",
+              border:`1px solid ${period===p.key ? c : THEME.borderMid}`,
+              color: period===p.key ? c : "#556",
+              borderRadius:5,padding:"3px 9px",fontSize:10,fontWeight:700,cursor:"pointer",transition:"all .15s",
+            }}>
               {p.label}
-              {p.key === optimalUTKey && <span style={{ fontSize:6, marginLeft:3, color:THEME.accent, verticalAlign:"super" }}>●</span>}
+              {p.key===optimalUTKey&&<span style={{fontSize:6,marginLeft:3,color:THEME.accent,verticalAlign:"super"}}>●</span>}
             </button>
           ))}
         </div>
       </div>
-
-      {/* SVG graphique */}
-      <div style={{ position:"relative" }}>
-        <svg
-          ref={svgRef}
-          width="100%" viewBox={`0 0 ${W} ${H}`}
-          style={{ overflow:"visible", cursor:"crosshair", display:"block" }}
-          onMouseMove={handleMouseMove}
-          onMouseLeave={() => setTooltip(null)}
-        >
+      <div style={{position:"relative"}}>
+        <svg ref={svgRef} width="100%" viewBox={`0 0 ${W} ${H}`}
+          style={{overflow:"visible",cursor:"crosshair",display:"block"}}
+          onMouseMove={handleMouseMove} onMouseLeave={()=>setTooltip(null)}>
           <defs>
-            <linearGradient id="cg" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%"   stopColor={c} stopOpacity="0.18"/>
+            <linearGradient id="pfg" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={c} stopOpacity="0.18"/>
               <stop offset="100%" stopColor={c} stopOpacity="0"/>
             </linearGradient>
           </defs>
-
-          {/* Grille horizontale */}
-          {yTicks.map((t, i) => (
+          {yTicks.map((t,i)=>(
             <g key={i}>
-              <line x1={PAD_L} y1={t.y} x2={W - PAD_R} y2={t.y}
+              <line x1={PAD_L} y1={t.y} x2={W-PAD_R} y2={t.y}
                 stroke={THEME.borderPanel} strokeWidth="1" strokeDasharray="3,4"/>
-              <text x={PAD_L - 6} y={t.y + 4} textAnchor="end"
+              <text x={PAD_L-6} y={t.y+4} textAnchor="end"
                 fontSize="9" fill="#445" fontFamily="'IBM Plex Mono',monospace">
-                {t.val >= 1 ? Math.round(t.val) : ""}
+                {t.val>=1?Math.round(t.val):""}
               </text>
             </g>
           ))}
-
-          {/* Axe X labels */}
-          {xTicks.map((t, i) => (
-            <text key={i} x={t.x} y={H - PAD_B + 16} textAnchor="middle"
-              fontSize="9" fill="#445">
-              {t.label}
-            </text>
+          {xTicks.map((t,i)=>(
+            <text key={i} x={t.x} y={H-PAD_B+16} textAnchor="middle" fontSize="9" fill="#445">{t.label}</text>
           ))}
-
-          {/* Ligne de base 100 — prix de départ */}
-          <line
-            x1={PAD_L} y1={baseLineY} x2={W - PAD_R} y2={baseLineY}
-            stroke="#ffffff18" strokeWidth="1" strokeDasharray="4,3"
-          />
-          <text x={PAD_L - 6} y={baseLineY + 4} textAnchor="end"
-            fontSize="9" fill="#666" fontFamily="'IBM Plex Mono',monospace">
-            100
-          </text>
-
-          {/* Aire */}
-          <polygon points={areaPts} fill="url(#cg)"/>
-
-          {/* Courbe */}
-          <polyline points={polyPts} fill="none" stroke={c}
-            strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"/>
-
-          {/* Ligne verticale tooltip */}
-          {tooltip && (
-            <line x1={tooltip.x} y1={PAD_T} x2={tooltip.x} y2={H - PAD_B}
-              stroke="#ffffff22" strokeWidth="1" strokeDasharray="3,3"/>
-          )}
-
-          {/* Point tooltip */}
-          {tooltip && (
-            <circle cx={tooltip.x} cy={tooltip.y} r="4"
-              fill={c} stroke={THEME.bgPage} strokeWidth="2"/>
-          )}
+          <line x1={PAD_L} y1={baseLineY} x2={W-PAD_R} y2={baseLineY}
+            stroke="#ffffff18" strokeWidth="1" strokeDasharray="4,3"/>
+          <text x={PAD_L-6} y={baseLineY+4} textAnchor="end"
+            fontSize="9" fill="#666" fontFamily="'IBM Plex Mono',monospace">100</text>
+          <polygon points={areaPts} fill="url(#pfg)"/>
+          <polyline points={polyPts} fill="none" stroke={c} strokeWidth="2"
+            strokeLinejoin="round" strokeLinecap="round"/>
+          {tooltip&&<line x1={tooltip.x} y1={PAD_T} x2={tooltip.x} y2={H-PAD_B}
+            stroke="#ffffff22" strokeWidth="1" strokeDasharray="3,3"/>}
+          {tooltip&&<circle cx={tooltip.x} cy={tooltip.y} r="4"
+            fill={c} stroke={THEME.bgPage} strokeWidth="2"/>}
         </svg>
-
-        {/* Tooltip bulle */}
-        {tooltip && (
+        {tooltip&&(
           <div style={{
-            position: "absolute",
-            left: `${(tooltip.x / W) * 100}%`,
-            top: 0,
-            // Si on est dans le tiers droit → ancrer à droite du curseur, sinon centré
-            transform: tooltip.x / W > 0.72
-              ? "translateX(-100%) translateX(-8px)"
-              : tooltip.x / W < 0.15
-              ? "translateX(8px)"
-              : "translateX(-50%)",
-            background: THEME.bgCard,
-            border: `1px solid ${c}55`,
-            borderRadius: 7,
-            padding: "6px 11px",
-            pointerEvents: "none",
-            maxWidth: "200px",
-            whiteSpace: "nowrap",
-            zIndex: 10,
+            position:"absolute",
+            left:`${(tooltip.x/W)*100}%`,top:0,
+            transform:tooltip.x/W>0.72?"translateX(-100%) translateX(-8px)":tooltip.x/W<0.15?"translateX(8px)":"translateX(-50%)",
+            background:THEME.bgCard,border:`1px solid ${c}55`,borderRadius:7,
+            padding:"6px 11px",pointerEvents:"none",maxWidth:"200px",whiteSpace:"nowrap",zIndex:10,
           }}>
-            {/* Performance relative depuis le début de la période */}
-            <div style={{ fontSize:12, color:c, fontWeight:800, fontFamily:"'IBM Plex Mono',monospace" }}>
-              {((tooltip.price / base0 - 1) * 100) >= 0 ? "+" : ""}
-              {((tooltip.price / base0 - 1) * 100).toFixed(2)}%
+            <div style={{fontSize:12,color:c,fontWeight:800,fontFamily:"'IBM Plex Mono',monospace"}}>
+              {((tooltip.price/base0-1)*100)>=0?"+":""}{((tooltip.price/base0-1)*100).toFixed(2)}%
             </div>
-            {/* Prix réel — comme TradingView */}
-            <div style={{ fontSize:10, color:THEME.textSecondary, fontFamily:"'IBM Plex Mono',monospace", marginTop:1 }}>
+            <div style={{fontSize:10,color:THEME.textSecondary,fontFamily:"'IBM Plex Mono',monospace",marginTop:1}}>
               {fmtPrice(tooltip.price)} {currency}
             </div>
-            <div style={{ fontSize:9, color:"#445", marginTop:2 }}>{tooltip.date}</div>
+            <div style={{fontSize:9,color:"#445",marginTop:2}}>{tooltip.date}</div>
           </div>
         )}
       </div>
@@ -3639,6 +4076,105 @@ function InteractiveChart({
   );
 }
 
+// ── CHARTBLOCK — wrapper unifié toggle Performance / Technique ──
+function ChartBlock({
+  chartData,
+  chartDataWeekly,
+  currency,
+  quoteType,
+  period,
+  periods,
+  onPeriodChange,
+  loading,
+  optimalUTKey,
+  showEur,
+  setShowEur,
+  eurRate,
+  priceValue,
+}: {
+  chartData:        { closes:(number|null)[]; opens:(number|null)[]; highs:(number|null)[]; lows:(number|null)[]; volumes:(number|null)[]; timestamps:number[] } | null;
+  chartDataWeekly?: { closes:(number|null)[]; opens:(number|null)[]; highs:(number|null)[]; lows:(number|null)[]; volumes:(number|null)[]; timestamps:number[] } | null;
+  currency:         string;
+  quoteType?:       string;
+  period:           string;
+  periods?:         { key:string; label:string }[];
+  onPeriodChange:   (p:string) => void;
+  loading:          boolean;
+  optimalUTKey?:    string;
+  showEur?:         boolean;
+  setShowEur?:      (v:boolean) => void;
+  eurRate?:         number | null;
+  priceValue?:      number | null;
+}) {
+  const [chartMode, setChartMode] = useState<"perf"|"tech">("perf");
+
+  const breakoutForChart = (chartData && chartData.closes.length > 0 && chartData.highs.length > 0)
+    ? calcBreakoutTarget(chartData.closes, chartData.highs, chartData.lows)
+    : null;
+
+  const hasCandleData = chartData != null &&
+    chartData.opens.filter((v): v is number => v != null).length >= 10;
+
+  return (
+    <div style={{background:THEME.bgPanel,border:`1px solid ${THEME.borderPanel}`,borderRadius:12,padding:"14px 18px",marginBottom:4}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10,flexWrap:"wrap",gap:8}}>
+        <div style={{fontSize:10,color:THEME.textMuted,textTransform:"uppercase",letterSpacing:1.2}}>
+          {chartMode==="perf" ? "Performance historique" : "Analyse technique"}
+        </div>
+        <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+          {chartMode==="perf" && eurRate!=null && eurRate!==1 && priceValue!=null && setShowEur && (
+            <button onClick={()=>setShowEur(!showEur)} style={{
+              background: showEur ? THEME.accent+"33" : THEME.scoreAmber+"22",
+              border:`1px solid ${showEur ? THEME.accent : THEME.scoreAmber}`,
+              borderRadius:8,padding:"5px 14px",fontSize:13,fontWeight:800,
+              color: showEur ? THEME.accent : THEME.scoreAmber,
+              cursor:"pointer",transition:"all .15s",fontFamily:"'IBM Plex Mono',monospace",
+            }}>
+              {showEur ? `↩ ${currency}` : `≈ ${(priceValue*eurRate).toLocaleString("fr-FR",{minimumFractionDigits:2,maximumFractionDigits:2})} EUR`}
+            </button>
+          )}
+          <div style={{display:"flex",gap:4}}>
+            {(["perf","tech"] as const).map(m => (
+              <button key={m} onClick={()=>setChartMode(m)} style={{
+                background: chartMode===m ? THEME.accent+"22" : "transparent",
+                border:`1px solid ${chartMode===m ? THEME.accent : THEME.borderMid}`,
+                color: chartMode===m ? THEME.accent : THEME.textMuted,
+                borderRadius:6,padding:"4px 12px",fontSize:10,fontWeight:700,cursor:"pointer",
+              }}>
+                {m==="perf" ? "Performance" : "Technique"}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+      {chartMode==="perf" ? (
+        <PerfChart
+          chartData={chartData}
+          chartDataWeekly={chartDataWeekly}
+          currency={currency}
+          quoteType={quoteType}
+          period={period}
+          periods={periods}
+          onPeriodChange={onPeriodChange}
+          loading={loading}
+          optimalUTKey={optimalUTKey}
+        />
+      ) : hasCandleData ? (
+        <CandleChart
+          chartData={chartData}
+          currency={currency}
+          breakoutTarget={breakoutForChart}
+        />
+      ) : (
+        <div style={{color:THEME.textMuted,fontSize:12,padding:"30px 0",textAlign:"center"}}>
+          {loading ? "Chargement des données OHLCV…" : "Données OHLCV insuffisantes pour le graphique technique."}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// InteractiveChart supprimé — remplacé par PerfChart + ChartBlock
 function ScoreGauge({ score }: { score: number | null }) {
   if (score == null) return null;
   const cx = 91, cy = 80, r = 67;
@@ -5182,6 +5718,7 @@ function EntryRecommendationPanel({ rec }: { rec: EntryRecommendation }) {
   );
 }
 
+
 function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey, macro, zone, eurRate }: {
   metrics: any; chartData: any; ticker: string; optimalUTKey?: string; macro?: MacroContext | null; zone?: MacroZone; eurRate?: number | null;
 }) {
@@ -5565,30 +6102,6 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
               {change1d >= 0 ? "▲" : "▼"} {Math.abs(change1d * 100).toFixed(2)}%
             </span>
           )}
-          {eurRate != null && eurRate !== 1 && metrics.price != null && (
-            <button
-              onClick={() => setShowEur(v => !v)}
-              style={{
-                background: showEur ? THEME.accent + "33" : THEME.scoreAmber + "22",
-                border: `1px solid ${showEur ? THEME.accent : THEME.scoreAmber}`,
-                borderRadius: 8,
-                padding: "5px 14px",
-                fontSize: 13,
-                fontWeight: 800,
-                color: showEur ? THEME.accent : THEME.scoreAmber,
-                cursor: "pointer",
-                transition: "all .15s",
-                fontFamily: "'IBM Plex Mono',monospace",
-                letterSpacing: 0.5,
-                alignSelf: "center",
-              }}
-            >
-              {showEur
-                ? `↩ ${currency}`
-                : `≈ ${(metrics.price * eurRate).toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} EUR`
-              }
-            </button>
-          )}
         </div>
       </div>
 
@@ -5840,21 +6353,21 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
         return <EntryRecommendationPanel rec={entryRec}/>;
       })()}
 
-      {/* GRAPHIQUE INTERACTIF */}
-      <div style={{ background: THEME.bgPanel, border: `1px solid ${THEME.borderPanel}`, borderRadius: 12, padding: "14px 18px", marginBottom: 4 }}>
-        <div style={{ fontSize: 10, color: THEME.textMuted, textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 8 }}>
-          Performance historique
-        </div>
-        <InteractiveChart
-          chartData={chartData}
-          currency={currency}
-          quoteType={quoteType}
-          period={period}
-          onPeriodChange={handlePeriodChange}
-          loading={chartLoading}
-          optimalUTKey={optimalUTKey}
-        />
-      </div>
+      {/* GRAPHIQUE */}
+      <ChartBlock
+        chartData={chartData}
+        currency={currency}
+        quoteType={quoteType}
+        period={period}
+        periods={Object.entries(CHART_RANGES).map(([k,v])=>({key:k,label:v.label}))}
+        onPeriodChange={handlePeriodChange}
+        loading={chartLoading}
+        optimalUTKey={optimalUTKey}
+        showEur={showEur}
+        setShowEur={setShowEur}
+        eurRate={eurRate}
+        priceValue={metrics?.price ?? null}
+      />
 
       {/* CONTEXTE DE MARCHÉ */}
       {marketCtx && finalScoreResult && (
@@ -6445,223 +6958,6 @@ async function translateToFr(text: string): Promise<string> {
   } catch { return text; }
 }
 
-function CryptoChart({
-  chartData,
-  chartDataWeekly,
-  currency,
-  period,
-  periods,
-  onPeriodChange,
-  loading,
-  optimalUTKey,
-}: {
-  chartData:        { closes: (number|null)[]; timestamps: number[]; opens: (number|null)[]; highs: (number|null)[]; lows: (number|null)[]; volumes: (number|null)[] } | null;
-  chartDataWeekly?: { closes: (number|null)[]; timestamps: number[]; opens: (number|null)[]; highs: (number|null)[]; lows: (number|null)[]; volumes: (number|null)[] } | null;
-  currency: string;
-  period: string;
-  periods: { key: string; label: string; days: number | "max" }[];
-  onPeriodChange: (p: string) => void;
-  loading: boolean;
-  optimalUTKey?: string;
-}) {
-  const svgRef = useRef<SVGSVGElement>(null);
-  const [tooltip, setTooltip] = useState<{ x: number; y: number; price: number; date: string } | null>(null);
-
-  const PERIOD_SECS: Record<string, number> = {
-    "7j":  7    * 86400,
-    "1m":  30   * 86400,
-    "3m":  90   * 86400,
-    "6m":  180  * 86400,
-    "1a":  365  * 86400,
-    "2a":  730  * 86400,
-    "3a":  1095 * 86400,
-    "5a":  1825 * 86400,
-    "max": 10 * 365 * 86400,
-  };
-
-  const periodSecs = PERIOD_SECS[period] ?? Infinity;
-
-  let displayPts: { ts: number; price: number }[] = [];
-  let base0 = 1, indexed: number[] = [], up = true, c = "#22c55e", chgPct = "0";
-  let baseLineY = 0, yMin = 0, yMax = 100, yRange = 100;
-  let yTicks: { val: number; y: number }[] = [], xTicks: { x: number; label: string }[] = [];
-  let polyPts = "", areaPts = "";
-  const W = 800, H = 260, PAD_L = 52, PAD_R = 12, PAD_T = 12, PAD_B = 28;
-  const chartW = W - PAD_L - PAD_R;
-  const chartH = H - PAD_T - PAD_B;
-  const toX = (i: number) => PAD_L + (i / Math.max(displayPts.length - 1, 1)) * chartW;
-  const toY = (val: number) => PAD_T + chartH - ((val - yMin) / yRange) * chartH;
-  let renderError = false;
-
-  try {
-    const useWeekly = (period === "5a" || period === "max") && chartDataWeekly != null;
-    const sourceData = useWeekly ? chartDataWeekly : chartData;
-    const allPts = (sourceData?.closes ?? []).map((p, i) => ({
-      ts:    sourceData!.timestamps[i],
-      price: p ?? 0,
-    })).filter(p => p.price > 0 && p.ts > 0);
-
-    const nowSec   = Math.floor(Date.now() / 1000);
-    const cutoffTs = nowSec - periodSecs;
-    const filtered = periodSecs === Infinity ? allPts : allPts.filter(p => p.ts >= cutoffTs);
-    displayPts = filtered.length >= 2 ? filtered : [];
-
-    if (displayPts.length >= 2) {
-      base0   = displayPts[0].price || 1;
-      indexed = displayPts.map(p => (p.price / base0) * 100);
-      const minI  = Math.min(...indexed);
-      const maxI  = Math.max(...indexed);
-      const yPad  = (maxI - minI) * 0.08;
-      yMin  = Math.max(0, minI - yPad);
-      yMax  = maxI + yPad;
-      yRange = yMax - yMin || 1;
-
-      up      = indexed[indexed.length - 1] >= 100;
-      c       = up ? "#22c55e" : "#ef4444";
-      chgPct  = (indexed[indexed.length - 1] - 100).toFixed(1);
-      baseLineY = toY(100);
-
-      polyPts = indexed.map((v, i) => `${toX(i)},${toY(v)}`).join(" ");
-      const areaBot = H - PAD_B;
-      areaPts = `${PAD_L},${areaBot} ${polyPts} ${toX(displayPts.length - 1)},${areaBot}`;
-
-      const amplitude = maxI - minI;
-      const tickStep  = amplitude > 150 ? 50 : amplitude > 60 ? 25 : amplitude > 25 ? 10 : 5;
-      const firstTick = Math.ceil(yMin / tickStep) * tickStep;
-      yTicks = Array.from(
-        { length: Math.floor((yMax - firstTick) / tickStep) + 1 },
-        (_, i) => firstTick + i * tickStep
-      ).filter(v => v >= yMin && v <= yMax).map(v => ({ val: v, y: toY(v) }));
-
-      const dateFormat = (ts: number): string => {
-        const d = new Date(ts * 1000);
-        if (period === "7j" || period === "1m")
-          return d.toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
-        if (period === "3m" || period === "6m")
-          return d.toLocaleDateString("fr-FR", { month: "short", year: "2-digit" });
-        return d.toLocaleDateString("fr-FR", { month: "short", year: "numeric" });
-      };
-
-      const xStep = Math.max(1, Math.floor(displayPts.length / 5));
-      xTicks = displayPts
-        .filter((_, i) => i === 0 || i === displayPts.length - 1 || i % xStep === 0)
-        .slice(0, 6)
-        .map(p => ({ x: toX(displayPts.indexOf(p)), label: dateFormat(p.ts) }));
-    }
-  } catch(e) {
-    console.error("[CryptoChart] render error:", e);
-    renderError = true;
-  }
-
-  if (renderError) return (
-    <div style={{ color: THEME.textMuted, fontSize: 12, padding: "30px 0", textAlign: "center" }}>
-      Erreur de rendu graphique
-    </div>
-  );
-
-  if (displayPts.length < 2) return (
-    <div style={{ color: THEME.textMuted, fontSize: 12, padding: "20px 0", textAlign: "center" }}>
-      {loading ? "Chargement…" : "Données insuffisantes pour la période sélectionnée"}
-    </div>
-  );
-
-  const fmtPrice = (n: number) => {
-    if (n >= 1000) return n.toFixed(0);
-    if (n >= 100)  return n.toFixed(1);
-    if (n >= 1)    return n.toFixed(2);
-    return n.toFixed(4);
-  };
-
-  const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
-    const rect = svgRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const svgX = ((e.clientX - rect.left) / rect.width) * W;
-    const relX = svgX - PAD_L;
-    if (relX < 0 || relX > chartW) { setTooltip(null); return; }
-    const idx    = Math.min(Math.max(Math.round((relX / chartW) * (displayPts.length - 1)), 0), displayPts.length - 1);
-    const pt     = displayPts[idx];
-    const idxVal = indexed[idx];
-    const dateStr = new Date(pt.ts * 1000).toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" });
-    setTooltip({ x: toX(idx), y: toY(idxVal), price: pt.price, date: dateStr });
-  };
-
-  const periodLabel = periods.find(p => p.key === period)?.label ?? period;
-
-  return (
-    <div>
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10, flexWrap:"wrap", gap:8 }}>
-        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-          <span style={{ fontSize:11, color:c, fontWeight:700 }}>
-            {up ? "▲" : "▼"} {Math.abs(parseFloat(chgPct))}% sur {periodLabel}
-          </span>
-          <span style={{ fontSize:10, color:THEME.textSecondary }}>
-            {fmtPrice(displayPts[0].price)} → {fmtPrice(displayPts[displayPts.length - 1].price)} {currency}
-          </span>
-        </div>
-        <div style={{ display:"flex", gap:4, overflowX:"auto", flexShrink:1, minWidth:0, paddingBottom:2 }}>
-          {periods.map(p => (
-            <button key={p.key} onClick={() => onPeriodChange(p.key)} disabled={loading} style={{
-              background: period === p.key ? c + "22" : "transparent",
-              border: `1px solid ${period === p.key ? c : THEME.borderMid}`,
-              color:  period === p.key ? c : "#556",
-              borderRadius: 5, padding: "3px 9px", fontSize: 10, fontWeight: 700, cursor: "pointer", transition: "all .15s",
-            }}>
-              {p.label}
-              {p.key === optimalUTKey && <span style={{ fontSize:6, marginLeft:3, color:THEME.accent, verticalAlign:"super" }}>●</span>}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div style={{ position:"relative" }}>
-        <svg ref={svgRef} width="100%" viewBox={`0 0 ${W} ${H}`}
-          style={{ overflow:"visible", cursor:"crosshair", display:"block" }}
-          onMouseMove={handleMouseMove} onMouseLeave={() => setTooltip(null)}>
-          <defs>
-            <linearGradient id="ccg" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%"   stopColor={c} stopOpacity="0.18"/>
-              <stop offset="100%" stopColor={c} stopOpacity="0"/>
-            </linearGradient>
-          </defs>
-          {yTicks.map((t, i) => (
-            <g key={i}>
-              <line x1={PAD_L} y1={t.y} x2={W - PAD_R} y2={t.y} stroke={THEME.borderPanel} strokeWidth="1" strokeDasharray="3,4"/>
-              <text x={PAD_L - 6} y={t.y + 4} textAnchor="end" fontSize="9" fill="#445" fontFamily="'IBM Plex Mono',monospace">
-                {t.val >= 1 ? Math.round(t.val) : ""}
-              </text>
-            </g>
-          ))}
-          {xTicks.map((t, i) => (
-            <text key={i} x={t.x} y={H - PAD_B + 16} textAnchor="middle" fontSize="9" fill="#445">{t.label}</text>
-          ))}
-          <line x1={PAD_L} y1={baseLineY} x2={W - PAD_R} y2={baseLineY} stroke="#ffffff18" strokeWidth="1" strokeDasharray="4,3"/>
-          <text x={PAD_L - 6} y={baseLineY + 4} textAnchor="end" fontSize="9" fill="#666" fontFamily="'IBM Plex Mono',monospace">100</text>
-          <polygon points={areaPts} fill="url(#ccg)"/>
-          <polyline points={polyPts} fill="none" stroke={c} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"/>
-          {tooltip && <line x1={tooltip.x} y1={PAD_T} x2={tooltip.x} y2={H - PAD_B} stroke="#ffffff22" strokeWidth="1" strokeDasharray="3,3"/>}
-          {tooltip && <circle cx={tooltip.x} cy={tooltip.y} r="4" fill={c} stroke={THEME.bgPage} strokeWidth="2"/>}
-        </svg>
-        {tooltip && (
-          <div style={{
-            position:"absolute", left:`${(tooltip.x / W) * 100}%`, top:0,
-            transform: tooltip.x / W > 0.72 ? "translateX(-100%) translateX(-8px)" : tooltip.x / W < 0.15 ? "translateX(8px)" : "translateX(-50%)",
-            background:THEME.bgCard, border:`1px solid ${c}55`, borderRadius:7, padding:"6px 11px",
-            pointerEvents:"none", maxWidth:"200px", whiteSpace:"nowrap", zIndex:10,
-          }}>
-            <div style={{ fontSize:12, color:c, fontWeight:800, fontFamily:"'IBM Plex Mono',monospace" }}>
-              {((tooltip.price / base0 - 1) * 100) >= 0 ? "+" : ""}{((tooltip.price / base0 - 1) * 100).toFixed(2)}%
-            </div>
-            <div style={{ fontSize:10, color:THEME.textSecondary, fontFamily:"'IBM Plex Mono',monospace", marginTop:1 }}>
-              {fmtPrice(tooltip.price)} {currency}
-            </div>
-            <div style={{ fontSize:9, color:"#445", marginTop:2 }}>{tooltip.date}</div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 function resampleToMonthly(weekly: {
   closes: (number|null)[]; opens: (number|null)[]; highs: (number|null)[];
   lows: (number|null)[]; volumes: (number|null)[]; timestamps: number[];
@@ -7240,33 +7536,17 @@ function CryptoView({ data }: { data: any }) {
       </div>
 
       {/* ── Graphique ── */}
-      <div style={{ background: THEME.bgPanel, border: `1px solid ${THEME.borderPanel}`, borderRadius: 12, padding: "14px 18px", marginBottom: 10 }}>
-        <div style={{ fontSize: 10, color: THEME.textMuted, textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 8 }}>
-          Performance historique
-        </div>
-        {chartLoading && (
-          <div style={{ color: THEME.textMuted, fontSize: 12, padding: "30px 0", textAlign: "center" }}>
-            Chargement…
-          </div>
-        )}
-        {!chartLoading && !allChartData && (
-          <div style={{ color: THEME.textMuted, fontSize: 12, padding: "30px 0", textAlign: "center" }}>
-            Données graphique indisponibles
-          </div>
-        )}
-        {!chartLoading && allChartData && allChartData.closes && allChartData.closes.length >= 2 && (
-          <CryptoChart
-            chartData={allChartData}
-            chartDataWeekly={allChartDataWeekly}
-            currency="USD"
-            period={period}
-            periods={PERIODS}
-            onPeriodChange={handlePeriodChange}
-            loading={false}
-            optimalUTKey={optimalUTKey}
-          />
-        )}
-      </div>
+      <ChartBlock
+        chartData={allChartData}
+        chartDataWeekly={allChartDataWeekly}
+        currency="USD"
+        quoteType="CRYPTOCURRENCY"
+        period={period}
+        periods={PERIODS.map(p => ({ key: p.key, label: p.label }))}
+        onPeriodChange={handlePeriodChange}
+        loading={chartLoading}
+        optimalUTKey={optimalUTKey}
+      />
 
       {/* ── Analyse technique ── */}
       {allChartData && allChartData.closes.filter((v: number|null) => v != null).length > 20 && (() => {
@@ -8137,29 +8417,15 @@ export default function App() {
         <EntryRecommendationPanel rec={entryRec}/>
 
         {/* Graphique */}
-        <div style={{ background:THEME.bgPanel, border:`1px solid ${THEME.borderPanel}`, borderRadius:12, padding:"14px 18px", marginBottom:10 }}>
-          <div style={{ fontSize:10, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.2, marginBottom:8 }}>
-            Performance historique · {yfTicker}
-          </div>
-          {chartLoading && (
-            <div style={{ color:THEME.textMuted, fontSize:12, padding:"30px 0", textAlign:"center" }}>Chargement…</div>
-          )}
-          {!chartLoading && chartData && (
-            <InteractiveChart
-              chartData={chartData}
-              currency={currency}
-              quoteType="CURRENCY"
-              period={period}
-              onPeriodChange={p => { setPeriod(p); loadChart(p); }}
-              loading={chartLoading}
-            />
-          )}
-          {!chartLoading && !chartData && (
-            <div style={{ color:THEME.textMuted, fontSize:12, padding:"20px 0", textAlign:"center" }}>
-              Données graphique indisponibles pour {yfTicker}
-            </div>
-          )}
-        </div>
+        <ChartBlock
+          chartData={chartData}
+          currency={currency}
+          quoteType="CURRENCY"
+          period={period}
+          periods={Object.entries(CHART_RANGES).map(([k,v])=>({key:k,label:v.label}))}
+          onPeriodChange={p => { setPeriod(p); loadChart(p); }}
+          loading={chartLoading}
+        />
 
         {/* Contexte de marché */}
         {marketCtx && finalScoreResult && (
