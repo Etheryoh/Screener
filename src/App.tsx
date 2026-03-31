@@ -3406,6 +3406,9 @@ function CandleChart({
   chartData,
   currency,
   breakoutTarget,
+  period,
+  periods,
+  displayLimit,
 }: {
   chartData: {
     closes:     (number|null)[];
@@ -3417,6 +3420,9 @@ function CandleChart({
   } | null;
   currency:      string;
   breakoutTarget?: { hasTarget: boolean; targetPrice: number | null; direction: "up" | "down" | null } | null;
+  period?:       string;
+  periods?:      { key: string; label: string }[];
+  displayLimit?: number;
 }) {
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -3457,16 +3463,20 @@ function CandleChart({
     </div>
   );
 
-  // Limiter aux 120 dernières bougies
-  const display = candles.slice(-120);
+  const MAX_DISPLAY = displayLimit ?? 120;
+  const display = candles.length > MAX_DISPLAY ? candles.slice(-MAX_DISPLAY) : candles;
   const N       = display.length;
 
-  // ── OVERLAYS (calculés sur closes complets) ──
-  const bb        = calcBollingerBands(closes);
-  const ema20S    = calcEMASeries(closes, 20);
-  const ema50S    = calcEMASeries(closes, 50);
-  const ema200S   = calcEMASeries(closes, 200);
-  const reg       = calcRegressionDeviation(closes);
+  // Overlays calculés sur les bougies affichées uniquement → EMA démarre dès la 1ère bougie visible
+  // Overlays calculés sur le dataset complet → EMA/BB convergés avant la première
+  // bougie affichée, comme sur TradingView. L'accès se fait via d.origIdx.
+  const bb      = calcBollingerBands(closes);
+  const ema20S  = calcEMASeries(closes, 20);
+  const ema50S  = calcEMASeries(closes, 50);
+  const ema200S = calcEMASeries(closes, 200);
+  // displayCloses utilisé uniquement pour la régression (fenêtre visible)
+  const displayCloses = display.map(d => d.c as number | null);
+  const reg = calcRegressionDeviation(displayCloses);
   const swData    = calcSinewave(closes);
 
   // Sinewave series pour le sous-panel
@@ -3512,7 +3522,7 @@ function CandleChart({
       Sn[i] = Math.sin(Ph[i]*Math.PI/180);
       LSn[i]= Math.sin((Ph[i]+45)*Math.PI/180);
     }
-    const validOrigIdxs = candles.map(d => d.origIdx);
+    const validOrigIdxs   = candles.map(d => d.origIdx);
     const displayOrigIdxs = display.map(d => d.origIdx);
     displayOrigIdxs.forEach((origIdx, dispI) => {
       const posInValid = validOrigIdxs.indexOf(origIdx);
@@ -3528,17 +3538,11 @@ function CandleChart({
   const PAD_L = 62, PAD_R = 14, PAD_T = 10, PAD_B = 20, SEP = 8;
   const chartW = W - PAD_L - PAD_R;
 
-  // Y prix (inclure BB dans l'échelle si actif)
-  const pricePts = display.flatMap(d => [d.h, d.l]);
-  const bbPts: number[] = activeOverlays.has("bb")
-    ? display.flatMap(d => [
-        bb?.upper[d.origIdx] ?? d.h,
-        bb?.lower[d.origIdx] ?? d.l,
-      ])
-    : [];
-  const allPriceVals = [...pricePts, ...bbPts].filter(v => v != null && isFinite(v));
-  const yPriceMin = Math.min(...allPriceVals) * 0.9985;
-  const yPriceMax = Math.max(...allPriceVals) * 1.0015;
+  // Échelle Y basée uniquement sur les highs/lows des bougies affichées
+  // Les overlays (BB, EMA, Target) s'adaptent à cette échelle — jamais l'inverse
+  const pricePts = display.flatMap(d => [d.h, d.l]).filter(v => v != null && isFinite(v));
+  const yPriceMin = Math.min(...pricePts) * 0.9985;
+  const yPriceMax = Math.max(...pricePts) * 1.0015;
   const yPriceRange = yPriceMax - yPriceMin || 1;
 
   const toX      = (i: number) => PAD_L + (i + 0.5) * (chartW / N);
@@ -3585,8 +3589,9 @@ function CandleChart({
         .filter(Boolean).join(" ");
 
   // Régression : droite de tendance
+  // regY1 = point gauche (début de display), regY2 = point droit (trendPrice = fin)
   const regY1 = reg && reg.r2 >= 0.4
-    ? toPriceY(reg.trendPrice * (1 + (reg.deviation / 100) * (1 - (N / Math.max(N, 252)))))
+    ? toPriceY(display[0]?.c ?? reg.trendPrice)
     : null;
   const regY2 = reg && reg.r2 >= 0.4 ? toPriceY(reg.trendPrice) : null;
 
@@ -3594,7 +3599,9 @@ function CandleChart({
   const btY = breakoutTarget?.hasTarget && breakoutTarget.targetPrice != null
     ? toPriceY(breakoutTarget.targetPrice)
     : null;
-  const btColor = breakoutTarget?.direction === "up" ? "#22c55e" : "#ef4444";
+  const btColor = breakoutTarget?.direction === "up" ? "#22c55e"
+    : breakoutTarget?.direction === "down" ? "#ef4444"
+    : THEME.textMuted;
 
   const totalH = oscBot + PAD_B;
 
@@ -3611,13 +3618,37 @@ function CandleChart({
   };
 
   // ── OVERLAY DEFINITIONS (pills) ──
-  const OVERLAYS: { key: OverlayKey; label: string; color: string }[] = [
-    { key: "bb",         label: "BB",         color: "#f59e0b" },
-    { key: "ema20",      label: "EMA 20",     color: "#22c55e" },
-    { key: "ema50",      label: "EMA 50",     color: "#60a5fa" },
-    { key: "ema200",     label: "EMA 200",    color: "#a78bfa" },
-    { key: "regression", label: "Régression", color: "#fb923c" },
-    { key: "target",     label: "Target",     color: "#ef4444" },
+  const OVERLAYS: { key: OverlayKey; label: string; color: string; edu: TechSignal["edu"] }[] = [
+    { key: "bb", label: "BB", color: "#f59e0b", edu: {
+      concept: "Les Bandes de Bollinger (BB) sont trois lignes tracées autour du prix : une moyenne mobile centrale (20 périodes) et deux bandes à ±2 écarts-types. Elles mesurent la volatilité du marché.",
+      howToRead: "Bandes resserrées = faible volatilité, mouvement fort imminent (squeeze). Bandes écartées = forte volatilité en cours. Le prix touche la bande supérieure = zone de surachat potentielle. Bande inférieure = zone de survente potentielle.",
+      example: "Quand le prix sort franchement au-dessus de la bande supérieure avec du volume, c'est souvent le début d'un mouvement fort — pas forcément un signal de vente immédiat.",
+    }},
+    { key: "ema20", label: "EMA 20", color: "#22c55e", edu: {
+      concept: "L'EMA 20 (Exponential Moving Average sur 20 périodes) est la moyenne des 20 derniers prix avec plus de poids sur les données récentes. Elle suit le prix de près.",
+      howToRead: "Prix au-dessus de l'EMA 20 = momentum court terme haussier. Prix en dessous = momentum baissier court terme. L'EMA 20 sert souvent de support dynamique en tendance haussière.",
+      example: "En tendance haussière, les corrections jusqu'à l'EMA 20 sont souvent des opportunités d'achat. Un cassage en clôture sous l'EMA 20 est le premier signal d'alerte.",
+    }},
+    { key: "ema50", label: "EMA 50", color: "#60a5fa", edu: {
+      concept: "L'EMA 50 représente la tendance intermédiaire sur ~50 séances (~2,5 mois en journalier). C'est un filtre de tendance moyen terme très utilisé par les traders professionnels.",
+      howToRead: "Prix au-dessus de l'EMA 50 = tendance moyen terme haussière. En dessous = baissière. L'EMA 50 agit comme support/résistance dynamique plus fiable que l'EMA 20 car elle filtre plus de bruit.",
+      example: "Un rebond sur l'EMA 50 dans une tendance haussière (Golden Cross actif) est une configuration d'entrée classique avec un ratio risque/rendement favorable.",
+    }},
+    { key: "ema200", label: "EMA 200", color: "#a78bfa", edu: {
+      concept: "L'EMA 200 représente la tendance de fond sur ~200 séances (~1 an en journalier). C'est l'indicateur de référence pour déterminer si un actif est en tendance haussière ou baissière structurelle.",
+      howToRead: "Prix au-dessus de l'EMA 200 = tendance haussière long terme (contexte favorable aux achats). En dessous = contexte baissier. Golden Cross (EMA 50 > EMA 200) = signal haussier majeur. Death Cross = signal baissier majeur.",
+      example: "L'EMA 200 est utilisée par les fonds institutionnels pour filtrer les actifs. Un prix qui revient tester l'EMA 200 depuis le haut est souvent une opportunité d'entrée en tendance haussière.",
+    }},
+    { key: "regression", label: "Régression", color: "#fb923c", edu: {
+      concept: "La droite de régression log-linéaire représente la trajectoire 'naturelle' du prix sur toute la période affichée. Elle lisse les cycles pour révéler la tendance de fond réelle.",
+      howToRead: "Prix au-dessus de la ligne = actif cher par rapport à sa tendance historique. En dessous = actif décoté. Plus le prix s'éloigne de la ligne, plus un retour vers la moyenne est probable (mean reversion). Le R² indique la fiabilité (1 = parfait, 0 = bruit pur).",
+      example: "BTC historiquement revient toujours vers sa droite de régression après des excès. Une déviation de +50% au-dessus précède souvent une correction, une déviation de -30% en dessous précède souvent un rebond.",
+    }},
+    { key: "target", label: "Target", color: "#ef4444", edu: {
+      concept: "L'objectif de breakout (Target) est une cible de prix calculée automatiquement quand le prix sort d'un range de consolidation. La cible = amplitude du range projetée depuis le point de cassure.",
+      howToRead: "Ligne verte = objectif haussier (breakout vers le haut). Ligne rouge = objectif baissier (breakdown vers le bas). La cible est valide environ 30 bougies après le breakout — passé ce délai, elle est invalidée.",
+      example: "Si un actif consolide entre 100 et 120 (range de 20) puis casse au-dessus de 120, l'objectif de breakout est 140 (+20 depuis le point de cassure). Ce n'est pas garanti — c'est une cible indicative.",
+    }},
   ];
 
   return (
@@ -3627,25 +3658,29 @@ function CandleChart({
         {OVERLAYS.map(ov => {
           const active = activeOverlays.has(ov.key);
           return (
-            <button
-              key={ov.key}
-              onClick={() => toggleOverlay(ov.key)}
-              style={{
-                padding:"3px 10px",
-                borderRadius:20,
-                border:`1px solid ${active ? ov.color : THEME.borderMid}`,
-                background: active ? ov.color + "22" : "transparent",
-                color: active ? ov.color : THEME.textMuted,
-                fontSize:10, fontWeight:700, cursor:"pointer",
-                transition:"all .15s",
-              }}
-            >
-              {ov.label}
-            </button>
+            <div key={ov.key} style={{display:"inline-flex",alignItems:"center",gap:3}}>
+              <button
+                onClick={() => toggleOverlay(ov.key)}
+                style={{
+                  padding:"3px 10px",
+                  borderRadius:20,
+                  border:`1px solid ${active ? ov.color : THEME.borderMid}`,
+                  background: active ? ov.color + "22" : "transparent",
+                  color: active ? ov.color : THEME.textMuted,
+                  fontSize:10, fontWeight:700, cursor:"pointer",
+                  transition:"all .15s",
+                }}
+              >
+                {ov.label}
+              </button>
+              <EduTooltip edu={ov.edu} id={`overlay-${ov.key}`}/>
+            </div>
           );
         })}
         <span style={{ fontSize:9, color:THEME.textMuted, marginLeft:"auto" }}>
-          120 bougies · {currency}
+          {display.length} bougies
+          {period ? ` · ${period}` : ""}
+          {" "}· {currency}
         </span>
       </div>
 
@@ -3659,6 +3694,14 @@ function CandleChart({
           onMouseMove={handleMouseMove}
           onMouseLeave={() => setTooltip(null)}
         >
+          <defs>
+            <clipPath id="price-area">
+              <rect x={PAD_L} y={PAD_T - 4} width={W - PAD_L - PAD_R} height={HPRICE + 8}/>
+            </clipPath>
+            <clipPath id="osc-area">
+              <rect x={PAD_L} y={oscTop} width={W - PAD_L - PAD_R} height={HOSC}/>
+            </clipPath>
+          </defs>
           {/* ── GRILLE PRIX ── */}
           {yTicks.map((t, i) => (
             <g key={i}>
@@ -3684,6 +3727,7 @@ function CandleChart({
             <line
               x1={PAD_L} y1={regY1} x2={W-PAD_R} y2={regY2}
               stroke="#fb923c" strokeWidth="1.5" strokeOpacity="0.7" strokeDasharray="6,3"
+              clipPath="url(#price-area)"
             />
           )}
 
@@ -3693,46 +3737,53 @@ function CandleChart({
             const midPts = polyline(display.map(d => bb.middle[d.origIdx]), toPriceY);
             const lowPts = polyline(display.map(d => bb.lower[d.origIdx]),  toPriceY);
             return (
-              <>
+              <g clipPath="url(#price-area)">
                 <polyline points={upPts}  fill="none" stroke="#f59e0b" strokeWidth="1" strokeOpacity="0.55" strokeDasharray="3,2"/>
                 <polyline points={midPts} fill="none" stroke="#f59e0b" strokeWidth="1.2" strokeOpacity="0.85"/>
                 <polyline points={lowPts} fill="none" stroke="#f59e0b" strokeWidth="1" strokeOpacity="0.55" strokeDasharray="3,2"/>
-              </>
+              </g>
             );
           })()}
 
           {/* ── OVERLAY EMA 20 ── */}
           {activeOverlays.has("ema20") && (() => {
             const pts = polyline(display.map(d => ema20S[d.origIdx]), toPriceY);
-            return pts ? <polyline points={pts} fill="none" stroke="#22c55e" strokeWidth="1.5" strokeOpacity="0.85"/> : null;
+            return pts ? <polyline points={pts} fill="none" stroke="#22c55e" strokeWidth="1.5" strokeOpacity="0.85" clipPath="url(#price-area)"/> : null;
           })()}
 
           {/* ── OVERLAY EMA 50 ── */}
           {activeOverlays.has("ema50") && (() => {
             const pts = polyline(display.map(d => ema50S[d.origIdx]), toPriceY);
-            return pts ? <polyline points={pts} fill="none" stroke="#60a5fa" strokeWidth="1.5" strokeOpacity="0.8" strokeDasharray="5,2"/> : null;
+            return pts ? <polyline points={pts} fill="none" stroke="#60a5fa" strokeWidth="1.5" strokeOpacity="0.8" strokeDasharray="5,2" clipPath="url(#price-area)"/> : null;
           })()}
 
           {/* ── OVERLAY EMA 200 ── */}
           {activeOverlays.has("ema200") && (() => {
             const pts = polyline(display.map(d => ema200S[d.origIdx]), toPriceY);
-            return pts ? <polyline points={pts} fill="none" stroke="#a78bfa" strokeWidth="2" strokeOpacity="0.8" strokeDasharray="7,3"/> : null;
+            return pts ? <polyline points={pts} fill="none" stroke="#a78bfa" strokeWidth="2" strokeOpacity="0.8" strokeDasharray="7,3" clipPath="url(#price-area)"/> : null;
           })()}
 
           {/* ── OVERLAY BREAKOUT TARGET ── */}
-          {activeOverlays.has("target") && btY != null
+          {activeOverlays.has("target") && breakoutTarget?.hasTarget && btY != null
             && btY >= PAD_T && btY <= PAD_T + HPRICE && (
-            <>
+            <g clipPath="url(#price-area)">
               <line x1={PAD_L} y1={btY} x2={W-PAD_R} y2={btY}
                 stroke={btColor} strokeWidth="1.5" strokeOpacity="0.9" strokeDasharray="8,4"/>
               <text x={W-PAD_R-4} y={btY-4} textAnchor="end"
                 fontSize="9" fill={btColor} fontFamily="'IBM Plex Mono',monospace">
                 cible {fmtP(breakoutTarget?.targetPrice ?? 0)}
               </text>
-            </>
+            </g>
+          )}
+          {activeOverlays.has("target") && (!breakoutTarget?.hasTarget) && (
+            <text x={W - PAD_R - 4} y={PAD_T + HPRICE - 8} textAnchor="end"
+              fontSize="8" fill={THEME.textMuted} fontStyle="italic">
+              Aucun breakout détecté
+            </text>
           )}
 
           {/* ── CHANDELIERS ── */}
+          <g clipPath="url(#price-area)">
           {display.map((d, i) => {
             const up      = d.c >= d.o;
             const col     = up ? "#22c55e" : "#ef4444";
@@ -3750,6 +3801,7 @@ function CandleChart({
               </g>
             );
           })}
+          </g>
 
           {/* ── CURSEUR VERTICAL ── */}
           {tooltip && (
@@ -3803,7 +3855,7 @@ function CandleChart({
           {(() => {
             const pts = polyline(momSeriesDisplay, toMomY);
             return pts ? (
-              <polyline points={pts} fill="none" stroke="#60a5fa" strokeWidth="1.5" strokeOpacity="0.9"/>
+              <polyline points={pts} fill="none" stroke="#60a5fa" strokeWidth="1.5" strokeOpacity="0.9" clipPath="url(#osc-area)"/>
             ) : null;
           })()}
 
@@ -3813,16 +3865,16 @@ function CandleChart({
             const leadPts = polyline(leadSeriesDisplay, toSineY);
             return (
               <>
-                {sinePts && <polyline points={sinePts} fill="none" stroke="#ef4444" strokeWidth="1.5" strokeOpacity="0.85"/>}
-                {leadPts && <polyline points={leadPts} fill="none" stroke="#ef444488" strokeWidth="1" strokeOpacity="0.7" strokeDasharray="4,2"/>}
+                {sinePts && <polyline points={sinePts} fill="none" stroke="#ef4444" strokeWidth="1.5" strokeOpacity="0.85" clipPath="url(#osc-area)"/>}
+                {leadPts && <polyline points={leadPts} fill="none" stroke="#ef444488" strokeWidth="1" strokeOpacity="0.7" strokeDasharray="4,2" clipPath="url(#osc-area)"/>}
               </>
             );
           })()}
 
           {/* ── OSC : LABELS LÉGENDE ── */}
-          <text x={PAD_L+6}   y={oscTop+10} fontSize="9" fill="#60a5fa" fontWeight="700">Momentum</text>
-          <text x={PAD_L+72}  y={oscTop+10} fontSize="9" fill="#ef4444" fontWeight="700">· Sinewave</text>
-          <text x={PAD_L+130} y={oscTop+10} fontSize="9" fill="#ef444488">· Lead</text>
+          <text x={PAD_L+6}   y={oscTop+10} fontSize="9" fill="#60a5fa" fontWeight="700">Momentum ROC</text>
+          <text x={PAD_L+92}  y={oscTop+10} fontSize="9" fill="#ef4444" fontWeight="700">· Sinewave</text>
+          <text x={PAD_L+158} y={oscTop+10} fontSize="9" fill="#ef4444" fontWeight="700" opacity="0.6">· LeadSine</text>
 
         </svg>
 
@@ -3908,7 +3960,7 @@ function PerfChart({
     "7j":7*86400,"1m":30*86400,"3m":90*86400,"6m":180*86400,
     "1a":365*86400,"2a":730*86400,"3a":1095*86400,"5a":1825*86400,"max":Infinity,
   };
-  const periodSecs = PERIOD_SECS[period] ?? 365*86400;
+  const periodSecs = PERIOD_SECS[period] ?? Infinity;
   const nowSec     = Math.floor(Date.now()/1000);
   const cutoffTs   = isFinite(periodSecs) ? nowSec - periodSecs : 0;
 
@@ -3996,28 +4048,13 @@ function PerfChart({
 
   return (
     <div>
-      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10,flexWrap:"wrap",gap:8}}>
-        <div style={{display:"flex",alignItems:"center",gap:10}}>
-          <span style={{fontSize:11,color:c,fontWeight:700}}>
-            {up?"▲":"▼"} {Math.abs(parseFloat(chgPct))}% sur {periodLabel}
-          </span>
-          <span style={{fontSize:10,color:THEME.textSecondary}}>
-            {fmtPrice(displayPts[0].price)} → {fmtPrice(displayPts[displayPts.length-1].price)} {currency}
-          </span>
-        </div>
-        <div style={{display:"flex",gap:4,overflowX:"auto",flexShrink:1,minWidth:0,paddingBottom:2}}>
-          {PERIODS_DEFAULT.map(p => (
-            <button key={p.key} onClick={()=>onPeriodChange(p.key)} disabled={loading} style={{
-              background: period===p.key ? c+"22" : "transparent",
-              border:`1px solid ${period===p.key ? c : THEME.borderMid}`,
-              color: period===p.key ? c : "#556",
-              borderRadius:5,padding:"3px 9px",fontSize:10,fontWeight:700,cursor:"pointer",transition:"all .15s",
-            }}>
-              {p.label}
-              {p.key===optimalUTKey&&<span style={{fontSize:6,marginLeft:3,color:THEME.accent,verticalAlign:"super"}}>●</span>}
-            </button>
-          ))}
-        </div>
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10,flexWrap:"wrap"}}>
+        <span style={{fontSize:11,color:c,fontWeight:700}}>
+          {up?"▲":"▼"} {Math.abs(parseFloat(chgPct))}% sur {periodLabel}
+        </span>
+        <span style={{fontSize:10,color:THEME.textSecondary}}>
+          {fmtPrice(displayPts[0].price)} → {fmtPrice(displayPts[displayPts.length-1].price)} {currency}
+        </span>
       </div>
       <div style={{position:"relative"}}>
         <svg ref={svgRef} width="100%" viewBox={`0 0 ${W} ${H}`}
@@ -4080,6 +4117,9 @@ function PerfChart({
 function ChartBlock({
   chartData,
   chartDataWeekly,
+  candleData,
+  candleLoading,
+  candleDisplay,
   currency,
   quoteType,
   period,
@@ -4094,6 +4134,9 @@ function ChartBlock({
 }: {
   chartData:        { closes:(number|null)[]; opens:(number|null)[]; highs:(number|null)[]; lows:(number|null)[]; volumes:(number|null)[]; timestamps:number[] } | null;
   chartDataWeekly?: { closes:(number|null)[]; opens:(number|null)[]; highs:(number|null)[]; lows:(number|null)[]; volumes:(number|null)[]; timestamps:number[] } | null;
+  candleData?:      { closes:(number|null)[]; opens:(number|null)[]; highs:(number|null)[]; lows:(number|null)[]; volumes:(number|null)[]; timestamps:number[] } | null;
+  candleLoading?:   boolean;
+  candleDisplay?:   number;
   currency:         string;
   quoteType?:       string;
   period:           string;
@@ -4108,12 +4151,14 @@ function ChartBlock({
 }) {
   const [chartMode, setChartMode] = useState<"perf"|"tech">("perf");
 
-  const breakoutForChart = (chartData && chartData.closes.length > 0 && chartData.highs.length > 0)
-    ? calcBreakoutTarget(chartData.closes, chartData.highs, chartData.lows)
+  const candleSource = candleData !== undefined ? candleData : chartData;
+
+  const breakoutForChart = (candleSource && candleSource.closes.length > 0 && candleSource.highs.length > 0)
+    ? calcBreakoutTarget(candleSource.closes, candleSource.highs, candleSource.lows)
     : null;
 
-  const hasCandleData = chartData != null &&
-    chartData.opens.filter((v): v is number => v != null).length >= 10;
+  const hasCandleData = candleSource != null &&
+    candleSource.opens.filter((v): v is number => v != null).length >= 10;
 
   return (
     <div style={{background:THEME.bgPanel,border:`1px solid ${THEME.borderPanel}`,borderRadius:12,padding:"14px 18px",marginBottom:4}}>
@@ -4122,6 +4167,7 @@ function ChartBlock({
           {chartMode==="perf" ? "Performance historique" : "Analyse technique"}
         </div>
         <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+          {/* Bouton EUR — uniquement en mode Performance */}
           {chartMode==="perf" && eurRate!=null && eurRate!==1 && priceValue!=null && setShowEur && (
             <button onClick={()=>setShowEur(!showEur)} style={{
               background: showEur ? THEME.accent+"33" : THEME.scoreAmber+"22",
@@ -4133,6 +4179,23 @@ function ChartBlock({
               {showEur ? `↩ ${currency}` : `≈ ${(priceValue*eurRate).toLocaleString("fr-FR",{minimumFractionDigits:2,maximumFractionDigits:2})} EUR`}
             </button>
           )}
+          {/* Boutons de période — visibles dans les deux modes */}
+          {periods && periods.length > 0 && (
+            <div style={{display:"flex",gap:3,flexWrap:"wrap"}}>
+              {periods.map(p => (
+                <button key={p.key} onClick={()=>onPeriodChange(p.key)} style={{
+                  background: period===p.key ? THEME.accent+"22" : "transparent",
+                  border:`1px solid ${period===p.key ? THEME.accent : THEME.borderMid}`,
+                  color: period===p.key ? THEME.accent : THEME.textMuted,
+                  borderRadius:5,padding:"3px 8px",fontSize:9,fontWeight:700,cursor:"pointer",
+                  transition:"all .15s",
+                }}>
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          )}
+          {/* Toggle Performance / Technique */}
           <div style={{display:"flex",gap:4}}>
             {(["perf","tech"] as const).map(m => (
               <button key={m} onClick={()=>setChartMode(m)} style={{
@@ -4149,7 +4212,7 @@ function ChartBlock({
       </div>
       {chartMode==="perf" ? (
         <PerfChart
-          chartData={chartData}
+          chartData={candleSource}
           chartDataWeekly={chartDataWeekly}
           currency={currency}
           quoteType={quoteType}
@@ -4161,13 +4224,16 @@ function ChartBlock({
         />
       ) : hasCandleData ? (
         <CandleChart
-          chartData={chartData}
+          chartData={candleSource}
           currency={currency}
           breakoutTarget={breakoutForChart}
+          period={period}
+          periods={periods}
+          displayLimit={candleDisplay}
         />
       ) : (
         <div style={{color:THEME.textMuted,fontSize:12,padding:"30px 0",textAlign:"center"}}>
-          {loading ? "Chargement des données OHLCV…" : "Données OHLCV insuffisantes pour le graphique technique."}
+          {(loading || candleLoading) ? "Chargement des données OHLCV…" : "Données OHLCV insuffisantes pour le graphique technique."}
         </div>
       )}
     </div>
@@ -7141,60 +7207,64 @@ function CryptoView({ data }: { data: any }) {
   const genesisYear = data.genesis_date ? new Date(data.genesis_date).getFullYear() : null;
   const age = genesisYear ? new Date().getFullYear() - genesisYear : 0;
 
-  const ALL_PERIODS = [
-    { key: "7j",  label: "7j",   days: 7    as number | "max" },
-    { key: "1m",  label: "1m",   days: 30   as number | "max" },
-    { key: "3m",  label: "3m",   days: 90   as number | "max" },
-    { key: "6m",  label: "6m",   days: 180  as number | "max" },
-    { key: "1a",  label: "1a",   days: 365  as number | "max" },
-    { key: "2a",  label: "2a",   days: 730  as number | "max" },
-    { key: "3a",  label: "3a",   days: 1095 as number | "max" },
-    { key: "5a",  label: "5a",   days: 1825 as number | "max" },
-    { key: "max", label: "Max",  days: "max" as "max" },
-  ];
-  const PERIODS = ALL_PERIODS.filter(p => {
-    if (p.key === "7j" || p.key === "1m" || p.key === "3m") return true;
-    if (p.key === "6m" || p.key === "1a") return true;
-    if (p.key === "2a") return age >= 2;
-    if (p.key === "3a") return age >= 3;
-    if (p.key === "5a") return age >= 5;
-    if (p.key === "max") return age >= 2;
-    return false;
-  });
+  const UT_CONFIG: Record<string, { interval: string; limit: number; label: string; perfLabel: string }> = {
+    "1H": { interval: "1h", limit: 370, label: "1H", perfLabel: "~5 jours"  },
+    "4H": { interval: "4h", limit: 370, label: "4H", perfLabel: "~20 jours" },
+    "1D": { interval: "1d", limit: 370, label: "1D", perfLabel: "~6 mois"   },
+    "1W": { interval: "1w", limit: 370, label: "1W", perfLabel: "~2.5 ans"  },
+    "1M": { interval: "1M", limit: 370, label: "1M", perfLabel: "~10 ans"   },
+  };
+  const UT_DISPLAY = 120;
+  const UT_PERIODS = Object.entries(UT_CONFIG).map(([key, cfg]) => ({ key, label: cfg.label }));
 
-  const [period,       setPeriod]       = useState("1a");
+  const [ut,           setUt]           = useState("1D");
   type ChartSeries = { closes: (number|null)[]; opens: (number|null)[]; highs: (number|null)[]; lows: (number|null)[]; volumes: (number|null)[]; timestamps: number[] } | null;
   const [allChartData,       setAllChartData]       = useState<ChartSeries>(null);
   const [allChartDataWeekly, setAllChartDataWeekly] = useState<ChartSeries>(null);
   const [chartLoading, setChartLoading] = useState(true);
+  const [candleData,   setCandleData]   = useState<ChartSeries | undefined>(undefined);
+  const [candleLoading, setCandleLoading] = useState(false);
   const [optimalUTKey, setOptimalUTKey] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     setChartLoading(true);
+    setCandleData(undefined);
     const timer = setTimeout(async () => {
       const sym = (data.symbol || "").toUpperCase();
-      const [daily, weekly] = await Promise.all([
+      const [daily, weekly, candle1D] = await Promise.all([
         binanceOHLCV(sym, "1d", 1000),
         binanceOHLCV(sym, "1w", 1000),
+        binanceOHLCV(sym, "1d", UT_CONFIG["1D"].limit),
       ]);
       const fallback = (!daily && !weekly) ? await cgOHLCV(data.id) : null;
       setAllChartData(daily || fallback);
       setAllChartDataWeekly(weekly || null);
       setChartLoading(false);
+      setCandleData(candle1D ?? fallback ?? null);
     }, 500);
     return () => clearTimeout(timer);
-  }, [data.id]);
+  }, [data.id]); // eslint-disable-line
 
   useEffect(() => {
     if (!allChartData?.closes) return;
     const sw = calcSinewave(allChartData.closes);
     if (sw) {
       const dp = sw.dominantPeriod;
-      setOptimalUTKey(dp <= 10 ? "3m" : "1a");
+      setOptimalUTKey(dp <= 10 ? "1H" : "1D");
     }
   }, [allChartData]);
 
-  const handlePeriodChange = (p: string) => { setPeriod(p); };
+  const loadCandleData = useCallback(async (u: string) => {
+    const cfg = UT_CONFIG[u];
+    if (!cfg) return;
+    setCandleLoading(true);
+    const sym = (data.symbol || "").toUpperCase();
+    const raw = await binanceOHLCV(sym, cfg.interval, cfg.limit);
+    setCandleData(raw ?? null);
+    setCandleLoading(false);
+  }, [data.symbol]); // eslint-disable-line
+
+  const handleUTChange = (u: string) => { setUt(u); loadCandleData(u); };
 
   // ── Description traduite ─────────────────────────────────────
   const [descFr, setDescFr] = useState<string>("");
@@ -7379,30 +7449,20 @@ function CryptoView({ data }: { data: any }) {
       {/* ── Carte verdict technique crypto ── */}
       {allChartData && allChartData.closes.filter((v: number|null) => v != null).length > 20 && (() => {
         const cryptoInterval: "1d" | "1wk" | "1mo" =
-          (period === "5a" || period === "max") && allChartDataWeekly ? "1wk" :
-          period === "3a" && allChartDataWeekly ? "1mo" : "1d";
-        const rawData =
-          cryptoInterval === "1wk" && allChartDataWeekly ? allChartDataWeekly :
-          cryptoInterval === "1mo" && allChartDataWeekly ? resampleToMonthly(allChartDataWeekly) :
-          allChartData;
-        const PERIOD_DAYS: Record<string, number> = {
-          "7j": 7, "1m": 30, "3m": 90, "6m": 180, "1a": 365,
-          "2a": 730, "3a": 1095, "5a": 1825, "max": 99999,
-        };
-        const cutoffDays = PERIOD_DAYS[period] ?? 365;
-        const cutoffTs   = Math.floor(Date.now() / 1000) - cutoffDays * 86400;
+          ut === "1W" ? "1wk" :
+          ut === "1M" ? "1mo" : "1d";
+        const rawData = candleData ?? allChartData;
         const sliceData  = (src: typeof rawData) => {
           if (!src) return src;
-          const indices: number[] = [];
-          src.timestamps.forEach((ts, i) => { if (ts >= cutoffTs) indices.push(i); });
-          if (indices.length < 20) return src;
+          const last = src.closes.length;
+          const start = Math.max(0, last - UT_DISPLAY);
           return {
-            closes:     indices.map(i => src.closes[i]),
-            opens:      indices.map(i => src.opens[i]),
-            highs:      indices.map(i => src.highs[i]),
-            lows:       indices.map(i => src.lows[i]),
-            volumes:    indices.map(i => src.volumes[i]),
-            timestamps: indices.map(i => src.timestamps[i]),
+            closes:     src.closes.slice(start),
+            opens:      src.opens.slice(start),
+            highs:      src.highs.slice(start),
+            lows:       src.lows.slice(start),
+            volumes:    src.volumes.slice(start),
+            timestamps: src.timestamps.slice(start),
           };
         };
         const cryptoData = sliceData(rawData);
@@ -7539,11 +7599,14 @@ function CryptoView({ data }: { data: any }) {
       <ChartBlock
         chartData={allChartData}
         chartDataWeekly={allChartDataWeekly}
+        candleData={candleData}
+        candleLoading={candleLoading}
+        candleDisplay={candleData !== undefined ? UT_DISPLAY : undefined}
         currency="USD"
         quoteType="CRYPTOCURRENCY"
-        period={period}
-        periods={PERIODS.map(p => ({ key: p.key, label: p.label }))}
-        onPeriodChange={handlePeriodChange}
+        period={ut}
+        periods={UT_PERIODS}
+        onPeriodChange={handleUTChange}
         loading={chartLoading}
         optimalUTKey={optimalUTKey}
       />
@@ -7551,30 +7614,20 @@ function CryptoView({ data }: { data: any }) {
       {/* ── Analyse technique ── */}
       {allChartData && allChartData.closes.filter((v: number|null) => v != null).length > 20 && (() => {
         const cryptoInterval: "1d" | "1wk" | "1mo" =
-          (period === "5a" || period === "max") && allChartDataWeekly ? "1wk" :
-          period === "3a" && allChartDataWeekly ? "1mo" : "1d";
-        const rawData2 =
-          cryptoInterval === "1wk" && allChartDataWeekly ? allChartDataWeekly :
-          cryptoInterval === "1mo" && allChartDataWeekly ? resampleToMonthly(allChartDataWeekly) :
-          allChartData;
-        const PERIOD_DAYS2: Record<string, number> = {
-          "7j": 7, "1m": 30, "3m": 90, "6m": 180, "1a": 365,
-          "2a": 730, "3a": 1095, "5a": 1825, "max": 99999,
-        };
-        const cutoffDays2 = PERIOD_DAYS2[period] ?? 365;
-        const cutoffTs2   = Math.floor(Date.now() / 1000) - cutoffDays2 * 86400;
+          ut === "1W" ? "1wk" :
+          ut === "1M" ? "1mo" : "1d";
+        const rawData2 = candleData ?? allChartData;
         const sliceData2  = (src: typeof rawData2) => {
           if (!src) return src;
-          const indices: number[] = [];
-          src.timestamps.forEach((ts, i) => { if (ts >= cutoffTs2) indices.push(i); });
-          if (indices.length < 20) return src;
+          const last = src.closes.length;
+          const start = Math.max(0, last - UT_DISPLAY);
           return {
-            closes:     indices.map(i => src.closes[i]),
-            opens:      indices.map(i => src.opens[i]),
-            highs:      indices.map(i => src.highs[i]),
-            lows:       indices.map(i => src.lows[i]),
-            volumes:    indices.map(i => src.volumes[i]),
-            timestamps: indices.map(i => src.timestamps[i]),
+            closes:     src.closes.slice(start),
+            opens:      src.opens.slice(start),
+            highs:      src.highs.slice(start),
+            lows:       src.lows.slice(start),
+            volumes:    src.volumes.slice(start),
+            timestamps: src.timestamps.slice(start),
           };
         };
         const cryptoData   = sliceData2(rawData2);
@@ -7928,25 +7981,17 @@ function CryptoView({ data }: { data: any }) {
       {/* ── Projection & Confluence ── */}
       {!chartLoading && allChartData && allChartData.closes.filter((v: number|null) => v != null).length >= 50 && (() => {
         const cryptoCI: "1d" | "1wk" | "1mo" =
-          (period === "5a" || period === "max") && allChartDataWeekly ? "1wk" :
-          period === "3a" && allChartDataWeekly ? "1mo" : "1d";
-        const rawDataProj =
-          cryptoCI === "1wk" && allChartDataWeekly ? allChartDataWeekly :
-          cryptoCI === "1mo" && allChartDataWeekly ? resampleToMonthly(allChartDataWeekly) :
-          allChartData;
-        const PERIOD_DAYS_PROJ: Record<string, number> = {
-          "7j": 7, "1m": 30, "3m": 90, "6m": 180, "1a": 365,
-          "2a": 730, "3a": 1095, "5a": 1825, "max": 99999,
-        };
-        const cutoffTsProj = Math.floor(Date.now() / 1000) - (PERIOD_DAYS_PROJ[period] ?? 365) * 86400;
-        const indicesProj: number[] = [];
-        rawDataProj.timestamps.forEach((ts, i) => { if (ts >= cutoffTsProj) indicesProj.push(i); });
-        const slicedProj = indicesProj.length >= 20 ? {
-          closes:     indicesProj.map(i => rawDataProj.closes[i]),
-          highs:      indicesProj.map(i => rawDataProj.highs[i]),
-          lows:       indicesProj.map(i => rawDataProj.lows[i]),
-          volumes:    indicesProj.map(i => rawDataProj.volumes[i]),
-          timestamps: indicesProj.map(i => rawDataProj.timestamps[i]),
+          ut === "1W" ? "1wk" :
+          ut === "1M" ? "1mo" : "1d";
+        const rawDataProj = candleData ?? allChartData;
+        const last = rawDataProj.closes.length;
+        const start = Math.max(0, last - UT_DISPLAY);
+        const slicedProj = last >= 20 ? {
+          closes:     rawDataProj.closes.slice(start),
+          highs:      rawDataProj.highs.slice(start),
+          lows:       rawDataProj.lows.slice(start),
+          volumes:    rawDataProj.volumes.slice(start),
+          timestamps: rawDataProj.timestamps.slice(start),
         } : rawDataProj;
         const marketCtxProj = classifyMarketContext(
           slicedProj.closes, slicedProj.highs, slicedProj.lows, slicedProj.volumes
@@ -7959,7 +8004,7 @@ function CryptoView({ data }: { data: any }) {
             volumes={slicedProj.volumes}
             currency="USD"
             chartInterval={cryptoCI}
-            period={period}
+            period={ut}
             marketContext={marketCtxProj}
           />
         );
