@@ -3538,11 +3538,29 @@ function CandleChart({
   const PAD_L = 62, PAD_R = 14, PAD_T = 10, PAD_B = 20, SEP = 8;
   const chartW = W - PAD_L - PAD_R;
 
-  // Échelle Y basée uniquement sur les highs/lows des bougies affichées
-  // Les overlays (BB, EMA, Target) s'adaptent à cette échelle — jamais l'inverse
+  // Échelle Y : highs/lows des bougies + extrêmes des overlays actifs dans la fenêtre
   const pricePts = display.flatMap(d => [d.h, d.l]).filter(v => v != null && isFinite(v));
-  const yPriceMin = Math.min(...pricePts) * 0.9985;
-  const yPriceMax = Math.max(...pricePts) * 1.0015;
+  const overlayPts: number[] = [];
+  if (activeOverlays.has("bb") && bb) {
+    display.forEach(d => {
+      const u = bb.upper[d.origIdx];
+      const l = bb.lower[d.origIdx];
+      if (u != null && isFinite(u)) overlayPts.push(u);
+      if (l != null && isFinite(l)) overlayPts.push(l);
+    });
+  }
+  if (activeOverlays.has("ema20")) {
+    display.forEach(d => { const v = ema20S[d.origIdx]; if (v != null && isFinite(v)) overlayPts.push(v); });
+  }
+  if (activeOverlays.has("ema50")) {
+    display.forEach(d => { const v = ema50S[d.origIdx]; if (v != null && isFinite(v)) overlayPts.push(v); });
+  }
+  if (activeOverlays.has("ema200")) {
+    display.forEach(d => { const v = ema200S[d.origIdx]; if (v != null && isFinite(v)) overlayPts.push(v); });
+  }
+  const allPriceVals = [...pricePts, ...overlayPts];
+  const yPriceMin = Math.min(...allPriceVals) * 0.9985;
+  const yPriceMax = Math.max(...allPriceVals) * 1.0015;
   const yPriceRange = yPriceMax - yPriceMin || 1;
 
   const toX      = (i: number) => PAD_L + (i + 0.5) * (chartW / N);
@@ -3642,7 +3660,7 @@ function CandleChart({
     { key: "regression", label: "Régression", color: "#fb923c", edu: {
       concept: "La droite de régression log-linéaire représente la trajectoire 'naturelle' du prix sur toute la période affichée. Elle lisse les cycles pour révéler la tendance de fond réelle.",
       howToRead: "Prix au-dessus de la ligne = actif cher par rapport à sa tendance historique. En dessous = actif décoté. Plus le prix s'éloigne de la ligne, plus un retour vers la moyenne est probable (mean reversion). Le R² indique la fiabilité (1 = parfait, 0 = bruit pur).",
-      example: "BTC historiquement revient toujours vers sa droite de régression après des excès. Une déviation de +50% au-dessus précède souvent une correction, une déviation de -30% en dessous précède souvent un rebond.",
+      example: "Historiquement, les actifs reviennent vers leur droite de régression après des excès. Une déviation de +50% au-dessus précède souvent une correction, une déviation de -30% en dessous précède souvent un rebond.",
     }},
     { key: "target", label: "Target", color: "#ef4444", edu: {
       concept: "L'objectif de breakout (Target) est une cible de prix calculée automatiquement quand le prix sort d'un range de consolidation. La cible = amplitude du range projetée depuis le point de cassure.",
@@ -3872,9 +3890,9 @@ function CandleChart({
           })()}
 
           {/* ── OSC : LABELS LÉGENDE ── */}
-          <text x={PAD_L+6}   y={oscTop+10} fontSize="9" fill="#60a5fa" fontWeight="700">Momentum ROC</text>
-          <text x={PAD_L+92}  y={oscTop+10} fontSize="9" fill="#ef4444" fontWeight="700">· Sinewave</text>
-          <text x={PAD_L+158} y={oscTop+10} fontSize="9" fill="#ef4444" fontWeight="700" opacity="0.6">· LeadSine</text>
+          <text x={PAD_L+6}   y={oscBot+14} fontSize="9" fill="#60a5fa" fontWeight="700">Momentum ROC</text>
+          <text x={PAD_L+92}  y={oscBot+14} fontSize="9" fill="#ef4444" fontWeight="700">· Sinewave</text>
+          <text x={PAD_L+158} y={oscBot+14} fontSize="9" fill="#ef4444" fontWeight="700" opacity="0.6">· LeadSine</text>
 
         </svg>
 
@@ -3941,13 +3959,11 @@ function PerfChart({
   const svgRef = useRef<SVGSVGElement>(null);
   const [tooltip, setTooltip] = useState<{ x:number; y:number; price:number; date:string } | null>(null);
 
-  const PERIODS_DEFAULT = periodsProp ?? (quoteType === "CRYPTOCURRENCY"
-    ? [{ key:"7j",  label:"7j" }, { key:"1m",  label:"1m" }, { key:"3m",  label:"3m" },
-       { key:"6m",  label:"6m" }, { key:"1a",  label:"1a" }, { key:"2a",  label:"2a" },
-       { key:"3a",  label:"3a" }, { key:"5a",  label:"5a" }, { key:"max", label:"Max" }]
-    : [{ key:"3m",  label:"3 mois" }, { key:"1a",  label:"1 an" },
-       { key:"2a",  label:"2 ans" },  { key:"3a",  label:"3 ans" },
-       { key:"5a",  label:"5 ans" },  { key:"10a", label:"10 ans" }]);
+  const PERIODS_DEFAULT = periodsProp ?? [
+    { key:"3m",  label:"3 mois" }, { key:"1a",  label:"1 an" },
+    { key:"2a",  label:"2 ans" },  { key:"3a",  label:"3 ans" },
+    { key:"5a",  label:"5 ans" },  { key:"10a", label:"10 ans" },
+  ];
 
   const useWeekly    = (period === "5a" || period === "max") && chartDataWeekly != null;
   const use3aMonthly = period === "3a" && chartDataWeekly != null;
@@ -5637,12 +5653,12 @@ const ENTRY_EDU: Record<string, TechSignal["edu"]> = {
   "Golden Cross": {
     concept: "Le Golden Cross se produit quand la moyenne mobile courte (EMA50) repasse au-dessus de la moyenne mobile longue (EMA200). C'est l'un des signaux haussiers les plus connus en analyse technique.",
     howToRead: "EMA50 > EMA200 = tendance haussière de fond confirmée. Le Golden Cross signale que le momentum court terme a repris le dessus sur le long terme. Plus fiable quand il s'accompagne d'un volume en hausse.",
-    example: "Sur BTC en 2020 et 2023, les Golden Cross ont précédé des hausses importantes. Ce n'est pas infaillible — c'est un signal de confirmation, pas de prédiction.",
+    example: "Historiquement, les Golden Cross ont précédé des hausses importantes sur les grands actifs. Ce n'est pas infaillible — c'est un signal de confirmation, pas de prédiction.",
   },
   "Death Cross": {
     concept: "Le Death Cross se produit quand la moyenne mobile courte (EMA50) passe sous la moyenne mobile longue (EMA200). C'est le signal baissier symétrique du Golden Cross.",
     howToRead: "EMA50 < EMA200 = tendance baissière de fond active. Le marché a perdu son momentum haussier sur le moyen terme. Les rebonds dans ce contexte sont souvent temporaires.",
-    example: "BTC a subi un Death Cross fin 2021 avant une chute prolongée. Attendre le Golden Cross avant de reprendre une position longue est une règle de prudence classique.",
+    example: "Les Death Cross précèdent souvent des phases baissières prolongées. Attendre le Golden Cross avant de reprendre une position longue est une règle de prudence classique.",
   },
   "Death Cross actif — EMA50 sous EMA200 — momentum baissier moyen terme": {
     concept: "Le Death Cross indique que la moyenne des 50 derniers jours est passée sous celle des 200 derniers jours — signal que la tendance baissière est installée sur le moyen terme.",
@@ -5652,7 +5668,7 @@ const ENTRY_EDU: Record<string, TechSignal["edu"]> = {
   "EMA50 sous EMA200 — momentum baissier moyen terme": {
     concept: "Le Death Cross est actif : la moyenne mobile des 50 derniers jours est passée sous celle des 200 derniers jours. C'est le signal baissier structurel le plus connu en analyse technique.",
     howToRead: "Tant que l'EMA50 reste sous l'EMA200, la tendance de fond est baissière. Chaque rebond est une opportunité de sortie, pas d'achat.",
-    example: "BTC a subi ce signal fin 2021 avant une chute prolongée. La règle classique : ne pas acheter tant que le Death Cross est actif, attendre le Golden Cross.",
+    example: "Ce signal précède souvent des baisses prolongées. La règle classique : ne pas acheter tant que le Death Cross est actif, attendre le Golden Cross.",
   },
   "Death Cross actif — EMA50 sous EMA200": {
     concept: "Le Death Cross indique que la tendance baissière est installée sur le moyen terme — l'EMA50 est passée sous l'EMA200.",
@@ -5677,17 +5693,17 @@ const ENTRY_EDU: Record<string, TechSignal["edu"]> = {
   "Golden Cross (EMA50 repasse au-dessus EMA200)": {
     concept: "Le Golden Cross se produit quand l'EMA50 repasse au-dessus de l'EMA200 — signal que la tendance haussière reprend le dessus sur le moyen terme.",
     howToRead: "C'est le signal de retournement haussier le plus attendu après un Death Cross. Il confirme que le momentum court terme a repris le dessus sur le long terme.",
-    example: "BTC en janvier 2023 a formé un Golden Cross qui a précédé un rallye de plusieurs mois. Ce n'est pas infaillible, mais c'est une condition nécessaire pour revenir en position longue.",
+    example: "Un Golden Cross confirme que le momentum long terme est revenu. Ce n'est pas infaillible, mais c'est une condition nécessaire pour revenir en position longue.",
   },
   "RSI < 25 + creux de cycle Sinewave": {
     concept: "La combinaison RSI < 25 (survente extrême) et creux de cycle Sinewave (retournement cyclique) est l'une des configurations d'entrée les plus solides après une baisse.",
     howToRead: "RSI < 25 = les vendeurs sont épuisés. Creux Sinewave = le cycle baissier arrive à son terme. Les deux ensemble = probabilité élevée de rebond significatif.",
-    example: "Cette configuration apparaît rarement — en général moins de 3-4 fois par an sur BTC. Quand elle se présente avec un Golden Cross en formation, c'est une opportunité majeure.",
+    example: "Cette configuration apparaît rarement — en général moins de 3-4 fois par an. Quand elle se présente avec un Golden Cross en formation, c'est une opportunité majeure.",
   },
   "Structure HH+HL sur 3 pivots confirmés": {
     concept: "Une structure HH+HL (Higher Highs + Higher Lows) sur 3 pivots minimum confirme qu'une tendance haussière est structurellement en place — pas juste un rebond.",
     howToRead: "3 pivots = 3 cycles de hausse-correction confirmés. La tendance est considérée comme fiable. C'est la condition minimale pour parler de tendance haussière structurelle.",
-    example: "Sur BTC, après un Death Cross, attendre 3 pivots HH+HL confirmés avant de revenir en position longue réduit significativement le risque d'acheter un faux retournement.",
+    example: "Après un Death Cross, attendre 3 pivots HH+HL confirmés avant de revenir en position longue réduit significativement le risque d'acheter un faux retournement.",
   },
   "Golden Cross actif — tendance haussière de fond confirmée": {
     concept: "Le Golden Cross confirme que la tendance haussière est installée sur le moyen terme — l'EMA50 est repassée au-dessus de l'EMA200.",
@@ -5697,7 +5713,7 @@ const ENTRY_EDU: Record<string, TechSignal["edu"]> = {
   "RSI < 30 + creux Sinewave pour entrée tactique uniquement": {
     concept: "Le RSI (Relative Strength Index) mesure la vitesse des mouvements de prix. Sous 30, le marché est en zone de survente — les vendeurs ont peut-être exagéré la baisse.",
     howToRead: "RSI < 30 = survente potentielle, rebond possible. Mais sur tendance baissière (Death Cross actif), ce rebond est tactique — il ne remet pas en cause la direction baissière de fond.",
-    example: "Sur une crypto en Death Cross, un RSI < 30 peut offrir un rebond de 10-20%. Ce n'est pas une raison d'entrer en position longue durable — seulement une opportunité court terme.",
+    example: "En contexte de Death Cross, un RSI < 30 peut offrir un rebond technique de 10-20%. Ce n'est pas une raison d'entrer en position longue durable — seulement une opportunité court terme.",
   },
   "Creux de cycle Sinewave": {
     concept: "Le Sinewave d'Ehlers détecte les phases cycliques du marché. Un creux de cycle signale que la phase baissière du cycle arrive à son terme — retournement haussier probable à court terme.",
@@ -5712,7 +5728,7 @@ const ENTRY_EDU: Record<string, TechSignal["edu"]> = {
   "Funding rate devient négatif (capitulation des longs)": {
     concept: "Le funding rate est le coût périodique payé entre acheteurs et vendeurs de contrats perpétuels crypto. Négatif = les shorts (vendeurs) paient les longs (acheteurs) = les vendeurs dominent et sont prêts à payer pour maintenir leurs positions.",
     howToRead: "Un funding négatif persistant signale une capitulation des acheteurs — tout le monde est baissier. Historiquement, c'est souvent un signal contrarian : quand tout le monde est vendu, un rebond violent peut se produire (short squeeze).",
-    example: "BTC en juin 2022 et novembre 2022 avait un funding très négatif juste avant les rebonds techniques les plus violents de la baisse.",
+    example: "Les marchés crypto avec un funding très négatif ont historiquement précédé des rebonds techniques violents après capitulation.",
   },
   "RSI descend sous 25": {
     concept: "Le RSI sous 25 indique une survente extrême — le marché a baissé trop vite. Les vendeurs sont épuisés et un rebond technique est statistiquement probable.",
@@ -6405,20 +6421,6 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
         </div>
       )}
 
-      {/* RECOMMANDATION D'ENTRÉE */}
-      {(() => {
-        const entryRec = computeEntryRecommendation(
-          metrics,
-          finalScoreResult?.context ?? null,
-          techComputed.signals,
-          techComputed.sinewave,
-          macro,
-          finalScore,
-          metrics?.globalScore ?? null,
-        );
-        return <EntryRecommendationPanel rec={entryRec}/>;
-      })()}
-
       {/* GRAPHIQUE */}
       <ChartBlock
         chartData={chartData}
@@ -6434,6 +6436,20 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
         eurRate={eurRate}
         priceValue={metrics?.price ?? null}
       />
+
+      {/* RECOMMANDATION D'ENTRÉE */}
+      {(() => {
+        const entryRec = computeEntryRecommendation(
+          metrics,
+          finalScoreResult?.context ?? null,
+          techComputed.signals,
+          techComputed.sinewave,
+          macro,
+          finalScore,
+          metrics?.globalScore ?? null,
+        );
+        return <EntryRecommendationPanel rec={entryRec}/>;
+      })()}
 
       {/* CONTEXTE DE MARCHÉ */}
       {marketCtx && finalScoreResult && (
@@ -7654,7 +7670,6 @@ function CryptoView({ data }: { data: any }) {
         );
         return (
           <>
-            <EntryRecommendationPanel rec={cryptoEntryRec}/>
             {upperBearish && (
               <div style={{
                 padding: "8px 14px", marginBottom: 10,
@@ -7667,6 +7682,7 @@ function CryptoView({ data }: { data: any }) {
             )}
             <MarketContextPanel context={adjustedScoreResult.context} modifiers={adjustedScoreResult.modifiers}/>
             <TechnicalPanel precomputed={techComputed} context={adjustedScoreResult.context}/>
+            <EntryRecommendationPanel rec={cryptoEntryRec}/>
           </>
         );
       })()}
@@ -8199,7 +8215,10 @@ export default function App() {
     if (cgId) {
       const d = await cgCoin(cgId);
       if (d?.market_data?.current_price?.usd) {
+        // Liste des ETF crypto connus susceptibles de créer une collision de symbole
+        const KNOWN_CRYPTO_ETF_TICKERS = new Set(["GBTC","ETHE","BITB","FBTC","ARKB","HODL","BTCO","IBIT","EZBC","BTCW"]);
         const isCryptoETF = yfQuoteType === "ETF" && (
+          KNOWN_CRYPTO_ETF_TICKERS.has(upper) ||
           upper === "BTC" || upper === "ETH" || upper === "SOL"
           || (d.symbol?.toUpperCase() === upper && (d.market_cap_rank ?? 9999) <= 500)
         );
@@ -8275,8 +8294,13 @@ export default function App() {
     const filtered  = m === "all" ? all : all.filter(r =>
       !modeTypes.length || modeTypes.indexOf((r.type || "").toUpperCase()) !== -1
     );
+    // Exclure les ETF crypto connus quand le mode n'est pas ETF/all-ETF
+    const CRYPTO_ETF_SYMBOLS = new Set(["GBTC","ETHE","BITB","FBTC","ARKB","HODL","BTCO","IBIT","EZBC","BTCW"]);
+    const withoutCryptoETF = (m === "etf" || m === "all")
+      ? filtered
+      : filtered.filter(r => !CRYPTO_ETF_SYMBOLS.has(r.symbol.toUpperCase()) || r.exchange === "CoinGecko");
     const seen   = new Set<string>();
-    const unique = filtered.filter(r => { if (seen.has(r.symbol)) return false; seen.add(r.symbol); return true; });
+    const unique = withoutCryptoETF.filter(r => { if (seen.has(r.symbol)) return false; seen.add(r.symbol); return true; });
     const sorted = unique.sort((a, b) => {
       const aSym = a.symbol.toUpperCase();
       const bSym = b.symbol.toUpperCase();
@@ -8458,9 +8482,6 @@ export default function App() {
           </div>
         )}
 
-        {/* Recommandation d'entrée */}
-        <EntryRecommendationPanel rec={entryRec}/>
-
         {/* Graphique */}
         <ChartBlock
           chartData={chartData}
@@ -8471,6 +8492,9 @@ export default function App() {
           onPeriodChange={p => { setPeriod(p); loadChart(p); }}
           loading={chartLoading}
         />
+
+        {/* Recommandation d'entrée */}
+        <EntryRecommendationPanel rec={entryRec}/>
 
         {/* Contexte de marché */}
         {marketCtx && finalScoreResult && (
