@@ -1666,7 +1666,7 @@ function calcConfluenceScore(
   const sw     = calcSinewave(closes);
   const reg    = calcRegressionDeviation(closes);
   const phase  = c.length >= 50
-    ? calcMarketPhase(closes, highs, lows, volumes)
+    ? classifyMarketContext(closes, highs, lows, volumes)
     : null;
   const last   = c.length > 0 ? c[c.length - 1] : null;
 
@@ -1681,8 +1681,7 @@ function calcConfluenceScore(
 
   // CONTEXT OK : phase de marché identifiée et exploitable
   const contextOk = phase != null &&
-    phase.phase !== "undefined" &&
-    phase.phase !== "chaos";
+    phase.type !== "chaos";
 
   // MOMENTUM OK : RSI entre 35 et 65 ET MACD dans la bonne direction
   const rsiNeutral  = rsi != null && rsi >= 35 && rsi <= 65;
@@ -1790,115 +1789,6 @@ function calcCyclePhase(closes: (number|null)[]): CyclePhaseResult | null {
   };
 }
 
-function calcMarketPhase(
-  closes:  (number|null)[],
-  highs:   (number|null)[],
-  lows:    (number|null)[],
-  volumes: (number|null)[],
-): MarketPhaseResult {
-  const c = closes.filter((v): v is number => v != null);
-  if (c.length < 50) return {
-    phase: "undefined", label: "Indéterminée", color: "#64748b",
-    emoji: "❓", confidence: 0,
-    description: "Données insuffisantes pour déterminer la phase de marché.",
-  };
-
-  const ema50  = calcEMA(closes, 50);
-  const ema200 = calcEMA(closes, 200);
-  const adx    = calcADX(highs, lows, closes);
-  const rsi    = calcRSI(closes);
-  const struct = detectTrendStructure(highs, lows, closes);
-  const reg    = calcRegressionDeviation(closes);
-  const vol    = calcVolumeAnomaly(volumes);
-  const last   = c[c.length - 1];
-
-  const hArr = highs.filter((v): v is number => v != null);
-  const lArr = lows.filter((v): v is number => v != null);
-  const trArr: number[] = [];
-  for (let i = 1; i < Math.min(hArr.length, lArr.length, c.length); i++) {
-    trArr.push(Math.max(hArr[i]-lArr[i], Math.abs(hArr[i]-c[i-1]), Math.abs(lArr[i]-c[i-1])));
-  }
-  const atr14     = trArr.length >= 14 ? trArr.slice(-14).reduce((a,b)=>a+b)/14 : null;
-  const atrMean50 = trArr.length >= 50 ? trArr.slice(-50).reduce((a,b)=>a+b)/50 : null;
-  const isHighVol = atr14 != null && atrMean50 != null && atr14 > 3 * atrMean50;
-
-  const goldenCross = ema50 != null && ema200 != null && ema50 > ema200;
-  const deathCross  = ema50 != null && ema200 != null && ema50 < ema200;
-  const aboveEma50  = ema50 != null && last > ema50;
-  const deviation   = reg?.deviation ?? null;
-
-  // CHAOS
-  if (isHighVol && adx != null && adx < 20) return {
-    phase: "chaos", label: "Chaos", color: "#ef4444", emoji: "❌",
-    confidence: 75,
-    description: "Volatilité extrême sans direction claire — aucune structure exploitable. Ne pas trader.",
-  };
-
-  // EXCÈS
-  if (
-    adx != null && adx > 40 &&
-    goldenCross && aboveEma50 &&
-    rsi != null && rsi > 65 &&
-    deviation != null && deviation > 20
-  ) return {
-    phase: "exces", label: "Excès", color: "#f59e0b", emoji: "🚀",
-    confidence: Math.min(60 + Math.round((adx - 40) * 1.5), 88),
-    description: `Prix ${deviation.toFixed(0)}% au-dessus de sa tendance, RSI ${rsi}, ADX ${adx?.toFixed(0)} — excès de marché. Réservé aux expérimentés.`,
-  };
-
-  // TENDANCE HAUSSIÈRE
-  if (
-    goldenCross && aboveEma50 &&
-    struct.type === "bullish" &&
-    adx != null && adx > 20
-  ) return {
-    phase: "tendance_haussiere", label: "Tendance Haussière", color: "#22c55e", emoji: "📈",
-    confidence: Math.min(55 + Math.round(adx ?? 0), 90),
-    description: `Golden Cross actif, structure HH+HL confirmée, ADX ${adx?.toFixed(0)} — tendance haussière établie.`,
-  };
-
-  // TENDANCE BAISSIÈRE
-  if (
-    deathCross && !aboveEma50 &&
-    struct.type === "bearish" &&
-    adx != null && adx > 20
-  ) return {
-    phase: "tendance_baissiere", label: "Tendance Baissière", color: "#ef4444", emoji: "📉",
-    confidence: Math.min(55 + Math.round(adx ?? 0), 90),
-    description: `Death Cross actif, structure LL+LH confirmée, ADX ${adx?.toFixed(0)} — tendance baissière établie.`,
-  };
-
-  // ACCUMULATION (pré-breakout haussier)
-  if (
-    struct.type === "bullish" &&
-    adx != null && adx < 25 &&
-    rsi != null && rsi > 45 && rsi < 65 &&
-    vol != null && vol.ratio > 1.2
-  ) return {
-    phase: "accumulation", label: "Accumulation", color: "#60a5fa", emoji: "🔵",
-    confidence: 60,
-    description: "Structure haussière naissante avec volume en hausse et ADX faible — phase d'accumulation potentielle avant breakout.",
-  };
-
-  // DISTRIBUTION (pré-retournement baissier)
-  if (
-    struct.type === "bearish" &&
-    adx != null && adx < 25 &&
-    rsi != null && rsi < 55 && rsi > 35 &&
-    vol != null && vol.ratio > 1.2
-  ) return {
-    phase: "distribution", label: "Distribution", color: "#f97316", emoji: "🟠",
-    confidence: 60,
-    description: "Structure baissière avec volume anormal et ADX faible — phase de distribution, les mains fortes vendent.",
-  };
-
-  // RANGE
-  return {
-    phase: "range", label: "Range", color: "#4a90d9", emoji: "🔵",
-    confidence: adx != null && adx < 15 ? 80 : 60,
-    description: `Marché sans direction claire (ADX ${adx?.toFixed(0) ?? "—"}) — phase de consolidation ou range.`,
-  };
-}
 
 // ── MATURITÉ DE TENDANCE ──────────────────────────────────────
 function calcTrendMaturity(
@@ -3402,6 +3292,54 @@ interface ChartData {
 // ── GRAPHIQUE TECHNIQUE EN CHANDELIERS ──────────────────────────
 type OverlayKey = "bb" | "ema20" | "ema50" | "ema200" | "target" | "regression";
 
+const OVERLAYS_EDU: { key: string; label: string; color: string; edu: TechSignal["edu"] }[] = [
+  { key: "bb", label: "BB — Bandes de Bollinger", color: "#f59e0b", edu: {
+    concept: "Les Bandes de Bollinger (BB) sont trois lignes tracées autour du prix : une moyenne mobile centrale (20 périodes) et deux bandes à ±2 écarts-types. Elles mesurent la volatilité du marché.",
+    howToRead: "Bandes resserrées = faible volatilité, mouvement fort imminent (squeeze). Bandes écartées = forte volatilité en cours. Le prix touche la bande supérieure = zone de surachat potentielle. Bande inférieure = zone de survente potentielle.",
+    example: "Quand le prix sort franchement au-dessus de la bande supérieure avec du volume, c'est souvent le début d'un mouvement fort — pas forcément un signal de vente immédiat.",
+  }},
+  { key: "ema20", label: "EMA 20", color: "#22c55e", edu: {
+    concept: "L'EMA 20 (Exponential Moving Average sur 20 périodes) est la moyenne des 20 derniers prix avec plus de poids sur les données récentes. Elle suit le prix de près.",
+    howToRead: "Prix au-dessus de l'EMA 20 = momentum court terme haussier. Prix en dessous = momentum baissier court terme. L'EMA 20 sert souvent de support dynamique en tendance haussière.",
+    example: "En tendance haussière, les corrections jusqu'à l'EMA 20 sont souvent des opportunités d'achat. Un cassage en clôture sous l'EMA 20 est le premier signal d'alerte.",
+  }},
+  { key: "ema50", label: "EMA 50", color: "#60a5fa", edu: {
+    concept: "L'EMA 50 représente la tendance intermédiaire sur ~50 séances (~2,5 mois en journalier). C'est un filtre de tendance moyen terme très utilisé par les traders professionnels.",
+    howToRead: "Prix au-dessus de l'EMA 50 = tendance moyen terme haussière. En dessous = baissière. L'EMA 50 agit comme support/résistance dynamique plus fiable que l'EMA 20 car elle filtre plus de bruit.",
+    example: "Un rebond sur l'EMA 50 dans une tendance haussière (Golden Cross actif) est une configuration d'entrée classique avec un ratio risque/rendement favorable.",
+  }},
+  { key: "ema200", label: "EMA 200", color: "#a78bfa", edu: {
+    concept: "L'EMA 200 représente la tendance de fond sur ~200 séances (~1 an en journalier). C'est l'indicateur de référence pour déterminer si un actif est en tendance haussière ou baissière structurelle.",
+    howToRead: "Prix au-dessus de l'EMA 200 = tendance haussière long terme. En dessous = contexte baissier. Golden Cross (EMA 50 > EMA 200) = signal haussier majeur. Death Cross = signal baissier majeur.",
+    example: "L'EMA 200 est utilisée par les fonds institutionnels pour filtrer les actifs. Un prix qui revient tester l'EMA 200 depuis le haut est souvent une opportunité d'entrée en tendance haussière.",
+  }},
+  { key: "regression", label: "Régression linéaire", color: "#fb923c", edu: {
+    concept: "La droite de régression log-linéaire représente la trajectoire 'naturelle' du prix sur toute la période affichée. Elle lisse les cycles pour révéler la tendance de fond réelle.",
+    howToRead: "Prix au-dessus de la ligne = actif cher par rapport à sa tendance historique. En dessous = actif décoté. Plus le prix s'éloigne de la ligne, plus un retour vers la moyenne est probable. Le R² indique la fiabilité (1 = parfait, 0 = bruit pur).",
+    example: "Historiquement, les actifs reviennent vers leur droite de régression après des excès. Une déviation de +50% au-dessus précède souvent une correction, une déviation de -30% en dessous précède souvent un rebond.",
+  }},
+  { key: "target", label: "Target — Objectif de breakout", color: "#ef4444", edu: {
+    concept: "L'objectif de breakout (Target) est une cible de prix calculée automatiquement quand le prix sort d'un range de consolidation. La cible = amplitude du range projetée depuis le point de cassure.",
+    howToRead: "Ligne verte = objectif haussier. Ligne rouge = objectif baissier. La cible est valide environ 30 bougies après le breakout — passé ce délai, elle est invalidée.",
+    example: "Si un actif consolide entre 100 et 120 (range de 20) puis casse au-dessus de 120, l'objectif de breakout est 140. Ce n'est pas garanti — c'est une cible indicative.",
+  }},
+  { key: "momentum", label: "Momentum ROC", color: "#60a5fa", edu: {
+    concept: "Le Momentum ROC (Rate of Change) mesure la variation du prix sur les 14 dernières bougies en pourcentage. Il capture la vitesse et la direction du mouvement récent — plus simple et plus direct que le RSI.",
+    howToRead: "Au-dessus de +5% : élan haussier — les acheteurs accélèrent. En dessous de -5% : élan baissier — les vendeurs dominent. Proche de 0 : marché sans direction. Un changement de signe (passage de positif à négatif ou inversement) peut précéder un retournement de prix.",
+    example: "Si le ROC était à +12% il y a 3 bougies et est maintenant à +2%, la hausse ralentit fortement même si le prix monte encore — signal d'essoufflement à surveiller avant de prendre position.",
+  }},
+  { key: "sinewave", label: "Sinewave (Ehlers)", color: "#ef4444", edu: {
+    concept: "Le Sinewave d'Ehlers utilise la transformée de Hilbert pour décomposer le prix en composantes cycliques. Il détecte la phase du marché (en cycle ou en tendance) et identifie les retournements cycliques avec plus de précision que les oscillateurs classiques.",
+    howToRead: "Quand la ligne Sine (rouge) croise la LeadSine (rouge atténué) vers le haut depuis le bas = creux de cycle = signal haussier. Vers le bas depuis le haut = sommet de cycle = signal baissier. Quand les deux lignes évoluent en parallèle sans se croiser = marché en tendance directionnelle (pas en cycle).",
+    example: "Un creux de cycle Sinewave qui coïncide avec un RSI sous 35 et une structure de prix haussière (HH+HL) est l'une des configurations d'entrée les plus solides — les trois indicateurs convergent vers le même signal.",
+  }},
+  { key: "leadsine", label: "LeadSine (Ehlers)", color: "#ef444488", edu: {
+    concept: "La LeadSine est une version avancée de 45° de la Sinewave. Elle anticipe le retournement d'un quart de cycle avant qu'il ne se produise sur la Sinewave principale — d'où son nom 'Lead' (avance).",
+    howToRead: "La LeadSine ne s'utilise pas seule — elle sert uniquement comme référence pour détecter le croisement avec la Sinewave. Croisement Sine au-dessus de LeadSine = début de phase haussière. Sine sous LeadSine = début de phase baissière.",
+    example: "Quand on voit la Sinewave rouge passer au-dessus de la LeadSine dans la zone basse du sous-panel, c'est le signal de retournement cyclique haussier — c'est ce croisement précis qu'il faut surveiller.",
+  }},
+];
+
 function CandleChart({
   chartData,
   currency,
@@ -3676,23 +3614,21 @@ function CandleChart({
         {OVERLAYS.map(ov => {
           const active = activeOverlays.has(ov.key);
           return (
-            <div key={ov.key} style={{display:"inline-flex",alignItems:"center",gap:3}}>
-              <button
-                onClick={() => toggleOverlay(ov.key)}
-                style={{
-                  padding:"3px 10px",
-                  borderRadius:20,
-                  border:`1px solid ${active ? ov.color : THEME.borderMid}`,
-                  background: active ? ov.color + "22" : "transparent",
-                  color: active ? ov.color : THEME.textMuted,
-                  fontSize:10, fontWeight:700, cursor:"pointer",
-                  transition:"all .15s",
-                }}
-              >
-                {ov.label}
-              </button>
-              <EduTooltip edu={ov.edu} id={`overlay-${ov.key}`}/>
-            </div>
+            <button
+              key={ov.key}
+              onClick={() => toggleOverlay(ov.key)}
+              style={{
+                padding:"3px 10px",
+                borderRadius:20,
+                border:`1px solid ${active ? ov.color : THEME.borderMid}`,
+                background: active ? ov.color + "22" : "transparent",
+                color: active ? ov.color : THEME.textMuted,
+                fontSize:10, fontWeight:700, cursor:"pointer",
+                transition:"all .15s",
+              }}
+            >
+              {ov.label}
+            </button>
           );
         })}
         <span style={{ fontSize:9, color:THEME.textMuted, marginLeft:"auto" }}>
@@ -3890,9 +3826,10 @@ function CandleChart({
           })()}
 
           {/* ── OSC : LABELS LÉGENDE ── */}
-          <text x={PAD_L+6}   y={oscBot+14} fontSize="9" fill="#60a5fa" fontWeight="700">Momentum ROC</text>
-          <text x={PAD_L+92}  y={oscBot+14} fontSize="9" fill="#ef4444" fontWeight="700">· Sinewave</text>
-          <text x={PAD_L+158} y={oscBot+14} fontSize="9" fill="#ef4444" fontWeight="700" opacity="0.6">· LeadSine</text>
+          <circle cx={PAD_L+6} cy={oscBot+10} r="3" fill="#60a5fa"/>
+          <text x={PAD_L+13}  y={oscBot+14} fontSize="9" fill="#60a5fa" fontWeight="700">Momentum ROC</text>
+          <text x={PAD_L+105} y={oscBot+14} fontSize="9" fill="#ef4444" fontWeight="700">· Sinewave</text>
+          <text x={PAD_L+171} y={oscBot+14} fontSize="9" fill="#ef4444" fontWeight="700" opacity="0.6">· LeadSine</text>
 
         </svg>
 
@@ -4129,6 +4066,97 @@ function PerfChart({
   );
 }
 
+// ── COLLAPSIBLE EDU BLOCK — lexique permanent des overlays sous CandleChart ──
+function CollapsibleEduBlock({
+  overlays,
+}: {
+  overlays: { key: string; label: string; color: string; edu: TechSignal["edu"] }[];
+}) {
+  const [open, setOpen] = useState(false);
+  if (overlays.length === 0) return null;
+  return (
+    <div style={{
+      marginTop: 10,
+      border: `1px solid ${THEME.borderMid}`,
+      borderRadius: 8,
+      overflow: "hidden",
+    }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{
+          width: "100%",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "8px 14px",
+          background: THEME.bgCard,
+          border: "none",
+          cursor: "pointer",
+          color: THEME.textSecondary,
+          fontSize: 11,
+          fontWeight: 700,
+          textAlign: "left",
+        }}
+      >
+        <span>📖 Lexique des indicateurs</span>
+        <span style={{ fontSize: 10, color: THEME.textMuted }}>
+          {open ? "▲ Fermer" : "▼ Afficher"}
+        </span>
+      </button>
+      {open && (
+        <div style={{
+          padding: "14px 16px",
+          background: THEME.bgPanel,
+          display: "flex",
+          flexDirection: "column",
+          gap: 16,
+        }}>
+          {overlays.map(ov => (
+            <div key={ov.key}>
+              <div style={{
+                fontSize: 12,
+                fontWeight: 800,
+                color: ov.color,
+                marginBottom: 8,
+                paddingBottom: 4,
+                borderBottom: `1px solid ${ov.color}33`,
+              }}>
+                {ov.label}
+              </div>
+              <div style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
+                fontSize: 11,
+                lineHeight: 1.7,
+                color: THEME.textSecondary,
+              }}>
+                <div>
+                  <span style={{ color: THEME.textPrimary, fontWeight: 700 }}>C'est quoi ?{" "}</span>
+                  {ov.edu.concept}
+                </div>
+                <div>
+                  <span style={{ color: THEME.textPrimary, fontWeight: 700 }}>Comment le lire ?{" "}</span>
+                  {ov.edu.howToRead}
+                </div>
+                <div style={{
+                  background: THEME.bgCard,
+                  borderLeft: `3px solid ${ov.color}`,
+                  padding: "8px 10px",
+                  borderRadius: 6,
+                }}>
+                  <span style={{ color: ov.color, fontWeight: 700 }}>Exemple concret :{" "}</span>
+                  {ov.edu.example}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── CHARTBLOCK — wrapper unifié toggle Performance / Technique ──
 function ChartBlock({
   chartData,
@@ -4239,14 +4267,17 @@ function ChartBlock({
           optimalUTKey={optimalUTKey}
         />
       ) : hasCandleData ? (
-        <CandleChart
-          chartData={candleSource}
-          currency={currency}
-          breakoutTarget={breakoutForChart}
-          period={period}
-          periods={periods}
-          displayLimit={candleDisplay}
-        />
+        <>
+          <CandleChart
+            chartData={candleSource}
+            currency={currency}
+            breakoutTarget={breakoutForChart}
+            period={period}
+            periods={periods}
+            displayLimit={candleDisplay}
+          />
+          <CollapsibleEduBlock overlays={OVERLAYS_EDU} />
+        </>
       ) : (
         <div style={{color:THEME.textMuted,fontSize:12,padding:"30px 0",textAlign:"center"}}>
           {(loading || candleLoading) ? "Chargement des données OHLCV…" : "Données OHLCV insuffisantes pour le graphique technique."}
@@ -6674,33 +6705,34 @@ function ProjectionPanel({ closes, highs, lows, volumes, currency, chartInterval
     return `~${n} bougie${n > 1 ? "s" : ""} soit ${durationStr} — autour du ${dateStr}, marge d'erreur ${marginStr}`;
   }
 
-  // Convertir MarketContext → MarketPhaseResult si disponible, sinon recalculer
-  const phase: MarketPhaseResult = marketContext ? (() => {
-    const phaseMap: Record<string, { phase: MarketPhase; label: string; color: string; emoji: string }> = {
-      "tendance_haussiere": { phase: "tendance_haussiere", label: "Tendance Haussière", color: "#22c55e", emoji: "📈" },
-      "tendance_baissiere": { phase: "tendance_baissiere", label: "Tendance Baissière", color: "#ef4444", emoji: "📉" },
-      "exces":              { phase: "exces",              label: "Excès",              color: "#f59e0b", emoji: "🚀" },
-      "chaos":              { phase: "chaos",              label: "Chaos",              color: "#ef4444", emoji: "❌" },
-      "range":              { phase: "range",              label: "Range",              color: "#4a90d9", emoji: "🔵" },
-      "accumulation":       { phase: "accumulation",       label: "Accumulation",       color: "#60a5fa", emoji: "🔵" },
-    };
-    const isBear = marketContext.structure.type === "bearish";
-    const key = marketContext.type === "tendance"
-      ? (isBear ? "tendance_baissiere" : "tendance_haussiere")
-      : marketContext.type;
-    const mapped = phaseMap[key] ?? phaseMap["range"];
-    return {
-      ...mapped,
-      confidence: marketContext.confidence,
-      description: marketContext.type === "chaos"
+  const resolvedContext: MarketContext = marketContext
+    ?? classifyMarketContext(closes, highs, lows, volumes);
+
+  const isBear = resolvedContext.structure.type === "bearish";
+  const phaseMap: Record<string, { phase: MarketPhase; label: string; color: string; emoji: string }> = {
+    "tendance_haussiere": { phase: "tendance_haussiere", label: "Tendance Haussière", color: "#22c55e", emoji: "📈" },
+    "tendance_baissiere": { phase: "tendance_baissiere", label: "Tendance Baissière", color: "#ef4444", emoji: "📉" },
+    "exces":              { phase: "exces",              label: "Excès",              color: "#f59e0b", emoji: "🚀" },
+    "chaos":              { phase: "chaos",              label: "Chaos",              color: "#ef4444", emoji: "❌" },
+    "range":              { phase: "range",              label: "Range",              color: "#4a90d9", emoji: "🔵" },
+    "accumulation":       { phase: "accumulation",       label: "Accumulation",       color: "#60a5fa", emoji: "🔵" },
+  };
+  const key = resolvedContext.type === "tendance"
+    ? (isBear ? "tendance_baissiere" : "tendance_haussiere")
+    : resolvedContext.type;
+  const mapped = phaseMap[key] ?? phaseMap["range"];
+  const phase: MarketPhaseResult = {
+    ...mapped,
+    confidence: resolvedContext.confidence,
+    description:
+      resolvedContext.type === "chaos"
         ? "Volatilité extrême sans direction claire — aucune structure exploitable."
-        : marketContext.type === "exces"
-        ? `Excès de marché détecté — ADX ${marketContext.adx?.toFixed(0) ?? "—"}.`
-        : marketContext.type === "tendance"
-        ? `${isBear ? "Tendance baissière" : "Tendance haussière"} — ${marketContext.subtype ?? ""}, ADX ${marketContext.adx?.toFixed(0) ?? "—"}.`
-        : `Marché sans direction claire (ADX ${marketContext.adx?.toFixed(0) ?? "—"}) — phase de consolidation ou range.`,
-    };
-  })() : calcMarketPhase(closes, highs, lows, volumes);
+        : resolvedContext.type === "exces"
+        ? `Excès de marché détecté — ADX ${resolvedContext.adx?.toFixed(0) ?? "—"}.`
+        : resolvedContext.type === "tendance"
+        ? `${isBear ? "Tendance baissière" : "Tendance haussière"} — ${resolvedContext.subtype ?? ""}, ADX ${resolvedContext.adx?.toFixed(0) ?? "—"}.`
+        : `Marché sans direction claire (ADX ${resolvedContext.adx?.toFixed(0) ?? "—"}) — phase de consolidation ou range.`,
+  };
   const squeeze    = calcSqueeze(closes);
   const breakout   = calcBreakoutTarget(closes, highs, lows);
   const confluence = calcConfluenceScore(closes, highs, lows, volumes);
