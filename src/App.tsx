@@ -5832,8 +5832,9 @@ function EntryRecommendationPanel({ rec }: { rec: EntryRecommendation }) {
 }
 
 
-function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey, macro, zone, eurRate }: {
+function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey, macro, zone, eurRate, activeTab = "resume" }: {
   metrics: any; chartData: any; ticker: string; optimalUTKey?: string; macro?: MacroContext | null; zone?: MacroZone; eurRate?: number | null;
+  activeTab?: "resume"|"technique"|"fondamentaux"|"macro";
 }) {
   if (!metrics) return null;
   const {
@@ -6194,333 +6195,277 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
   })();
 
   return (
-    <div style={{ animation: "fadeIn .4s ease" }}>
-      {/* HEADER */}
-      <div style={{ marginBottom: 14 }}>
-        <div style={{ fontSize: 11, color: THEME.textMuted, textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 4 }}>
+    <div style={{ animation:"fadeIn .4s ease" }}>
+
+      {/* ── HEADER ACTIF — toujours visible ── */}
+      <div style={{ marginBottom:20 }}>
+        <div style={{ fontSize:11, color:THEME.textMuted,
+          textTransform:"uppercase", letterSpacing:1.5, marginBottom:4 }}>
           {[exchange, sector, industry].filter(Boolean).join(" · ")}
         </div>
-        <div style={{ fontSize: 22, fontWeight: 800, color: THEME.textPrimary, marginBottom: 8, lineHeight: 1.3 }}>
+        <div style={{ fontSize:22, fontWeight:800, color:THEME.textPrimary,
+          marginBottom:8, lineHeight:1.3 }}>
           {name}<TypeBadge type={quoteType}/>
         </div>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
-          <span style={{ fontSize: 34, fontWeight: 900, color: THEME.accent, fontFamily: "'IBM Plex Mono',monospace" }}>
+        <div style={{ display:"flex", alignItems:"baseline",
+          gap:12, flexWrap:"wrap" }}>
+          <span style={{ fontSize:34, fontWeight:900, color:THEME.accent,
+            fontFamily:"'IBM Plex Mono',monospace" }}>
             {showEur && eurRate != null && eurRate !== 1 && metrics.price != null
-              ? `${(metrics.price * eurRate).toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} EUR`
-              : `${currency} ${fmt(price)}`
-            }
+              ? `${(metrics.price * eurRate).toLocaleString("fr-FR",
+                  {minimumFractionDigits:2, maximumFractionDigits:2})} EUR`
+              : `${currency} ${fmt(price)}`}
           </span>
           {change1d != null && (
-            <span style={{ fontSize: 15, fontWeight: 700, color: change1d >= 0 ? THEME.scoreGreen : THEME.scoreRed }}>
-              {change1d >= 0 ? "▲" : "▼"} {Math.abs(change1d * 100).toFixed(2)}%
+            <span style={{ fontSize:15, fontWeight:700,
+              color: change1d >= 0 ? THEME.scoreGreen : THEME.scoreRed }}>
+              {change1d >= 0 ? "▲" : "▼"} {Math.abs(change1d*100).toFixed(2)}%
             </span>
           )}
         </div>
       </div>
 
-      {/* DESCRIPTION ENTREPRISE */}
-      {descFr && (
-        <div style={{
-          background: THEME.bgPanel,
-          border: `1px solid ${THEME.borderPanel}`,
-          borderRadius: 12,
-          padding: "14px 18px",
-          marginBottom: 14,
-        }}>
-          <div
-            onClick={() => setDescOpen(o => !o)}
-            style={{
-              display: "flex", alignItems: "center",
-              justifyContent: "space-between",
-              cursor: "pointer", marginBottom: descOpen ? 10 : 0,
-            }}
-          >
-            <span style={{
-              fontSize: 12, fontWeight: 800,
-              color: THEME.textSecondary,
-              textTransform: "uppercase", letterSpacing: 2,
-            }}>
-              📖 À propos
-            </span>
-            <span style={{ fontSize: 10, color: THEME.textMuted }}>
-              {descOpen ? "▲" : "▼"}
-            </span>
-          </div>
-          {descOpen ? (
-            <div style={{
-              fontSize: 12, color: THEME.textSecondary,
-              lineHeight: 1.8, borderLeft: `3px solid ${THEME.accent}`,
-              paddingLeft: 12,
-            }}>
-              {descFr}
-              <div
-                onClick={() => setDescOpen(false)}
-                style={{
-                  marginTop: 8, fontSize: 10,
-                  color: THEME.textMuted, cursor: "pointer",
-                }}
-              >
-                ▲ Réduire
-              </div>
-            </div>
-          ) : (
-            <div
-              onClick={() => setDescOpen(true)}
-              style={{
-                fontSize: 12, color: THEME.textSecondary,
-                lineHeight: 1.7, cursor: "pointer",
-                borderLeft: `3px solid ${THEME.accent}`,
-                paddingLeft: 12,
-              }}
-            >
-              {descFr.slice(0, 320)}
-              {descFr.length > 320 && (
-                <span style={{ color: THEME.accent, fontWeight: 700 }}>
-                  {" "}… Lire la suite
-                </span>
-              )}
-            </div>
-          )}
-        </div>
-      )}
+      {/* ══════════════════════════════════════
+          ONGLET RÉSUMÉ
+      ══════════════════════════════════════ */}
+      {activeTab === "resume" && (
+        <div style={{ display:"flex", gap:24, alignItems:"flex-start", flexWrap:"wrap" }}>
 
-      {/* CARTE VERDICT — score global */}
-      {v ? (
-        <div style={{
-          background: v.color + "0f", border: `1px solid ${v.color}33`,
-          borderRadius: 14, padding: "18px 22px", marginBottom: 14,
-          display: "flex", alignItems: "center", gap: 24, flexWrap: "wrap",
-        }}>
-          {/* Jauges */}
-          <div className="score-gauge-wrap" style={{
-            display: "flex",
-            flexDirection: "row",
-            justifyContent: "space-evenly",
-            alignItems: "center",
-            width: "100%",
-            gap: 24,
-            flexWrap: "wrap",
-          }}>
-            {metrics?.globalScore != null && (
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-                <ScoreGauge score={metrics.globalScore}/>
-                <div style={{ display: "flex", alignItems: "baseline", gap: 3 }}>
-                  <span style={{
-                    fontSize: 46, fontWeight: 900, lineHeight: 1,
-                    color: scoreColor(metrics.globalScore),
-                    fontFamily: "'IBM Plex Mono',monospace",
-                  }}>{metrics.globalScore}</span>
-                  <span style={{ fontSize: 14, color: THEME.textSecondary, fontFamily: "'IBM Plex Mono',monospace" }}>/10</span>
-                </div>
-                <div style={{
-                  fontSize: 9, color: THEME.textMuted,
-                  textTransform: "uppercase", letterSpacing: 1.5,
-                }}>Qualité — Fondamentaux</div>
-              </div>
-            )}
-            {finalScore != null && (
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-                <ScoreGauge score={finalScore}/>
-                <div style={{ display: "flex", alignItems: "baseline", gap: 3 }}>
-                  <span style={{
-                    fontSize: 46, fontWeight: 900, lineHeight: 1,
-                    color: scoreColor(finalScore),
-                    fontFamily: "'IBM Plex Mono',monospace",
-                  }}>{finalScore}</span>
-                  <span style={{ fontSize: 14, color: THEME.textSecondary, fontFamily: "'IBM Plex Mono',monospace" }}>/10</span>
-                </div>
-                <div style={{
-                  fontSize: 9, color: THEME.textMuted,
-                  textTransform: "uppercase", letterSpacing: 1.5,
-                }}>Timing — Entrée</div>
-              </div>
-            )}
+          {/* Colonne gauche — graphique */}
+          <div style={{ flex:"1 1 55%", minWidth:320 }}>
+            <ChartBlock
+              chartData={chartData}
+              currency={currency}
+              quoteType={quoteType}
+              period={period}
+              periods={Object.entries(CHART_RANGES).map(([k,v])=>({key:k,label:v.label}))}
+              onPeriodChange={handlePeriodChange}
+              loading={chartLoading}
+              optimalUTKey={optimalUTKey}
+              showEur={showEur}
+              setShowEur={setShowEur}
+              eurRate={eurRate}
+              priceValue={metrics?.price ?? null}
+            />
           </div>
-          {/* Contenu principal */}
-          <div style={{ flex: 1 }}>
-            {/* Verdict textuel */}
-            <div style={{ marginBottom: 12 }}>
-              <div style={{ fontSize: 20, fontWeight: 900, color: v.color }}>{v.emoji} {v.label}</div>
-              <div style={{ fontSize: 11, color: THEME.textSecondary, lineHeight: 1.4, marginTop: 2 }}>{v.desc}</div>
-            </div>
-            {/* Mini-jauges */}
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
-              <MiniGauge label="Valorisation" score={gValorisation} weight={0.40}/>
-              <MiniGauge label="Rentabilité"  score={gRentabilite}  weight={0.30}/>
-              <MiniGauge label="Santé"        score={gSante}        weight={0.20}/>
-              <MiniGauge label="Risque"       score={gRisque}       weight={0.10}/>
-            </div>
-            {/* Synthèse technique */}
-            {techSummary && (
+
+          {/* Colonne droite — scores + verdict + recommandation */}
+          <div style={{ flex:"1 1 35%", minWidth:280,
+            display:"flex", flexDirection:"column", gap:12,
+            position:"sticky", top:"72px" }}>
+
+            {/* Carte verdict */}
+            {v ? (
               <div style={{
-                display: "inline-flex", alignItems: "center", gap: 8,
-                padding: "5px 10px", borderRadius: 6,
-                background: techSummary.color + "15",
-                borderLeft: `3px solid ${techSummary.color}`,
+                background: v.color + "0f",
+                border: `1px solid ${v.color}33`,
+                borderRadius:14, padding:"18px 20px",
               }}>
-                <span style={{ fontSize: 9, color: THEME.textSecondary, textTransform: "uppercase", letterSpacing: 1 }}>Oscillateurs</span>
-                <span style={{ fontSize: 12, fontWeight: 700, color: techSummary.color }}>{techSummary.label}</span>
-                <span style={{ fontSize: 9, color: THEME.scoreGreen, fontWeight: 700 }}>
-                  {techSummary.bulls}+
-                </span>
-                <span style={{ fontSize: 9, color: THEME.scoreRed, fontWeight: 700 }}>
-                  {techSummary.bears}-
-                </span>
-                <span style={{ fontSize: 9, color: THEME.textSecondary }}>
-                  {" "}/ {techSummary.total}
-                </span>
-              </div>
-            )}
-            {techSummary && (
-              <div style={{ fontSize: 10, color: THEME.textSecondary, marginTop: 5, lineHeight: 1.5 }}>
-                Synthèse des indicateurs techniques directionnels (RSI, MACD, EMA, structure, volume).
-                {techSummary.bulls > techSummary.bears
-                  ? " Majorité de signaux haussiers."
-                  : techSummary.bears > techSummary.bulls
-                  ? " Majorité de signaux baissiers."
-                  : " Signaux équilibrés — pas de biais directionnel clair."}
-              </div>
-            )}
-            {/* Bandeau macro défavorable */}
-            {macro && !macro.error && (() => {
-              const warnings: string[] = [];
-              if (macro.vix != null && macro.vix > 30) warnings.push(`VIX à ${macro.vix} — volatilité élevée`);
-              if (macro.rate10y != null && macro.rate10y > 4.5) warnings.push(`taux à ${macro.rate10y}% — coût du capital élevé`);
-              if (macro.spreadCurve != null && macro.spreadCurve < 0) warnings.push("courbe inversée — signal de récession historique");
-              if (warnings.length === 0) return null;
-              return (
-                <div style={{
-                  background: "#2a1500", border: `1px solid ${THEME.scoreOrange}`,
-                  borderRadius: 8, padding: "8px 14px",
-                  fontSize: 11, color: THEME.scoreOrange,
-                  marginTop: 10, lineHeight: 1.6,
-                }}>
-                  ⚠️ Contexte macro à surveiller : {warnings.join(" · ")}. Ces facteurs sont indépendants des fondamentaux mais peuvent peser sur le titre à court terme.
+                {/* Jauges */}
+                <div style={{ display:"flex", justifyContent:"space-evenly",
+                  marginBottom:14, flexWrap:"wrap", gap:12 }}>
+                  {metrics?.globalScore != null && (
+                    <div style={{ display:"flex", flexDirection:"column",
+                      alignItems:"center", gap:4 }}>
+                      <ScoreGauge score={metrics.globalScore}/>
+                      <div style={{ display:"flex", alignItems:"baseline", gap:3 }}>
+                        <span style={{ fontSize:36, fontWeight:900,
+                          color:scoreColor(metrics.globalScore),
+                          fontFamily:"'IBM Plex Mono',monospace" }}>
+                          {metrics.globalScore}
+                        </span>
+                        <span style={{ fontSize:12, color:THEME.textSecondary,
+                          fontFamily:"'IBM Plex Mono',monospace" }}>/10</span>
+                      </div>
+                      <div style={{ fontSize:9, color:THEME.textMuted,
+                        textTransform:"uppercase", letterSpacing:1.5 }}>
+                        Fondamentaux
+                      </div>
+                    </div>
+                  )}
+                  {finalScore != null && (
+                    <div style={{ display:"flex", flexDirection:"column",
+                      alignItems:"center", gap:4 }}>
+                      <ScoreGauge score={finalScore}/>
+                      <div style={{ display:"flex", alignItems:"baseline", gap:3 }}>
+                        <span style={{ fontSize:36, fontWeight:900,
+                          color:scoreColor(finalScore),
+                          fontFamily:"'IBM Plex Mono',monospace" }}>
+                          {finalScore}
+                        </span>
+                        <span style={{ fontSize:12, color:THEME.textSecondary,
+                          fontFamily:"'IBM Plex Mono',monospace" }}>/10</span>
+                      </div>
+                      <div style={{ fontSize:9, color:THEME.textMuted,
+                        textTransform:"uppercase", letterSpacing:1.5 }}>
+                        Timing Entrée
+                      </div>
+                    </div>
+                  )}
                 </div>
+                {/* Verdict */}
+                <div style={{ fontSize:18, fontWeight:900,
+                  color:v.color, marginBottom:4 }}>
+                  {v.emoji} {v.label}
+                </div>
+                <div style={{ fontSize:11, color:THEME.textSecondary,
+                  lineHeight:1.4, marginBottom:12 }}>
+                  {v.desc}
+                </div>
+                {/* Mini-jauges */}
+                <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+                  <MiniGauge label="Valorisation" score={gValorisation} weight={0.40}/>
+                  <MiniGauge label="Rentabilité"  score={gRentabilite}  weight={0.30}/>
+                  <MiniGauge label="Santé"        score={gSante}        weight={0.20}/>
+                  <MiniGauge label="Risque"       score={gRisque}       weight={0.10}/>
+                </div>
+              </div>
+            ) : (
+              <div style={{
+                background:THEME.bgHeader, border:`1px solid ${THEME.borderMid}`,
+                borderRadius:14, padding:"18px 20px",
+              }}>
+                <div style={{ fontSize:18, fontWeight:900,
+                  color:THEME.textSecondary, marginBottom:6 }}>
+                  {["INDEX","FUTURE","BOND","MUTUALFUND"].indexOf((quoteType||"").toUpperCase()) !== -1
+                    ? "Analyse technique uniquement"
+                    : "Données insuffisantes"}
+                </div>
+                <div style={{ fontSize:11, color:THEME.textMuted, lineHeight:1.6 }}>
+                  {quoteType === "INDEX"      ? "Les ratios PE / PB / ROE ne s'appliquent pas aux indices de marché." :
+                   quoteType === "FUTURE"     ? "Les contrats à terme n'ont pas de fondamentaux d'entreprise." :
+                   quoteType === "BOND"       ? "Les obligations se lisent par le taux et la maturité, pas par le PE." :
+                   quoteType === "MUTUALFUND" ? "Les fonds n'ont pas de bilan d'entreprise à analyser." :
+                   "Données fondamentales insuffisantes pour calculer un score fiable."}
+                </div>
+              </div>
+            )}
+
+            {/* Recommandation d'entrée */}
+            {(() => {
+              const entryRec = computeEntryRecommendation(
+                metrics,
+                finalScoreResult?.context ?? null,
+                techComputed.signals,
+                techComputed.sinewave,
+                macro,
+                finalScore,
+                metrics?.globalScore ?? null,
               );
+              return <EntryRecommendationPanel rec={entryRec}/>;
             })()}
           </div>
         </div>
-      ) : (
-        <div style={{
-          background: THEME.bgHeader, border: `1px solid ${THEME.borderMid}`,
-          borderRadius: 14, padding: "18px 22px", marginBottom: 14,
-        }}>
-          <div style={{ fontSize: 18, fontWeight: 900, color: THEME.textSecondary, marginBottom: 6 }}>
-            {["INDEX","FUTURE","BOND","MUTUALFUND"].indexOf((quoteType||"").toUpperCase()) !== -1
-              ? "Analyse technique uniquement"
-              : "Données insuffisantes"}
-          </div>
-          <div style={{ fontSize: 11, color: THEME.textMuted, lineHeight: 1.6, marginBottom: 10 }}>
-            {quoteType === "INDEX"      ? "Les ratios PE / PB / ROE ne s'appliquent pas aux indices de marché." :
-             quoteType === "FUTURE"     ? "Les contrats à terme n'ont pas de fondamentaux d'entreprise." :
-             quoteType === "BOND"       ? "Les obligations se lisent par le taux et la maturité, pas par le PE." :
-             quoteType === "MUTUALFUND" ? "Les fonds n'ont pas de bilan d'entreprise à analyser." :
-             "Données fondamentales insuffisantes pour calculer un score fiable."}
-          </div>
-          {change52w != null && (
-            <div style={{ background: THEME.bgCard, borderRadius: 8, padding: "8px 12px", marginBottom: 10, display: "inline-block" }}>
-              <div style={{ fontSize: 9, color: THEME.textMuted, textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 4 }}>
-                Perf. 52 semaines
-              </div>
-              <div style={{ fontSize: 26, fontWeight: 900, color: change52w >= 0 ? THEME.scoreGreen : THEME.scoreRed, fontFamily: "'IBM Plex Mono',monospace" }}>
-                {change52w >= 0 ? "+" : ""}{(change52w * 100).toFixed(1)}%
-              </div>
-            </div>
+      )}
+
+      {/* ══════════════════════════════════════
+          ONGLET TECHNIQUE
+      ══════════════════════════════════════ */}
+      {activeTab === "technique" && (
+        <div style={{ display:"flex", flexDirection:"column", gap:0 }}>
+          {marketCtx && finalScoreResult && (
+            <MarketContextPanel
+              context={finalScoreResult.context}
+              modifiers={finalScoreResult.modifiers}
+            />
           )}
-          {techSummary && (
-            <div style={{
-              display: "inline-flex", alignItems: "center", gap: 8,
-              padding: "5px 10px", borderRadius: 6, marginLeft: change52w != null ? 12 : 0,
-              background: techSummary.color + "15",
-              borderLeft: `3px solid ${techSummary.color}`,
-            }}>
-              <span style={{ fontSize: 9, color: THEME.textSecondary, textTransform: "uppercase", letterSpacing: 1 }}>Oscillateurs</span>
-              <span style={{ fontSize: 12, fontWeight: 700, color: techSummary.color }}>{techSummary.label}</span>
-              <span style={{ fontSize: 9, color: THEME.scoreGreen, fontWeight: 700 }}>
-                {techSummary.bulls}+
-              </span>
-              <span style={{ fontSize: 9, color: THEME.textSecondary }}> / </span>
-              <span style={{ fontSize: 9, color: THEME.scoreRed, fontWeight: 700 }}>
-                {techSummary.bears}-
-              </span>
-              <span style={{ fontSize: 9, color: THEME.textSecondary }}>
-                {" "}/ {techSummary.total}
-              </span>
-            </div>
-          )}
+          <TechnicalPanel
+            precomputed={techComputed}
+            context={finalScoreResult?.context ?? null}
+          />
+          <ProjectionPanel
+            closes={chartData?.closes ?? []}
+            highs={chartData?.highs ?? []}
+            lows={chartData?.lows ?? []}
+            volumes={chartData?.volumes ?? []}
+            currency={metrics?.currency ?? "USD"}
+            chartInterval={chartInterval}
+            period={period}
+            marketContext={finalScoreResult?.context ?? null}
+          />
         </div>
       )}
 
-      {/* GRAPHIQUE */}
-      <ChartBlock
-        chartData={chartData}
-        currency={currency}
-        quoteType={quoteType}
-        period={period}
-        periods={Object.entries(CHART_RANGES).map(([k,v])=>({key:k,label:v.label}))}
-        onPeriodChange={handlePeriodChange}
-        loading={chartLoading}
-        optimalUTKey={optimalUTKey}
-        showEur={showEur}
-        setShowEur={setShowEur}
-        eurRate={eurRate}
-        priceValue={metrics?.price ?? null}
-      />
-
-      {/* RECOMMANDATION D'ENTRÉE */}
-      {(() => {
-        const entryRec = computeEntryRecommendation(
-          metrics,
-          finalScoreResult?.context ?? null,
-          techComputed.signals,
-          techComputed.sinewave,
-          macro,
-          finalScore,
-          metrics?.globalScore ?? null,
-        );
-        return <EntryRecommendationPanel rec={entryRec}/>;
-      })()}
-
-      {/* CONTEXTE DE MARCHÉ */}
-      {marketCtx && finalScoreResult && (
-        <MarketContextPanel
-          context={finalScoreResult.context}
-          modifiers={finalScoreResult.modifiers}
-        />
+      {/* ══════════════════════════════════════
+          ONGLET FONDAMENTAUX
+      ══════════════════════════════════════ */}
+      {activeTab === "fondamentaux" && (
+        <div style={{ display:"flex", flexDirection:"column", gap:0 }}>
+          {descFr && (
+            <div style={{
+              background:THEME.bgPanel,
+              border:`1px solid ${THEME.borderPanel}`,
+              borderRadius:12, padding:"14px 18px", marginBottom:14,
+            }}>
+              <div onClick={() => setDescOpen(o => !o)} style={{
+                display:"flex", alignItems:"center",
+                justifyContent:"space-between",
+                cursor:"pointer", marginBottom: descOpen ? 10 : 0,
+              }}>
+                <span style={{ fontSize:12, fontWeight:800,
+                  color:THEME.textSecondary,
+                  textTransform:"uppercase", letterSpacing:2 }}>
+                  📖 À propos
+                </span>
+                <span style={{ fontSize:10, color:THEME.textMuted }}>
+                  {descOpen ? "▲" : "▼"}
+                </span>
+              </div>
+              {descOpen ? (
+                <div style={{ fontSize:12, color:THEME.textSecondary,
+                  lineHeight:1.8,
+                  borderLeft:`3px solid ${THEME.accent}`, paddingLeft:12 }}>
+                  {descFr}
+                  <div onClick={() => setDescOpen(false)}
+                    style={{ marginTop:8, fontSize:10,
+                      color:THEME.textMuted, cursor:"pointer" }}>
+                    ▲ Réduire
+                  </div>
+                </div>
+              ) : (
+                <div onClick={() => setDescOpen(true)}
+                  style={{ fontSize:12, color:THEME.textSecondary,
+                    lineHeight:1.7, cursor:"pointer",
+                    borderLeft:`3px solid ${THEME.accent}`, paddingLeft:12 }}>
+                  {descFr.slice(0,320)}
+                  {descFr.length > 320 && (
+                    <span style={{ color:THEME.accent, fontWeight:700 }}>
+                      {" "}… Lire la suite
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+          {["INDEX","FUTURE","BOND","ETF","MUTUALFUND","CURRENCY"]
+            .indexOf((quoteType||"").toUpperCase()) === -1 && (
+            <FundamentalsPanel
+              metrics={metrics}
+              scores={scores}
+              sections={SECTIONS}
+              currency={currency}
+            />
+          )}
+          <SentimentPanel metrics={metrics} macro={macro}/>
+          <SituationalPanel metrics={metrics}
+            closes={chartData?.closes ?? []}/>
+        </div>
       )}
 
-      {/* ENCARTS ANALYSE */}
-      <div style={{ marginTop:14, display:"flex", flexDirection:"column", gap:0 }}>
-        <MacroContextPanel macro={macro} zone={zone}/>
-        <SentimentPanel metrics={metrics} macro={macro}/>
-        <TechnicalPanel precomputed={techComputed} context={finalScoreResult?.context ?? null} />
-        <SituationalPanel metrics={metrics} closes={chartData?.closes ?? []}/>
-        <ProjectionPanel
-          closes={chartData?.closes ?? []}
-          highs={chartData?.highs ?? []}
-          lows={chartData?.lows ?? []}
-          volumes={chartData?.volumes ?? []}
-          currency={metrics?.currency ?? "USD"}
-          chartInterval={chartInterval}
-          period={period}
-          marketContext={finalScoreResult?.context ?? null}
-        />
-        <NewsPanel ticker={ticker} quoteType={metrics?.quoteType} shortName={metrics?.shortName ?? metrics?.longName}/>
-      </div>
-
-      {/* FONDAMENTAUX — masqués pour les types sans données d'entreprise */}
-      {["INDEX","FUTURE","BOND","ETF","MUTUALFUND","CURRENCY"].indexOf((quoteType||"").toUpperCase()) === -1 && (
-        <FundamentalsPanel
-          metrics={metrics}
-          scores={scores}
-          sections={SECTIONS}
-          currency={currency}
-        />
+      {/* ══════════════════════════════════════
+          ONGLET MACRO & NEWS
+      ══════════════════════════════════════ */}
+      {activeTab === "macro" && (
+        <div style={{ display:"flex", flexDirection:"column", gap:0 }}>
+          <MacroContextPanel macro={macro} zone={zone}/>
+          <NewsPanel ticker={ticker} quoteType={metrics?.quoteType}
+            shortName={metrics?.shortName ?? metrics?.longName}/>
+        </div>
       )}
 
-      <div style={{ fontSize: 10, color: THEME.textMuted, textAlign: "right", marginTop: 16 }}>
-        Source : Yahoo Finance via proxy · Données indicatives, non contractuelles
+      <div style={{ fontSize:10, color:THEME.textMuted,
+        textAlign:"right", marginTop:16 }}>
+        Source : Yahoo Finance via proxy · Données indicatives
       </div>
     </div>
   );
@@ -6991,8 +6936,7 @@ function NewsPanel({ ticker, quoteType, shortName }: { ticker: string; quoteType
   const [news, setNews]     = useState<NewsItem[]>([]);
   const [loaded, setLoaded] = useState(false);
 
-  const qt     = (quoteType || "").toUpperCase();
-  const hidden = qt === "FOREX";
+  const qt = (quoteType || "").toUpperCase();
 
   useEffect(() => {
     if (!ticker) return;
@@ -7002,7 +6946,6 @@ function NewsPanel({ ticker, quoteType, shortName }: { ticker: string; quoteType
     });
   }, [ticker, shortName]);
 
-  if (hidden) return null;
   if (loaded && news.length === 0) return null;
   if (!loaded) return null;
 
@@ -7210,7 +7153,7 @@ function computeCryptoSentimentSynthesis(
   return null;
 }
 
-function CryptoView({ data }: { data: any }) {
+function CryptoView({ data, activeTab = "resume" }: { data: any; activeTab?: "resume"|"technique"|"marche"|"macro" }) {
   const md     = data.market_data || {};
   const price    = md.current_price?.usd as number | undefined;
   const priceEur = md.current_price?.eur as number | undefined;
@@ -7439,7 +7382,7 @@ function CryptoView({ data }: { data: any }) {
   return (
     <div style={{ animation:"fadeIn .4s ease" }}>
 
-      {/* ── Header ── */}
+      {/* ── HEADER — toujours visible ── */}
       <div style={{ display:"flex", alignItems:"flex-start", gap:16, marginBottom:16, flexWrap:"wrap" }}>
         {data.image?.small && <img src={data.image.small} alt="" style={{ width:52, height:52, borderRadius:"50%", marginTop:4 }}/>}
         <div style={{ flex:1 }}>
@@ -7474,592 +7417,547 @@ function CryptoView({ data }: { data: any }) {
         </div>
       </div>
 
-      {/* ── À propos ── */}
-      {descFr && (
-        <div style={{
-          background: THEME.bgPanel,
-          border: `1px solid ${THEME.borderPanel}`,
-          borderRadius: 12,
-          padding: "14px 18px",
-          marginBottom: 14,
-        }}>
-          <div style={{ fontSize: 12, fontWeight: 800, color: THEME.textSecondary,
-            textTransform: "uppercase", letterSpacing: 2, marginBottom: 8 }}>
-            📖 À propos
+      {/* ══════════════════════════════════════
+          ONGLET RÉSUMÉ
+      ══════════════════════════════════════ */}
+      {activeTab === "resume" && (
+        <div style={{ display:"flex", gap:24, alignItems:"flex-start", flexWrap:"wrap" }}>
+
+          {/* Colonne gauche — graphique */}
+          <div style={{ flex:"1 1 55%", minWidth:320 }}>
+            <ChartBlock
+              chartData={allChartData}
+              chartDataWeekly={allChartDataWeekly}
+              candleData={candleData}
+              candleLoading={candleLoading}
+              candleDisplay={candleData !== undefined ? UT_DISPLAY : undefined}
+              currency="USD"
+              quoteType="CRYPTOCURRENCY"
+              period={ut}
+              periods={UT_PERIODS}
+              onPeriodChange={handleUTChange}
+              loading={chartLoading}
+              optimalUTKey={optimalUTKey}
+            />
           </div>
-          <div style={{ fontSize: 12, color: THEME.textSecondary, lineHeight: 1.8,
-            borderLeft: `3px solid ${THEME.accent}`, paddingLeft: 12 }}>
-            {descFr.slice(0, 600)}{descFr.length > 600 ? "…" : ""}
+
+          {/* Colonne droite — verdict + recommandation */}
+          <div style={{ flex:"1 1 35%", minWidth:280,
+            display:"flex", flexDirection:"column", gap:12,
+            position:"sticky", top:"72px" }}>
+            {allChartData && allChartData.closes.filter((v: number|null) => v != null).length > 20 && (() => {
+              const cryptoInterval: "1d"|"1wk"|"1mo" =
+                ut === "1W" ? "1wk" : ut === "1M" ? "1mo" : "1d";
+              const rawData = candleData ?? allChartData;
+              const last = rawData.closes.length;
+              const start = Math.max(0, last - UT_DISPLAY);
+              const cryptoData = {
+                closes:     rawData.closes.slice(start),
+                opens:      rawData.opens.slice(start),
+                highs:      rawData.highs.slice(start),
+                lows:       rawData.lows.slice(start),
+                volumes:    rawData.volumes.slice(start),
+                timestamps: rawData.timestamps.slice(start),
+              };
+              const upperCtx = cryptoInterval === "1d" && allChartDataWeekly
+                ? classifyMarketContext(allChartDataWeekly.closes, allChartDataWeekly.highs, allChartDataWeekly.lows, allChartDataWeekly.volumes)
+                : null;
+              const _marketCtx    = classifyMarketContext(cryptoData.closes, cryptoData.highs, cryptoData.lows, cryptoData.volumes);
+              const _techComputed = computeTechSignals(cryptoData.closes, cryptoData.volumes, cryptoData.highs, cryptoData.lows, cryptoInterval);
+              const upperBearish  = upperCtx != null &&
+                (upperCtx.structure.type === "bearish" || upperCtx.type === "chaos" ||
+                 (upperCtx.subtype === "essoufflement" && upperCtx.structure.type === "bullish"));
+              const _confluenceResult = calcConfluenceScore(cryptoData.closes, cryptoData.highs, cryptoData.lows, cryptoData.volumes);
+              const _finalScoreRaw = computeFinalScore(null, _marketCtx, _techComputed.signals, cryptoData.closes, _confluenceResult?.score ?? null);
+              const score = upperBearish && _finalScoreRaw.score > 5
+                ? parseFloat(Math.max(1, _finalScoreRaw.score - 1.5).toFixed(1))
+                : _finalScoreRaw.score;
+              const v = getVerdict(score);
+              const cryptoEntryRec = computeCryptoEntryRecommendation(
+                upperBearish ? { ..._marketCtx, fundamentalConfirm: "warns" } : _marketCtx,
+                _techComputed.signals,
+                _techComputed.sinewave,
+                fearGreed,
+                funding,
+              );
+              if (!v) return null;
+              return (
+                <>
+                  <div style={{
+                    background: v.color+"0f",
+                    border:`1px solid ${v.color}33`,
+                    borderRadius:14, padding:"18px 20px",
+                  }}>
+                    <div style={{ display:"flex", justifyContent:"space-evenly",
+                      marginBottom:14, flexWrap:"wrap", gap:12 }}>
+                      <div style={{ display:"flex", flexDirection:"column",
+                        alignItems:"center", gap:4 }}>
+                        <ScoreGauge score={score}/>
+                        <div style={{ display:"flex", alignItems:"baseline", gap:3 }}>
+                          <span style={{ fontSize:36, fontWeight:900,
+                            color:scoreColor(score),
+                            fontFamily:"'IBM Plex Mono',monospace" }}>
+                            {score}
+                          </span>
+                          <span style={{ fontSize:12, color:THEME.textSecondary,
+                            fontFamily:"'IBM Plex Mono',monospace" }}>/10</span>
+                        </div>
+                        <div style={{ fontSize:9, color:THEME.textMuted,
+                          textTransform:"uppercase", letterSpacing:1.5 }}>
+                          Timing Technique
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{ fontSize:18, fontWeight:900,
+                      color:v.color, marginBottom:4 }}>
+                      {v.emoji} {v.label}
+                    </div>
+                    <div style={{ fontSize:11, color:THEME.textSecondary, lineHeight:1.4 }}>
+                      {v.desc}
+                    </div>
+                    {upperBearish && (
+                      <div style={{ marginTop:10, padding:"8px 12px",
+                        background:"#1e0808",
+                        border:`1px solid ${THEME.scoreRed}44`,
+                        borderRadius:8, fontSize:10, color:THEME.scoreRed }}>
+                        ⚠️ Contexte hebdomadaire défavorable — score pénalisé.
+                      </div>
+                    )}
+                  </div>
+                  <EntryRecommendationPanel rec={cryptoEntryRec}/>
+                </>
+              );
+            })()}
           </div>
         </div>
       )}
 
-      {/* ── Carte verdict technique crypto ── */}
-      {allChartData && allChartData.closes.filter((v: number|null) => v != null).length > 20 && (() => {
-        const cryptoInterval: "1d" | "1wk" | "1mo" =
-          ut === "1W" ? "1wk" :
-          ut === "1M" ? "1mo" : "1d";
+      {/* ══════════════════════════════════════
+          ONGLET TECHNIQUE
+      ══════════════════════════════════════ */}
+      {activeTab === "technique" && (() => {
+        if (!allChartData || allChartData.closes.filter((v: number|null) => v != null).length <= 20)
+          return null;
+        const cryptoInterval: "1d"|"1wk"|"1mo" =
+          ut === "1W" ? "1wk" : ut === "1M" ? "1mo" : "1d";
         const rawData = candleData ?? allChartData;
-        const sliceData  = (src: typeof rawData) => {
-          if (!src) return src;
-          const last = src.closes.length;
-          const start = Math.max(0, last - UT_DISPLAY);
-          return {
-            closes:     src.closes.slice(start),
-            opens:      src.opens.slice(start),
-            highs:      src.highs.slice(start),
-            lows:       src.lows.slice(start),
-            volumes:    src.volumes.slice(start),
-            timestamps: src.timestamps.slice(start),
-          };
+        const last = rawData.closes.length;
+        const start = Math.max(0, last - UT_DISPLAY);
+        const cryptoData = {
+          closes:     rawData.closes.slice(start),
+          opens:      rawData.opens.slice(start),
+          highs:      rawData.highs.slice(start),
+          lows:       rawData.lows.slice(start),
+          volumes:    rawData.volumes.slice(start),
+          timestamps: rawData.timestamps.slice(start),
         };
-        const cryptoData = sliceData(rawData);
         const upperCtx = cryptoInterval === "1d" && allChartDataWeekly
-          ? classifyMarketContext(allChartDataWeekly.closes, allChartDataWeekly.highs, allChartDataWeekly.lows, allChartDataWeekly.volumes)
-          : null;
-        const _marketCtx    = classifyMarketContext(cryptoData.closes, cryptoData.highs, cryptoData.lows, cryptoData.volumes);
-        const _techComputed = computeTechSignals(cryptoData.closes, cryptoData.volumes, cryptoData.highs, cryptoData.lows, cryptoInterval);
-        const upperBearish  = upperCtx != null &&
-          (upperCtx.structure.type === "bearish" || upperCtx.type === "chaos" ||
-           (upperCtx.subtype === "essoufflement" && upperCtx.structure.type === "bullish"));
-        const _confluenceResult = calcConfluenceScore(cryptoData.closes, cryptoData.highs, cryptoData.lows, cryptoData.volumes);
-        const _finalScoreRaw = computeFinalScore(null, _marketCtx, _techComputed.signals, cryptoData.closes, _confluenceResult?.score ?? null);
-        const _finalScore    = {
-          ..._finalScoreRaw,
-          score: upperBearish && _finalScoreRaw.score > 5
-            ? parseFloat(Math.max(1, _finalScoreRaw.score - 1.5).toFixed(1))
-            : _finalScoreRaw.score,
-        };
-        const score            = _finalScore.score;
-        const v                = getVerdict(score);
-        const bulls = _techComputed.signals.filter(s => s.strength === "bull").length;
-        const bears = _techComputed.signals.filter(s => s.strength === "bear").length;
-        const total = bulls + bears;
-        const techLabel = bears > bulls + 1 ? "Baissière" : bulls > bears + 1 ? "Haussière" : "Mitigée";
-        const techColor = bears > bulls + 1 ? "#ef4444" : bulls > bears + 1 ? "#22c55e" : "#f59e0b";
-        if (!v) return null;
-        return (
-          <div style={{
-            background: v.color + "0f", border: `1px solid ${v.color}33`,
-            borderRadius: 14, padding: "18px 22px", marginBottom: 14,
-            display: "flex", alignItems: "center", gap: 24, flexWrap: "wrap",
-          }}>
-            {/* Jauge score timing */}
-            <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4 }}>
-              <ScoreGauge score={score}/>
-              <div style={{ display:"flex", alignItems:"baseline", gap:3 }}>
-                <span style={{ fontSize:46, fontWeight:900, lineHeight:1, color:scoreColor(score), fontFamily:"'IBM Plex Mono',monospace" }}>{score}</span>
-                <span style={{ fontSize:14, color:THEME.textSecondary, fontFamily:"'IBM Plex Mono',monospace" }}>/10</span>
-              </div>
-              <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5 }}>
-                Timing — Technique
-              </div>
-            </div>
-            {/* Verdict + oscillateurs */}
-            <div style={{ flex:1 }}>
-              <div style={{ fontSize:20, fontWeight:900, color:v.color, marginBottom:4 }}>{v.emoji} {v.label}</div>
-              <div style={{ fontSize:11, color:THEME.textSecondary, lineHeight:1.4, marginBottom:12 }}>{v.desc}</div>
-              {total > 0 && (
-                <div style={{
-                  display:"inline-flex", alignItems:"center", gap:8,
-                  padding:"5px 10px", borderRadius:6,
-                  background: techColor + "15", borderLeft:`3px solid ${techColor}`,
-                }}>
-                  <span style={{ fontSize:9, color:THEME.textSecondary, textTransform:"uppercase", letterSpacing:1 }}>Oscillateurs</span>
-                  <span style={{ fontSize:12, fontWeight:700, color:techColor }}>{techLabel}</span>
-                  <span style={{ fontSize:9, color:THEME.scoreGreen, fontWeight:700 }}>{bulls}+</span>
-                  <span style={{ fontSize:9, color:THEME.scoreRed, fontWeight:700 }}>{bears}-</span>
-                  <span style={{ fontSize:9, color:THEME.textSecondary }}>/ {total}</span>
-                </div>
-              )}
-            </div>
-          </div>
-        );
-      })()}
-
-      {/* ── Grille métriques enrichie ── */}
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))", gap:10, marginBottom:14 }}>
-
-        {rank != null && (
-          <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
-            <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Rang CoinGecko</div>
-            <div style={{ fontSize:14, fontWeight:700, color:THEME.accent, fontFamily:"'IBM Plex Mono',monospace" }}>#{rank}</div>
-            {topPct != null && <div style={{ fontSize:9, color:THEME.textMuted, marginTop:2 }}>Top {topPct.toFixed(1)}%</div>}
-          </div>
-        )}
-
-        <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
-          <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Market Cap</div>
-          <div style={{ fontSize:14, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>${fmt(mktCap)}</div>
-          {btcDomRatio != null && <div style={{ fontSize:9, color:THEME.textMuted, marginTop:2 }}>{(btcDomRatio * 100).toFixed(3)}% du marché crypto total</div>}
-        </div>
-
-        <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
-          <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Volume 24h</div>
-          <div style={{ fontSize:14, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>${fmt(vol24h)}</div>
-          {volMktRatio != null && (
-            <div style={{ fontSize:9, color: volMktRatio > 0.05 ? THEME.scoreGreen : THEME.scoreAmber, marginTop:2 }}>
-              {(volMktRatio * 100).toFixed(1)}% de la capitalisation · {volMktRatio > 0.05 ? "Liquidité forte" : "Liquidité modérée"}
-            </div>
-          )}
-        </div>
-
-        <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
-          <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Offre circulante</div>
-          <div style={{ fontSize:14, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>{fmt(supply, 0)}</div>
-          {maxSup != null && supply != null && (
-            <div style={{ fontSize:9, color:THEME.textMuted, marginTop:2 }}>{((supply / maxSup) * 100).toFixed(1)}% émis</div>
-          )}
-        </div>
-
-        <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
-          <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Offre max</div>
-          <div style={{ fontSize:14, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>{maxSup ? fmt(maxSup, 0) : "∞"}</div>
-        </div>
-
-        <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
-          <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>ATH</div>
-          <div style={{ fontSize:14, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>{ath ? "$" + fmt(ath) : "—"}</div>
-        </div>
-
-        {athPct != null && (
-          <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
-            <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Depuis ATH</div>
-            <div style={{ fontSize:14, fontWeight:700, fontFamily:"'IBM Plex Mono',monospace",
-              color: athPct > -5 ? THEME.scoreRed : athPct > -20 ? THEME.scoreAmber : THEME.scoreGreen
-            }}>{athPct.toFixed(1)}%</div>
-            <div style={{ fontSize:9, color:THEME.textMuted, marginTop:2 }}>
-              {athPct > -5 ? "Proche ATH — attention" : athPct > -20 ? "Repli modéré" : "Décote significative"}
-            </div>
-          </div>
-        )}
-
-        {chg1y != null && (
-          <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
-            <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Perf 1 an</div>
-            <div style={{ fontSize:14, fontWeight:700, color:pctColor(chg1y), fontFamily:"'IBM Plex Mono',monospace" }}>{pctLabel(chg1y)}</div>
-          </div>
-        )}
-
-      </div>
-
-      {/* ── Graphique ── */}
-      <ChartBlock
-        chartData={allChartData}
-        chartDataWeekly={allChartDataWeekly}
-        candleData={candleData}
-        candleLoading={candleLoading}
-        candleDisplay={candleData !== undefined ? UT_DISPLAY : undefined}
-        currency="USD"
-        quoteType="CRYPTOCURRENCY"
-        period={ut}
-        periods={UT_PERIODS}
-        onPeriodChange={handleUTChange}
-        loading={chartLoading}
-        optimalUTKey={optimalUTKey}
-      />
-
-      {/* ── Analyse technique ── */}
-      {allChartData && allChartData.closes.filter((v: number|null) => v != null).length > 20 && (() => {
-        const cryptoInterval: "1d" | "1wk" | "1mo" =
-          ut === "1W" ? "1wk" :
-          ut === "1M" ? "1mo" : "1d";
-        const rawData2 = candleData ?? allChartData;
-        const sliceData2  = (src: typeof rawData2) => {
-          if (!src) return src;
-          const last = src.closes.length;
-          const start = Math.max(0, last - UT_DISPLAY);
-          return {
-            closes:     src.closes.slice(start),
-            opens:      src.opens.slice(start),
-            highs:      src.highs.slice(start),
-            lows:       src.lows.slice(start),
-            volumes:    src.volumes.slice(start),
-            timestamps: src.timestamps.slice(start),
-          };
-        };
-        const cryptoData   = sliceData2(rawData2);
-        const upperCtx     = cryptoInterval === "1d" && allChartDataWeekly
           ? classifyMarketContext(allChartDataWeekly.closes, allChartDataWeekly.highs, allChartDataWeekly.lows, allChartDataWeekly.volumes)
           : null;
         const marketCtx    = classifyMarketContext(cryptoData.closes, cryptoData.highs, cryptoData.lows, cryptoData.volumes);
         const techComputed = computeTechSignals(cryptoData.closes, cryptoData.volumes, cryptoData.highs, cryptoData.lows, cryptoInterval);
-        const confluenceResult2 = calcConfluenceScore(cryptoData.closes, cryptoData.highs, cryptoData.lows, cryptoData.volumes);
-        const finalScoreResult = computeFinalScore(null, marketCtx, techComputed.signals, cryptoData.closes, confluenceResult2?.score ?? null);
         const upperBearish = upperCtx != null &&
           (upperCtx.structure.type === "bearish" || upperCtx.type === "chaos" ||
            (upperCtx.subtype === "essoufflement" && upperCtx.structure.type === "bullish"));
+        const confluenceResult = calcConfluenceScore(cryptoData.closes, cryptoData.highs, cryptoData.lows, cryptoData.volumes);
+        const finalScoreResult = computeFinalScore(null, marketCtx, techComputed.signals, cryptoData.closes, confluenceResult?.score ?? null);
         const adjustedScore = upperBearish && finalScoreResult.score > 5
           ? parseFloat(Math.max(1, finalScoreResult.score - 1.5).toFixed(1))
           : finalScoreResult.score;
-        const adjustedScoreResult = { ...finalScoreResult, score: adjustedScore };
-        const cryptoEntryRec = computeCryptoEntryRecommendation(
-          upperBearish ? { ...marketCtx, fundamentalConfirm: "warns" } : marketCtx,
-          techComputed.signals,
-          techComputed.sinewave,
-          fearGreed,
-          funding,
-        );
+        const adjustedResult = { ...finalScoreResult, score: adjustedScore };
         return (
-          <>
+          <div style={{ display:"flex", flexDirection:"column", gap:0 }}>
             {upperBearish && (
-              <div style={{
-                padding: "8px 14px", marginBottom: 10,
-                background: "#1e0808", border: `1px solid ${THEME.scoreRed}44`,
-                borderRadius: 10, fontSize: 11, color: THEME.scoreRed,
-                display: "flex", alignItems: "center", gap: 8,
-              }}>
-                ⚠️ <strong>Contexte hebdomadaire défavorable (UT+1)</strong> — la tendance supérieure est baissière ou en essoufflement. Score pénalisé de −1.5 points.
+              <div style={{ padding:"8px 14px", marginBottom:10,
+                background:"#1e0808", border:`1px solid ${THEME.scoreRed}44`,
+                borderRadius:10, fontSize:11, color:THEME.scoreRed,
+                display:"flex", alignItems:"center", gap:8 }}>
+                ⚠️ <strong>Contexte hebdomadaire défavorable (UT+1)</strong> —
+                tendance supérieure baissière. Score pénalisé de −1.5 points.
               </div>
             )}
-            <MarketContextPanel context={adjustedScoreResult.context} modifiers={adjustedScoreResult.modifiers}/>
-            <TechnicalPanel precomputed={techComputed} context={adjustedScoreResult.context}/>
-            <EntryRecommendationPanel rec={cryptoEntryRec}/>
-          </>
+            <MarketContextPanel context={adjustedResult.context} modifiers={adjustedResult.modifiers}/>
+            <TechnicalPanel precomputed={techComputed} context={adjustedResult.context}/>
+            {!chartLoading && allChartData.closes.filter((v: number|null) => v != null).length >= 50 && (() => {
+              const rawDataProj = candleData ?? allChartData;
+              const lastP = rawDataProj.closes.length;
+              const startP = Math.max(0, lastP - UT_DISPLAY);
+              const slicedProj = lastP >= 20 ? {
+                closes:  rawDataProj.closes.slice(startP),
+                highs:   rawDataProj.highs.slice(startP),
+                lows:    rawDataProj.lows.slice(startP),
+                volumes: rawDataProj.volumes.slice(startP),
+              } : rawDataProj;
+              const marketCtxProj = classifyMarketContext(slicedProj.closes, slicedProj.highs, slicedProj.lows, slicedProj.volumes);
+              return (
+                <ProjectionPanel
+                  closes={slicedProj.closes}
+                  highs={slicedProj.highs}
+                  lows={slicedProj.lows}
+                  volumes={slicedProj.volumes}
+                  currency="USD"
+                  chartInterval={cryptoInterval}
+                  period={ut}
+                  marketContext={marketCtxProj}
+                />
+              );
+            })()}
+          </div>
         );
       })()}
 
-      {/* ── Bandeau dominance marché global ── */}
-      {cgGlobal != null && cgGlobal.totalMktCap > 0 && (
-        <div style={{ marginBottom:14, padding:"8px 14px", background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, display:"flex", flexWrap:"wrap", gap:8, alignItems:"center", fontSize:10, color:THEME.textMuted }}>
-          <span style={{ fontWeight:700, color:THEME.textSecondary }}>Marché global ·</span>
-          <span>BTC <span style={{ color:THEME.scoreAmber, fontWeight:700 }}>{cgGlobal.btc.toFixed(1)}%</span></span>
-          <span>·</span>
-          <span>ETH <span style={{ color:THEME.textSecondary, fontWeight:700 }}>{cgGlobal.eth.toFixed(1)}%</span></span>
-          <span>·</span>
-          <span>Alts <span style={{ color:THEME.textSecondary, fontWeight:700 }}>{(100 - cgGlobal.btc - cgGlobal.eth).toFixed(1)}%</span></span>
-          <span>·</span>
-          <span>Cap totale <span style={{ color:THEME.textSecondary, fontWeight:700 }}>{fmtTvl(cgGlobal.totalMktCap)}</span></span>
-        </div>
-      )}
+      {/* ══════════════════════════════════════
+          ONGLET MARCHÉ
+      ══════════════════════════════════════ */}
+      {activeTab === "marche" && (
+        <div style={{ display:"flex", flexDirection:"column", gap:0 }}>
 
-      {/* ── Barre position dans le marché ── */}
-      {topPct != null && (
-        <div style={{ marginBottom:14, background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"12px 16px" }}>
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8, flexWrap:"wrap", gap:6 }}>
-            <div style={{ fontSize:10, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5 }}>Position dans le marché</div>
-            <div style={{ fontSize:10, color:THEME.textSecondary }}>
-              {rank != null && `Rang #${rank} · `}Top {topPct.toFixed(1)}% parmi ~{(cgGlobal?.active_cryptocurrencies ?? 15000).toLocaleString("fr-FR")} cryptos
-              {btcDomRatio != null && ` · ${(btcDomRatio * 100).toFixed(3)}% de la capitalisation totale`}
+          {/* Description */}
+          {descFr && (
+            <div style={{ background:THEME.bgPanel, border:`1px solid ${THEME.borderPanel}`,
+              borderRadius:12, padding:"14px 18px", marginBottom:14 }}>
+              <div style={{ fontSize:12, fontWeight:800, color:THEME.textSecondary,
+                textTransform:"uppercase", letterSpacing:2, marginBottom:8 }}>
+                📖 À propos
+              </div>
+              <div style={{ fontSize:12, color:THEME.textSecondary, lineHeight:1.8,
+                borderLeft:`3px solid ${THEME.accent}`, paddingLeft:12 }}>
+                {descFr.slice(0,600)}{descFr.length > 600 ? "…" : ""}
+              </div>
             </div>
-          </div>
-          <div style={{ height:6, borderRadius:3, background:"#1e2a3a", overflow:"hidden" }}>
-            <div style={{
-              height:"100%", borderRadius:3,
-              width:`${Math.min(100, 101 - topPct)}%`,
-              background: topPct < 0.1 ? THEME.scoreGreen : topPct < 1 ? THEME.scoreAmber : THEME.scoreRed,
-              transition:"width .4s ease",
-            }}/>
-          </div>
-          <div style={{ display:"flex", justifyContent:"space-between", marginTop:4, fontSize:8, color:THEME.textMuted }}>
-            <span>Top 1 (Bitcoin)</span><span>Top 100</span><span>Top 1 000</span><span>Top {(cgGlobal?.active_cryptocurrencies ?? 15000).toLocaleString("fr-FR")}</span>
-          </div>
-        </div>
-      )}
+          )}
 
-      {/* ── Votes communauté ── */}
-      {sentUp != null && sentDown != null && (
-        <div style={{ marginBottom:14, background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"12px 16px" }}>
-          <div style={{ fontSize:10, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:8 }}>Sentiment communauté (votes CoinGecko)</div>
-          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-            <span style={{ fontSize:11, color:THEME.scoreGreen, fontWeight:700 }}>👍 {sentUp.toFixed(1)}%</span>
-            <div style={{ flex:1, height:8, borderRadius:4, background:THEME.scoreRed, overflow:"hidden" }}>
-              <div style={{ height:"100%", width:`${sentUp}%`, background:THEME.scoreGreen, borderRadius:4, transition:"width .4s ease" }}/>
+          {/* Grille métriques */}
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))", gap:10, marginBottom:14 }}>
+            {rank != null && (
+              <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
+                <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Rang CoinGecko</div>
+                <div style={{ fontSize:14, fontWeight:700, color:THEME.accent, fontFamily:"'IBM Plex Mono',monospace" }}>#{rank}</div>
+                {topPct != null && <div style={{ fontSize:9, color:THEME.textMuted, marginTop:2 }}>Top {topPct.toFixed(1)}%</div>}
+              </div>
+            )}
+            <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
+              <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Market Cap</div>
+              <div style={{ fontSize:14, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>${fmt(mktCap)}</div>
+              {btcDomRatio != null && <div style={{ fontSize:9, color:THEME.textMuted, marginTop:2 }}>{(btcDomRatio * 100).toFixed(3)}% du marché crypto total</div>}
             </div>
-            <span style={{ fontSize:11, color:THEME.scoreRed, fontWeight:700 }}>👎 {sentDown.toFixed(1)}%</span>
+            <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
+              <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Volume 24h</div>
+              <div style={{ fontSize:14, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>${fmt(vol24h)}</div>
+              {volMktRatio != null && (
+                <div style={{ fontSize:9, color: volMktRatio > 0.05 ? THEME.scoreGreen : THEME.scoreAmber, marginTop:2 }}>
+                  {(volMktRatio * 100).toFixed(1)}% de la capitalisation · {volMktRatio > 0.05 ? "Liquidité forte" : "Liquidité modérée"}
+                </div>
+              )}
+            </div>
+            <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
+              <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Offre circulante</div>
+              <div style={{ fontSize:14, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>{fmt(supply, 0)}</div>
+              {maxSup != null && supply != null && (
+                <div style={{ fontSize:9, color:THEME.textMuted, marginTop:2 }}>{((supply / maxSup) * 100).toFixed(1)}% émis</div>
+              )}
+            </div>
+            <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
+              <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Offre max</div>
+              <div style={{ fontSize:14, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>{maxSup ? fmt(maxSup, 0) : "∞"}</div>
+            </div>
+            <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
+              <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>ATH</div>
+              <div style={{ fontSize:14, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>{ath ? "$" + fmt(ath) : "—"}</div>
+            </div>
+            {athPct != null && (
+              <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
+                <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Depuis ATH</div>
+                <div style={{ fontSize:14, fontWeight:700, fontFamily:"'IBM Plex Mono',monospace",
+                  color: athPct > -5 ? THEME.scoreRed : athPct > -20 ? THEME.scoreAmber : THEME.scoreGreen
+                }}>{athPct.toFixed(1)}%</div>
+                <div style={{ fontSize:9, color:THEME.textMuted, marginTop:2 }}>
+                  {athPct > -5 ? "Proche ATH — attention" : athPct > -20 ? "Repli modéré" : "Décote significative"}
+                </div>
+              </div>
+            )}
+            {chg1y != null && (
+              <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
+                <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Perf 1 an</div>
+                <div style={{ fontSize:14, fontWeight:700, color:pctColor(chg1y), fontFamily:"'IBM Plex Mono',monospace" }}>{pctLabel(chg1y)}</div>
+              </div>
+            )}
           </div>
-        </div>
-      )}
 
-      {/* ── Panel Analyse technique rapide ── */}
-      {(rangePos != null || range24Pos != null) && (
-        <Panel icon="📐" title="Analyse technique rapide" borderColor={THEME.borderPanel} defaultOpen={true}>
-          <div style={{ display:"flex", flexDirection:"column", gap:18 }}>
+          {/* Bandeau dominance marché global */}
+          {cgGlobal != null && cgGlobal.totalMktCap > 0 && (
+            <div style={{ marginBottom:14, padding:"8px 14px", background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, display:"flex", flexWrap:"wrap", gap:8, alignItems:"center", fontSize:10, color:THEME.textMuted }}>
+              <span style={{ fontWeight:700, color:THEME.textSecondary }}>Marché global ·</span>
+              <span>BTC <span style={{ color:THEME.scoreAmber, fontWeight:700 }}>{cgGlobal.btc.toFixed(1)}%</span></span>
+              <span>·</span>
+              <span>ETH <span style={{ color:THEME.textSecondary, fontWeight:700 }}>{cgGlobal.eth.toFixed(1)}%</span></span>
+              <span>·</span>
+              <span>Alts <span style={{ color:THEME.textSecondary, fontWeight:700 }}>{(100 - cgGlobal.btc - cgGlobal.eth).toFixed(1)}%</span></span>
+              <span>·</span>
+              <span>Cap totale <span style={{ color:THEME.textSecondary, fontWeight:700 }}>{fmtTvl(cgGlobal.totalMktCap)}</span></span>
+            </div>
+          )}
 
-            {rangePos != null && ath != null && atlUsd != null && (
-              <div>
-                <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6, fontSize:10, flexWrap:"wrap", gap:4 }}>
-                  <span style={{ color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1 }}>Position dans le range historique (ATL → ATH)</span>
-                  <span style={{ fontWeight:700, color: rangePos < 20 ? THEME.scoreGreen : rangePos > 80 ? THEME.scoreRed : THEME.scoreAmber }}>
-                    {rangePos < 20 ? "Proche des plus bas" : rangePos > 80 ? "Proche des plus hauts" : "Milieu de range"} · {rangePos.toFixed(0)}%
-                  </span>
-                </div>
-                <div style={{ height:8, borderRadius:4, background:"#1e2a3a", overflow:"hidden" }}>
-                  <div style={{
-                    height:"100%", borderRadius:4, transition:"width .4s ease",
-                    width:`${rangePos}%`,
-                    background: rangePos < 20 ? THEME.scoreGreen : rangePos > 80 ? THEME.scoreRed : THEME.scoreAmber,
-                  }}/>
-                </div>
-                <div style={{ display:"flex", justifyContent:"space-between", marginTop:4, fontSize:9, color:THEME.textMuted }}>
-                  <span>ATL ${fmt(atlUsd)}</span><span>ATH ${fmt(ath)}</span>
+          {/* Position dans le marché */}
+          {topPct != null && (
+            <div style={{ marginBottom:14, background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"12px 16px" }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8, flexWrap:"wrap", gap:6 }}>
+                <div style={{ fontSize:10, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5 }}>Position dans le marché</div>
+                <div style={{ fontSize:10, color:THEME.textSecondary }}>
+                  {rank != null && `Rang #${rank} · `}Top {topPct.toFixed(1)}% parmi ~{(cgGlobal?.active_cryptocurrencies ?? 15000).toLocaleString("fr-FR")} cryptos
+                  {btcDomRatio != null && ` · ${(btcDomRatio * 100).toFixed(3)}% de la capitalisation totale`}
                 </div>
               </div>
-            )}
-
-            {range24Pos != null && high24 != null && low24 != null && (
-              <div>
-                <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6, fontSize:10, flexWrap:"wrap", gap:4 }}>
-                  <span style={{ color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1 }}>Position dans le range 24h</span>
-                  <span style={{ fontWeight:700, color:THEME.textSecondary }}>{range24Pos.toFixed(0)}% du range</span>
-                </div>
-                <div style={{ height:8, borderRadius:4, background:"#1e2a3a", overflow:"hidden" }}>
-                  <div style={{ height:"100%", borderRadius:4, width:`${range24Pos}%`, background:THEME.accent, transition:"width .4s ease" }}/>
-                </div>
-                <div style={{ display:"flex", justifyContent:"space-between", marginTop:4, fontSize:9, color:THEME.textMuted }}>
-                  <span>Bas 24h ${fmt(low24)}</span><span>Haut 24h ${fmt(high24)}</span>
-                </div>
-              </div>
-            )}
-
-          </div>
-        </Panel>
-      )}
-
-      {/* ── Panel Sentiment de marché (Fear & Greed + Funding Rate) ── */}
-      {(fearGreed != null || funding != null) && (
-        <Panel icon="🌡️" title="Sentiment de marché" borderColor={THEME.borderPanel} defaultOpen={true}>
-          <div style={{ display:"flex", flexWrap:"wrap", gap:24, alignItems:"flex-start" }}>
-
-            {/* ── Synthèse de lecture croisée ── */}
-            {(() => {
-              const synth = computeCryptoSentimentSynthesis(fearGreed, longShort, funding, openInterest);
-              if (!synth) return null;
-              return (
+              <div style={{ height:6, borderRadius:3, background:"#1e2a3a", overflow:"hidden" }}>
                 <div style={{
-                  width: "100%",
-                  padding: "14px 16px",
-                  background: synth.bg,
-                  borderRadius: 10,
-                  border: `1px solid ${synth.border}55`,
-                  borderLeft: `4px solid ${synth.border}`,
-                  marginBottom: 4,
-                }}>
-                  <div style={{
-                    display: "flex", alignItems: "center", gap: 10, marginBottom: 8,
-                  }}>
-                    <span style={{ fontSize: 18 }}>{synth.emoji}</span>
-                    <div>
-                      <span style={{
-                        fontSize: 10, fontWeight: 800,
-                        color: synth.color,
-                        background: synth.color + "22",
-                        borderRadius: 4, padding: "2px 8px",
-                        textTransform: "uppercase", letterSpacing: 1.2,
-                        marginRight: 8,
-                      }}>{synth.badge}</span>
-                    </div>
-                    <div style={{ fontSize: 9, color: THEME.textMuted, textTransform: "uppercase", letterSpacing: 1.5, marginLeft: "auto" }}>
-                      Lecture croisée
-                    </div>
-                  </div>
-                  <div style={{
-                    fontSize: 13, fontWeight: 700, color: synth.color,
-                    lineHeight: 1.4, marginBottom: 8,
-                  }}>
-                    {synth.title}
-                  </div>
-                  <div style={{
-                    fontSize: 12, color: THEME.textSecondary,
-                    lineHeight: 1.8,
-                  }}>
-                    {synth.body}
-                  </div>
-                </div>
-              );
-            })()}
-
-            {fearGreed != null && (
-              <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4, minWidth:130 }}>
-                <FearGreedGauge value={fearGreed.value}/>
-                <div style={{ fontSize:12, fontWeight:700, color:
-                  fearGreed.value < 30 ? THEME.scoreRed : fearGreed.value < 50 ? "#f97316" :
-                  fearGreed.value < 70 ? THEME.scoreAmber : THEME.scoreGreen
-                }}>{fearGreed.label}</div>
-                <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5 }}>Fear & Greed Index</div>
-                <div style={{ fontSize:9, color:THEME.textMuted, maxWidth:160, textAlign:"center", lineHeight:1.5, marginTop:4 }}>
-                  Mesure l'émotion dominante du marché crypto. Extrême Fear = opportunité potentielle. Extrême Greed = prudence.
-                </div>
-              </div>
-            )}
-
-            {funding != null && (
-              <div style={{ flex:1, minWidth:180 }}>
-                <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:10 }}>Funding Rate (perpétuels)</div>
-                <div style={{ display:"flex", alignItems:"baseline", gap:8, marginBottom:4 }}>
-                  <span style={{
-                    fontSize:28, fontWeight:900, fontFamily:"'IBM Plex Mono',monospace",
-                    color: funding.rate > 0 ? THEME.scoreGreen : funding.rate < 0 ? THEME.scoreRed : THEME.textSecondary
-                  }}>
-                    {funding.rate > 0 ? "+" : ""}{(funding.rate * 100).toFixed(4)}%
-                  </span>
-                  <span style={{ fontSize:10, color:THEME.textMuted }}>/ 8h</span>
-                </div>
-                <div style={{ fontSize:10, color:THEME.textSecondary, marginBottom:8 }}>
-                  ≈ <span style={{ fontWeight:700, color: funding.rate > 0 ? THEME.scoreGreen : THEME.scoreRed }}>
-                    {funding.rate > 0 ? "+" : ""}{(funding.rate * 3 * 365 * 100).toFixed(1)}% /an
-                  </span> annualisé
-                </div>
-                <div style={{ fontSize:10, fontWeight:600, marginBottom:8,
-                  color: funding.rate > 0 ? THEME.scoreGreen : funding.rate < 0 ? THEME.scoreRed : THEME.textSecondary
-                }}>
-                  {funding.rate > 0.0002  ? "Marché très optimiste — longs dominants"  :
-                   funding.rate > 0       ? "Légère dominance haussière"                :
-                   funding.rate < -0.0002 ? "Marché très pessimiste — shorts dominants" :
-                                            "Légère dominance baissière"}
-                </div>
-                <div style={{ fontSize:9, color:THEME.textMuted, lineHeight:1.6 }}>
-                  Le funding rate est le coût payé entre acheteurs et vendeurs de contrats perpétuels.
-                  Positif = les longs paient les shorts (marché optimiste).
-                  Négatif = les shorts paient les longs (marché pessimiste).
-                </div>
-                {funding.markPrice > 0 && (
-                  <div style={{ marginTop:8, fontSize:10, color:THEME.textMuted }}>
-                    Mark price : <span style={{ color:THEME.textSecondary, fontFamily:"'IBM Plex Mono',monospace" }}>${fmt(funding.markPrice)}</span>
-                  </div>
-                )}
-              </div>
-            )}
-          {/* Long/Short Ratio */}
-          {longShort != null && (
-            <div style={{ width:"100%", paddingTop:12, borderTop:`1px solid ${THEME.borderPanel}` }}>
-              <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:6 }}>Ratio Long/Short (comptes Binance Futures)</div>
-              <div style={{ display:"flex", alignItems:"baseline", gap:8, marginBottom:6 }}>
-                <span style={{
-                  fontSize:28, fontWeight:900, fontFamily:"'IBM Plex Mono',monospace",
-                  color: longShort.ratio > 1.5 ? THEME.scoreRed : longShort.ratio < 0.7 ? THEME.scoreGreen : THEME.scoreAmber,
-                }}>
-                  {longShort.ratio.toFixed(2)}
-                </span>
-                <span style={{ fontSize:11, color:THEME.textMuted }}>longs / shorts</span>
-              </div>
-              <div style={{ height:8, borderRadius:4, background:"#1e2a3a", overflow:"hidden", marginBottom:6 }}>
-                <div style={{
-                  height:"100%", borderRadius:4,
-                  width:`${longShort.longPct}%`,
-                  background:`linear-gradient(90deg, ${THEME.scoreGreen}, ${THEME.scoreRed})`,
+                  height:"100%", borderRadius:3,
+                  width:`${Math.min(100, 101 - topPct)}%`,
+                  background: topPct < 0.1 ? THEME.scoreGreen : topPct < 1 ? THEME.scoreAmber : THEME.scoreRed,
                   transition:"width .4s ease",
                 }}/>
               </div>
-              <div style={{ display:"flex", justifyContent:"space-between", fontSize:10, fontWeight:700, marginBottom:6 }}>
-                <span style={{ color:THEME.scoreGreen }}>Longs {longShort.longPct.toFixed(1)}%</span>
-                <span style={{ color:THEME.scoreRed }}>Shorts {longShort.shortPct.toFixed(1)}%</span>
-              </div>
-              <div style={{ fontSize:10, fontWeight:600, color:
-                longShort.ratio > 2    ? THEME.scoreRed   :
-                longShort.ratio > 1.5  ? "#f97316"        :
-                longShort.ratio < 0.67 ? THEME.scoreGreen :
-                longShort.ratio < 0.8  ? "#4ade80"        :
-                THEME.scoreAmber,
-              }}>
-                {longShort.ratio > 2    ? "Euphorie haussière — majorité écrasante de longs, risque de liquidation" :
-                 longShort.ratio > 1.5  ? "Dominance haussière — les longs sont majoritaires"                       :
-                 longShort.ratio < 0.67 ? "Dominance baissière — les shorts dominent, short squeeze possible"       :
-                 longShort.ratio < 0.8  ? "Légère dominance baissière"                                              :
-                 "Ratio équilibré — pas de signal dominant"}
-              </div>
-              <div style={{ fontSize:9, color:THEME.textMuted, marginTop:6, lineHeight:1.6 }}>
-                Mesure la proportion de comptes en position longue vs courte sur les contrats perpétuels Binance.
-                Un ratio très élevé (longs {">"} shorts) peut précéder une liquidation en cascade si le prix baisse.
+              <div style={{ display:"flex", justifyContent:"space-between", marginTop:4, fontSize:8, color:THEME.textMuted }}>
+                <span>Top 1 (Bitcoin)</span><span>Top 100</span><span>Top 1 000</span><span>Top {(cgGlobal?.active_cryptocurrencies ?? 15000).toLocaleString("fr-FR")}</span>
               </div>
             </div>
           )}
 
-          {/* Open Interest */}
-          {openInterest != null && (
-            <div style={{ width:"100%", paddingTop:12, borderTop:`1px solid ${THEME.borderPanel}` }}>
-              <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:6 }}>Open Interest (Binance Futures)</div>
-              <div style={{ display:"flex", alignItems:"baseline", gap:8, marginBottom:4 }}>
-                <span style={{ fontSize:22, fontWeight:900, fontFamily:"'IBM Plex Mono',monospace", color:THEME.textPrimary }}>
-                  {fmtTvl(openInterest)}
-                </span>
-              </div>
-              <div style={{ fontSize:9, color:THEME.textMuted, lineHeight:1.6 }}>
-                L'Open Interest représente la valeur totale des contrats à terme ouverts sur le marché.
-                Une hausse = nouveaux capitaux qui entrent. Une baisse = positions qui se ferment.
+          {/* Votes communauté */}
+          {sentUp != null && sentDown != null && (
+            <div style={{ marginBottom:14, background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"12px 16px" }}>
+              <div style={{ fontSize:10, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:8 }}>Sentiment communauté (votes CoinGecko)</div>
+              <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                <span style={{ fontSize:11, color:THEME.scoreGreen, fontWeight:700 }}>👍 {sentUp.toFixed(1)}%</span>
+                <div style={{ flex:1, height:8, borderRadius:4, background:THEME.scoreRed, overflow:"hidden" }}>
+                  <div style={{ height:"100%", width:`${sentUp}%`, background:THEME.scoreGreen, borderRadius:4, transition:"width .4s ease" }}/>
+                </div>
+                <span style={{ fontSize:11, color:THEME.scoreRed, fontWeight:700 }}>👎 {sentDown.toFixed(1)}%</span>
               </div>
             </div>
           )}
-          </div>
-        </Panel>
+
+          {/* Analyse technique rapide */}
+          {(rangePos != null || range24Pos != null) && (
+            <Panel icon="📐" title="Analyse technique rapide" borderColor={THEME.borderPanel} defaultOpen={true}>
+              <div style={{ display:"flex", flexDirection:"column", gap:18 }}>
+                {rangePos != null && ath != null && atlUsd != null && (
+                  <div>
+                    <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6, fontSize:10, flexWrap:"wrap", gap:4 }}>
+                      <span style={{ color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1 }}>Position dans le range historique (ATL → ATH)</span>
+                      <span style={{ fontWeight:700, color: rangePos < 20 ? THEME.scoreGreen : rangePos > 80 ? THEME.scoreRed : THEME.scoreAmber }}>
+                        {rangePos < 20 ? "Proche des plus bas" : rangePos > 80 ? "Proche des plus hauts" : "Milieu de range"} · {rangePos.toFixed(0)}%
+                      </span>
+                    </div>
+                    <div style={{ height:8, borderRadius:4, background:"#1e2a3a", overflow:"hidden" }}>
+                      <div style={{ height:"100%", borderRadius:4, transition:"width .4s ease", width:`${rangePos}%`,
+                        background: rangePos < 20 ? THEME.scoreGreen : rangePos > 80 ? THEME.scoreRed : THEME.scoreAmber }}/>
+                    </div>
+                    <div style={{ display:"flex", justifyContent:"space-between", marginTop:4, fontSize:9, color:THEME.textMuted }}>
+                      <span>ATL ${fmt(atlUsd)}</span><span>ATH ${fmt(ath)}</span>
+                    </div>
+                  </div>
+                )}
+                {range24Pos != null && high24 != null && low24 != null && (
+                  <div>
+                    <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6, fontSize:10, flexWrap:"wrap", gap:4 }}>
+                      <span style={{ color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1 }}>Position dans le range 24h</span>
+                      <span style={{ fontWeight:700, color:THEME.textSecondary }}>{range24Pos.toFixed(0)}% du range</span>
+                    </div>
+                    <div style={{ height:8, borderRadius:4, background:"#1e2a3a", overflow:"hidden" }}>
+                      <div style={{ height:"100%", borderRadius:4, width:`${range24Pos}%`, background:THEME.accent, transition:"width .4s ease" }}/>
+                    </div>
+                    <div style={{ display:"flex", justifyContent:"space-between", marginTop:4, fontSize:9, color:THEME.textMuted }}>
+                      <span>Bas 24h ${fmt(low24)}</span><span>Haut 24h ${fmt(high24)}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </Panel>
+          )}
+
+          {/* Sentiment Fear & Greed + Funding + Long/Short + OI */}
+          {(fearGreed != null || funding != null) && (
+            <Panel icon="🌡️" title="Sentiment de marché" borderColor={THEME.borderPanel} defaultOpen={true}>
+              <div style={{ display:"flex", flexWrap:"wrap", gap:24, alignItems:"flex-start" }}>
+                {(() => {
+                  const synth = computeCryptoSentimentSynthesis(fearGreed, longShort, funding, openInterest);
+                  if (!synth) return null;
+                  return (
+                    <div style={{ width:"100%", padding:"14px 16px", background:synth.bg,
+                      borderRadius:10, border:`1px solid ${synth.border}55`,
+                      borderLeft:`4px solid ${synth.border}`, marginBottom:4 }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:8 }}>
+                        <span style={{ fontSize:18 }}>{synth.emoji}</span>
+                        <div>
+                          <span style={{ fontSize:10, fontWeight:800, color:synth.color,
+                            background:synth.color+"22", borderRadius:4, padding:"2px 8px",
+                            textTransform:"uppercase", letterSpacing:1.2, marginRight:8 }}>{synth.badge}</span>
+                        </div>
+                        <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginLeft:"auto" }}>
+                          Lecture croisée
+                        </div>
+                      </div>
+                      <div style={{ fontSize:13, fontWeight:700, color:synth.color, lineHeight:1.4, marginBottom:8 }}>
+                        {synth.title}
+                      </div>
+                      <div style={{ fontSize:12, color:THEME.textSecondary, lineHeight:1.8 }}>
+                        {synth.body}
+                      </div>
+                    </div>
+                  );
+                })()}
+                {fearGreed != null && (
+                  <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4, minWidth:130 }}>
+                    <FearGreedGauge value={fearGreed.value}/>
+                    <div style={{ fontSize:12, fontWeight:700, color:
+                      fearGreed.value < 30 ? THEME.scoreRed : fearGreed.value < 50 ? "#f97316" :
+                      fearGreed.value < 70 ? THEME.scoreAmber : THEME.scoreGreen
+                    }}>{fearGreed.label}</div>
+                    <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5 }}>Fear & Greed Index</div>
+                    <div style={{ fontSize:9, color:THEME.textMuted, maxWidth:160, textAlign:"center", lineHeight:1.5, marginTop:4 }}>
+                      Mesure l'émotion dominante du marché crypto. Extrême Fear = opportunité potentielle. Extrême Greed = prudence.
+                    </div>
+                  </div>
+                )}
+                {funding != null && (
+                  <div style={{ flex:1, minWidth:180 }}>
+                    <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:10 }}>Funding Rate (perpétuels)</div>
+                    <div style={{ display:"flex", alignItems:"baseline", gap:8, marginBottom:4 }}>
+                      <span style={{ fontSize:28, fontWeight:900, fontFamily:"'IBM Plex Mono',monospace",
+                        color: funding.rate > 0 ? THEME.scoreGreen : funding.rate < 0 ? THEME.scoreRed : THEME.textSecondary }}>
+                        {funding.rate > 0 ? "+" : ""}{(funding.rate * 100).toFixed(4)}%
+                      </span>
+                      <span style={{ fontSize:10, color:THEME.textMuted }}>/ 8h</span>
+                    </div>
+                    <div style={{ fontSize:10, color:THEME.textSecondary, marginBottom:8 }}>
+                      ≈ <span style={{ fontWeight:700, color: funding.rate > 0 ? THEME.scoreGreen : THEME.scoreRed }}>
+                        {funding.rate > 0 ? "+" : ""}{(funding.rate * 3 * 365 * 100).toFixed(1)}% /an
+                      </span> annualisé
+                    </div>
+                    <div style={{ fontSize:10, fontWeight:600, marginBottom:8,
+                      color: funding.rate > 0 ? THEME.scoreGreen : funding.rate < 0 ? THEME.scoreRed : THEME.textSecondary }}>
+                      {funding.rate > 0.0002  ? "Marché très optimiste — longs dominants"  :
+                       funding.rate > 0       ? "Légère dominance haussière"                :
+                       funding.rate < -0.0002 ? "Marché très pessimiste — shorts dominants" :
+                                                "Légère dominance baissière"}
+                    </div>
+                    <div style={{ fontSize:9, color:THEME.textMuted, lineHeight:1.6 }}>
+                      Le funding rate est le coût payé entre acheteurs et vendeurs de contrats perpétuels.
+                      Positif = les longs paient les shorts (marché optimiste).
+                      Négatif = les shorts paient les longs (marché pessimiste).
+                    </div>
+                    {funding.markPrice > 0 && (
+                      <div style={{ marginTop:8, fontSize:10, color:THEME.textMuted }}>
+                        Mark price : <span style={{ color:THEME.textSecondary, fontFamily:"'IBM Plex Mono',monospace" }}>${fmt(funding.markPrice)}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {longShort != null && (
+                  <div style={{ width:"100%", paddingTop:12, borderTop:`1px solid ${THEME.borderPanel}` }}>
+                    <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:6 }}>Ratio Long/Short (comptes Binance Futures)</div>
+                    <div style={{ display:"flex", alignItems:"baseline", gap:8, marginBottom:6 }}>
+                      <span style={{ fontSize:28, fontWeight:900, fontFamily:"'IBM Plex Mono',monospace",
+                        color: longShort.ratio > 1.5 ? THEME.scoreRed : longShort.ratio < 0.7 ? THEME.scoreGreen : THEME.scoreAmber }}>
+                        {longShort.ratio.toFixed(2)}
+                      </span>
+                      <span style={{ fontSize:11, color:THEME.textMuted }}>longs / shorts</span>
+                    </div>
+                    <div style={{ height:8, borderRadius:4, background:"#1e2a3a", overflow:"hidden", marginBottom:6 }}>
+                      <div style={{ height:"100%", borderRadius:4, width:`${longShort.longPct}%`,
+                        background:`linear-gradient(90deg, ${THEME.scoreGreen}, ${THEME.scoreRed})`,
+                        transition:"width .4s ease" }}/>
+                    </div>
+                    <div style={{ display:"flex", justifyContent:"space-between", fontSize:10, fontWeight:700, marginBottom:6 }}>
+                      <span style={{ color:THEME.scoreGreen }}>Longs {longShort.longPct.toFixed(1)}%</span>
+                      <span style={{ color:THEME.scoreRed }}>Shorts {longShort.shortPct.toFixed(1)}%</span>
+                    </div>
+                    <div style={{ fontSize:10, fontWeight:600, color:
+                      longShort.ratio > 2    ? THEME.scoreRed   :
+                      longShort.ratio > 1.5  ? "#f97316"        :
+                      longShort.ratio < 0.67 ? THEME.scoreGreen :
+                      longShort.ratio < 0.8  ? "#4ade80"        :
+                      THEME.scoreAmber }}>
+                      {longShort.ratio > 2    ? "Euphorie haussière — majorité écrasante de longs, risque de liquidation" :
+                       longShort.ratio > 1.5  ? "Dominance haussière — les longs sont majoritaires"                       :
+                       longShort.ratio < 0.67 ? "Dominance baissière — les shorts dominent, short squeeze possible"       :
+                       longShort.ratio < 0.8  ? "Légère dominance baissière"                                              :
+                       "Ratio équilibré — pas de signal dominant"}
+                    </div>
+                    <div style={{ fontSize:9, color:THEME.textMuted, marginTop:6, lineHeight:1.6 }}>
+                      Mesure la proportion de comptes en position longue vs courte sur les contrats perpétuels Binance.
+                      Un ratio très élevé (longs {">"} shorts) peut précéder une liquidation en cascade si le prix baisse.
+                    </div>
+                  </div>
+                )}
+                {openInterest != null && (
+                  <div style={{ width:"100%", paddingTop:12, borderTop:`1px solid ${THEME.borderPanel}` }}>
+                    <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:6 }}>Open Interest (Binance Futures)</div>
+                    <div style={{ display:"flex", alignItems:"baseline", gap:8, marginBottom:4 }}>
+                      <span style={{ fontSize:22, fontWeight:900, fontFamily:"'IBM Plex Mono',monospace", color:THEME.textPrimary }}>
+                        {fmtTvl(openInterest)}
+                      </span>
+                    </div>
+                    <div style={{ fontSize:9, color:THEME.textMuted, lineHeight:1.6 }}>
+                      L'Open Interest représente la valeur totale des contrats à terme ouverts sur le marché.
+                      Une hausse = nouveaux capitaux qui entrent. Une baisse = positions qui se ferment.
+                    </div>
+                  </div>
+                )}
+              </div>
+            </Panel>
+          )}
+
+          {/* Staking ETH */}
+          {isEth && staking != null && (
+            <Panel icon="🔒" title="Staking Ethereum" borderColor={THEME.scoreGreen} defaultOpen={true}
+              badge={{ label:`APR ${staking.apr.toFixed(2)}%`, color:THEME.scoreGreen }}>
+              <div style={{ display:"flex", flexWrap:"wrap", gap:20 }}>
+                <div>
+                  <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:6 }}>APR stETH (Lido)</div>
+                  <div style={{ fontSize:32, fontWeight:900, color:THEME.scoreGreen, fontFamily:"'IBM Plex Mono',monospace" }}>
+                    {staking.apr.toFixed(2)}%
+                  </div>
+                  <div style={{ fontSize:10, color:THEME.textMuted, marginTop:4 }}>Taux de rendement annuel en temps réel</div>
+                </div>
+                <div style={{ flex:1, minWidth:180 }}>
+                  <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:6 }}>File d'attente validateurs</div>
+                  <div style={{ fontSize:20, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>
+                    {staking.queue != null ? staking.queue.toLocaleString() : "Aucune congestion"}
+                  </div>
+                  <div style={{ fontSize:10, color:THEME.textMuted, marginTop:4 }}>
+                    {staking.queue != null && staking.queue > 0
+                      ? `${staking.queue.toLocaleString()} validateurs en attente d'activation`
+                      : "Pas de congestion — activation immédiate"}
+                  </div>
+                </div>
+              </div>
+            </Panel>
+          )}
+
+          {/* TVL DeFi */}
+          {tvl != null && (
+            <Panel icon="🏦" title="DeFi — Total Value Locked" borderColor={THEME.scoreAmber} defaultOpen={true}
+              badge={{ label:fmtTvl(tvl), color:THEME.scoreAmber }}>
+              <div>
+                <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:6 }}>TVL actuel (DefiLlama)</div>
+                <div style={{ fontSize:32, fontWeight:900, color:THEME.scoreAmber, fontFamily:"'IBM Plex Mono',monospace" }}>{fmtTvl(tvl)}</div>
+                <div style={{ fontSize:10, color:THEME.textMuted, marginTop:6, lineHeight:1.6 }}>
+                  Total Value Locked = valeur totale des actifs déposés dans le protocole.
+                  Un TVL élevé reflète la confiance des utilisateurs et la profondeur de liquidité.
+                </div>
+              </div>
+            </Panel>
+          )}
+        </div>
       )}
 
-      {/* ── Panel Staking ETH (conditionnel) ── */}
-      {isEth && staking != null && (
-        <Panel icon="🔒" title="Staking Ethereum" borderColor={THEME.scoreGreen} defaultOpen={true}
-          badge={{ label: `APR ${staking.apr.toFixed(2)}%`, color: THEME.scoreGreen }}>
-          <div style={{ display:"flex", flexWrap:"wrap", gap:20 }}>
-            <div>
-              <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:6 }}>APR stETH (Lido)</div>
-              <div style={{ fontSize:32, fontWeight:900, color:THEME.scoreGreen, fontFamily:"'IBM Plex Mono',monospace" }}>
-                {staking.apr.toFixed(2)}%
-              </div>
-              <div style={{ fontSize:10, color:THEME.textMuted, marginTop:4 }}>Taux de rendement annuel en temps réel</div>
-            </div>
-            <div style={{ flex:1, minWidth:180 }}>
-              <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:6 }}>File d'attente validateurs</div>
-              <div style={{ fontSize:20, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>
-                {staking.queue != null ? staking.queue.toLocaleString() : "Aucune congestion"}
-              </div>
-              <div style={{ fontSize:10, color:THEME.textMuted, marginTop:4 }}>
-                {staking.queue != null && staking.queue > 0
-                  ? `${staking.queue.toLocaleString()} validateurs en attente d'activation`
-                  : "Pas de congestion — activation immédiate"}
-              </div>
-            </div>
-          </div>
-        </Panel>
+      {/* ══════════════════════════════════════
+          ONGLET NEWS
+      ══════════════════════════════════════ */}
+      {activeTab === "macro" && (
+        <NewsPanel ticker={data.id ?? ""} quoteType="CRYPTOCURRENCY"/>
       )}
-
-      {/* ── Panel TVL DeFi (conditionnel) ── */}
-      {tvl != null && (
-        <Panel icon="🏦" title="DeFi — Total Value Locked" borderColor={THEME.scoreAmber} defaultOpen={true}
-          badge={{ label: fmtTvl(tvl), color: THEME.scoreAmber }}>
-          <div>
-            <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:6 }}>TVL actuel (DefiLlama)</div>
-            <div style={{ fontSize:32, fontWeight:900, color:THEME.scoreAmber, fontFamily:"'IBM Plex Mono',monospace" }}>{fmtTvl(tvl)}</div>
-            <div style={{ fontSize:10, color:THEME.textMuted, marginTop:6, lineHeight:1.6 }}>
-              Total Value Locked = valeur totale des actifs déposés dans le protocole.
-              Un TVL élevé reflète la confiance des utilisateurs et la profondeur de liquidité.
-            </div>
-          </div>
-        </Panel>
-      )}
-
-      {/* ── Projection & Confluence ── */}
-      {!chartLoading && allChartData && allChartData.closes.filter((v: number|null) => v != null).length >= 50 && (() => {
-        const cryptoCI: "1d" | "1wk" | "1mo" =
-          ut === "1W" ? "1wk" :
-          ut === "1M" ? "1mo" : "1d";
-        const rawDataProj = candleData ?? allChartData;
-        const last = rawDataProj.closes.length;
-        const start = Math.max(0, last - UT_DISPLAY);
-        const slicedProj = last >= 20 ? {
-          closes:     rawDataProj.closes.slice(start),
-          highs:      rawDataProj.highs.slice(start),
-          lows:       rawDataProj.lows.slice(start),
-          volumes:    rawDataProj.volumes.slice(start),
-          timestamps: rawDataProj.timestamps.slice(start),
-        } : rawDataProj;
-        const marketCtxProj = classifyMarketContext(
-          slicedProj.closes, slicedProj.highs, slicedProj.lows, slicedProj.volumes
-        );
-        return (
-          <ProjectionPanel
-            closes={slicedProj.closes}
-            highs={slicedProj.highs}
-            lows={slicedProj.lows}
-            volumes={slicedProj.volumes}
-            currency="USD"
-            chartInterval={cryptoCI}
-            period={ut}
-            marketContext={marketCtxProj}
-          />
-        );
-      })()}
-
-      {/* ── Actualités crypto ── */}
-      <NewsPanel ticker={data.id ?? ""} quoteType="CRYPTOCURRENCY" />
 
     </div>
   );
@@ -8073,6 +7971,38 @@ type ResultType =
   | { type: "crypto"; data: any }
   | { type: "forex";  currency: string; rate: number; allRates: Record<string, number>; ticker?: string };
 
+function LogPanel({ log }: { log: string[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ marginBottom:14 }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{
+          background:"transparent",
+          border:`1px solid ${THEME.borderSubtle}`,
+          borderRadius:6, padding:"4px 12px",
+          fontSize:10, color:THEME.textMuted,
+          cursor:"pointer", display:"flex",
+          alignItems:"center", gap:6,
+        }}
+      >
+        <span style={{ fontSize:8 }}>{open ? "▲" : "▼"}</span>
+        Journal ({log.length} étapes)
+      </button>
+      {open && (
+        <div style={{ marginTop:6, background:THEME.bgHeader,
+          border:`1px solid ${THEME.borderSubtle}`,
+          borderRadius:8, padding:"8px 14px" }}>
+          {log.map((l,i) => (
+            <div key={i} style={{ fontSize:11, color:THEME.textSecondary,
+              fontFamily:"'IBM Plex Mono',monospace" }}>{l}</div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const [query,   setQuery]   = useState("");
   const [loading, setLoading] = useState(false);
@@ -8082,6 +8012,8 @@ export default function App() {
   const [mode,            setMode]            = useState<SearchMode>("all");
   const [suggestions,     setSuggestions]     = useState<SearchSuggestion[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const [activeTab, setActiveTab] = useState<"resume"|"technique"|"fondamentaux"|"marche"|"macro">("resume");
+  useEffect(() => { setActiveTab("resume"); }, [result]);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchRef   = useRef<HTMLDivElement>(null);
 
@@ -8396,7 +8328,7 @@ export default function App() {
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
-  const ForexView = ({ currency, rate, allRates, ticker: forexTicker }: { currency: string; rate: number; allRates: Record<string, number>; ticker?: string }) => {
+  const ForexView = ({ currency, rate, allRates, ticker: forexTicker, activeTab = "resume" }: { currency: string; rate: number; allRates: Record<string, number>; ticker?: string; activeTab?: "resume"|"technique"|"marche"|"macro" }) => {
     const yfTicker = forexTicker ?? `EUR${currency}=X`;
     const defaultPeriod = "1a";
     const [period,       setPeriod]    = useState(defaultPeriod);
@@ -8483,8 +8415,9 @@ export default function App() {
     return (
       <>
       <div style={{ animation:"fadeIn .4s ease" }}>
-        {/* En-tête */}
-        <div style={{ marginBottom: 16 }}>
+
+        {/* ── HEADER — toujours visible ── */}
+        <div style={{ marginBottom:16 }}>
           <div style={{ fontSize:11, color:"#445", textTransform:"uppercase", letterSpacing:1.5, marginBottom:4 }}>
             Banque Centrale Européenne · Officiel
           </div>
@@ -8499,83 +8432,134 @@ export default function App() {
           </div>
         </div>
 
-        {/* Verdict technique */}
-        {v && finalScore != null && (
-          <div style={{
-            background: v.color + "0f", border: `1px solid ${v.color}33`,
-            borderRadius: 14, padding: "14px 18px", marginBottom: 14,
-          }}>
-            <div style={{ fontSize:18, fontWeight:900, color:v.color, marginBottom:4 }}>{v.emoji} {v.label}</div>
-            <div style={{ fontSize:11, color:THEME.textSecondary, lineHeight:1.4 }}>{v.desc}</div>
-            <div style={{ display:"flex", alignItems:"baseline", gap:6, marginTop:8 }}>
-              <span style={{ fontSize:30, fontWeight:900, color:scoreColor(finalScore), fontFamily:"'IBM Plex Mono',monospace" }}>{finalScore}</span>
-              <span style={{ fontSize:12, color:THEME.textSecondary }}>/10 · Timing Technique</span>
+        {/* ══════════════════════════════════════
+            ONGLET RÉSUMÉ
+        ══════════════════════════════════════ */}
+        {activeTab === "resume" && (
+          <div style={{ display:"flex", gap:24, alignItems:"flex-start", flexWrap:"wrap" }}>
+
+            {/* Colonne gauche — graphique */}
+            <div style={{ flex:"1 1 55%", minWidth:320 }}>
+              <ChartBlock
+                chartData={chartData}
+                currency={currency}
+                quoteType="CURRENCY"
+                period={period}
+                periods={Object.entries(CHART_RANGES).map(([k,v])=>({key:k,label:v.label}))}
+                onPeriodChange={p => { setPeriod(p); loadChart(p); }}
+                loading={chartLoading}
+              />
+            </div>
+
+            {/* Colonne droite — verdict + recommandation */}
+            <div style={{ flex:"1 1 35%", minWidth:280,
+              display:"flex", flexDirection:"column", gap:12,
+              position:"sticky", top:"72px" }}>
+              {v && finalScore != null && (
+                <div style={{ background:v.color+"0f",
+                  border:`1px solid ${v.color}33`,
+                  borderRadius:14, padding:"18px 20px" }}>
+                  <div style={{ display:"flex", justifyContent:"center", marginBottom:14 }}>
+                    <div style={{ display:"flex", flexDirection:"column",
+                      alignItems:"center", gap:4 }}>
+                      <ScoreGauge score={finalScore}/>
+                      <div style={{ display:"flex", alignItems:"baseline", gap:3 }}>
+                        <span style={{ fontSize:36, fontWeight:900,
+                          color:scoreColor(finalScore),
+                          fontFamily:"'IBM Plex Mono',monospace" }}>
+                          {finalScore}
+                        </span>
+                        <span style={{ fontSize:12, color:THEME.textSecondary,
+                          fontFamily:"'IBM Plex Mono',monospace" }}>/10</span>
+                      </div>
+                      <div style={{ fontSize:9, color:THEME.textMuted,
+                        textTransform:"uppercase", letterSpacing:1.5 }}>
+                        Timing Technique
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ fontSize:18, fontWeight:900,
+                    color:v.color, marginBottom:4 }}>
+                    {v.emoji} {v.label}
+                  </div>
+                  <div style={{ fontSize:11, color:THEME.textSecondary, lineHeight:1.4 }}>
+                    {v.desc}
+                  </div>
+                </div>
+              )}
+              <EntryRecommendationPanel rec={entryRec}/>
             </div>
           </div>
         )}
 
-        {/* Graphique */}
-        <ChartBlock
-          chartData={chartData}
-          currency={currency}
-          quoteType="CURRENCY"
-          period={period}
-          periods={Object.entries(CHART_RANGES).map(([k,v])=>({key:k,label:v.label}))}
-          onPeriodChange={p => { setPeriod(p); loadChart(p); }}
-          loading={chartLoading}
-        />
-
-        {/* Recommandation d'entrée */}
-        <EntryRecommendationPanel rec={entryRec}/>
-
-        {/* Contexte de marché */}
-        {marketCtx && finalScoreResult && (
-          <MarketContextPanel context={finalScoreResult.context} modifiers={finalScoreResult.modifiers}/>
-        )}
-
-        {/* Signaux oscillateurs */}
-        <TechnicalPanel precomputed={techComputed} context={finalScoreResult?.context ?? null}/>
-
-        {/* Projection & Confluence */}
-        {closes.length >= 50 && (
-          <ProjectionPanel
-            closes={closes}
-            highs={highs}
-            lows={lows}
-            volumes={volumes}
-            currency={currency}
-            chartInterval={chartInterval}
-            period={period}
-            marketContext={finalScoreResult?.context ?? null}
-          />
-        )}
-
-        {/* Grille taux ECB */}
-        <div style={{ marginTop:14 }}>
-          <div style={{ fontSize:10, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:8 }}>
-            Taux de change ECB · Toutes devises
+        {/* ══════════════════════════════════════
+            ONGLET TECHNIQUE
+        ══════════════════════════════════════ */}
+        {activeTab === "technique" && (
+          <div style={{ display:"flex", flexDirection:"column", gap:0 }}>
+            {marketCtx && finalScoreResult && (
+              <MarketContextPanel
+                context={finalScoreResult.context}
+                modifiers={finalScoreResult.modifiers}
+              />
+            )}
+            <TechnicalPanel
+              precomputed={techComputed}
+              context={finalScoreResult?.context ?? null}
+            />
+            {closes.length >= 50 && (
+              <ProjectionPanel
+                closes={closes}
+                highs={highs}
+                lows={lows}
+                volumes={volumes}
+                currency={currency}
+                chartInterval={chartInterval}
+                period={period}
+                marketContext={finalScoreResult?.context ?? null}
+              />
+            )}
           </div>
-          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(120px,1fr))", gap:7 }}>
-            {Object.entries(allRates).sort().map(([cur, r]) => (
-              <div key={cur} style={{
-                background:THEME.bgCardAlt,
-                border:`1px solid ${cur === currency ? THEME.accent : THEME.borderMid}`,
-                borderRadius:8, padding:"8px 12px"
-              }}>
-                <div style={{ fontSize:9, color:"#445" }}>EUR / {cur}</div>
-                <div style={{ fontSize:13, fontWeight:700, fontFamily:"'IBM Plex Mono',monospace" }}>
-                  {parseFloat(String(r)).toFixed(4)}
+        )}
+
+        {/* ══════════════════════════════════════
+            ONGLET MARCHÉ — Taux ECB
+        ══════════════════════════════════════ */}
+        {activeTab === "marche" && (
+          <div>
+            <div style={{ fontSize:10, color:THEME.textMuted,
+              textTransform:"uppercase", letterSpacing:1.5, marginBottom:8 }}>
+              Taux de change ECB · Toutes devises
+            </div>
+            <div style={{ display:"grid",
+              gridTemplateColumns:"repeat(auto-fill,minmax(120px,1fr))", gap:7 }}>
+              {Object.entries(allRates).sort().map(([cur, r]) => (
+                <div key={cur} style={{
+                  background:THEME.bgCardAlt,
+                  border:`1px solid ${cur === currency ? THEME.accent : THEME.borderMid}`,
+                  borderRadius:8, padding:"8px 12px",
+                }}>
+                  <div style={{ fontSize:9, color:"#445" }}>EUR / {cur}</div>
+                  <div style={{ fontSize:13, fontWeight:700,
+                    fontFamily:"'IBM Plex Mono',monospace" }}>
+                    {parseFloat(String(r)).toFixed(4)}
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
+            <div style={{ marginTop:8, fontSize:10, color:"#333", textAlign:"right" }}>
+              Source : Banque Centrale Européenne · Temps réel
+            </div>
           </div>
-          <div style={{ marginTop:8, fontSize:10, color:"#333", textAlign:"right" }}>
-            Source : Banque Centrale Européenne · Temps réel
-          </div>
-        </div>
+        )}
 
-        {/* Actualités */}
-        <NewsPanel ticker={yfTicker} quoteType="CURRENCY"/>
+        {/* ══════════════════════════════════════
+            ONGLET NEWS
+        ══════════════════════════════════════ */}
+        {activeTab === "macro" && (
+          <NewsPanel ticker={yfTicker} quoteType="CURRENCY"/>
+        )}
+
       </div>
       </>
     );
@@ -8590,210 +8574,320 @@ export default function App() {
         *{box-sizing:border-box;margin:0;padding:0}
         ::-webkit-scrollbar{width:5px} ::-webkit-scrollbar-thumb{background:#2a3548;border-radius:3px}
         input,button{font-family:inherit}
-        .app-inner { width:100%; max-width:1200px; margin:0 auto; padding:0 clamp(16px, 4vw, 40px); }
+        .app-inner { width:100%; max-width:100%; padding:0; }
         @media (max-width:600px) { .score-gauge-wrap { width:100%; display:flex; justify-content:center; } }
+        .dashboard-layout {
+          display: flex;
+          min-height: calc(100vh - 56px);
+          margin-top: 56px;
+        }
+        .nav-left {
+          width: 200px;
+          min-width: 200px;
+          background: #090f1a;
+          border-right: 1px solid #1e2a3a;
+          position: fixed;
+          top: 56px;
+          left: 0;
+          height: calc(100vh - 56px);
+          display: flex;
+          flex-direction: column;
+          z-index: 40;
+          overflow-y: auto;
+        }
+        .content-area {
+          margin-left: 200px;
+          flex: 1;
+          padding: 24px 32px;
+          max-width: calc(100% - 200px);
+          overflow-x: hidden;
+        }
+        @media (max-width: 768px) {
+          .nav-left { display: none; }
+          .content-area { margin-left: 0; max-width: 100%; padding: 16px; }
+        }
       `}</style>
 
-      {/* HEADER */}
-      <div style={{ borderBottom:`1px solid ${THEME.borderSubtle}`, background:THEME.bgHeader, padding:"10px 0" }}>
-        <div className="app-inner">
-          <div style={{ fontSize:9, color:"#445", letterSpacing:2.5, textTransform:"uppercase", marginBottom:2 }}>
-            Multi-sources · Gratuit · Mondial
-          </div>
-          <div style={{ fontSize:19, fontWeight:800, color:THEME.textPrimary }}>
-            Stock Screener <span style={{ color:THEME.borderMid }}>—</span>{" "}
-            <span style={{ color:THEME.accent }}>Méthodologie d'Investissement</span>
-          </div>
-          <div style={{ display:"flex", gap:14, marginTop:4 }}>
-            {[["Yahoo Finance","#22c55e"],["CoinGecko","#f59e0b"],["ECB","#60a5fa"]].map(([l,c]) => (
-              <span key={l} style={{ fontSize:9, color:"#556" }}>
-                <span style={{ color:c }}>●</span> {l}
-              </span>
-            ))}
-          </div>
+      {/* HEADER — fixe, hauteur 56px */}
+      <div style={{
+        borderBottom:`1px solid ${THEME.borderSubtle}`,
+        background:THEME.bgHeader,
+        padding:"0 24px",
+        height:"56px",
+        display:"flex",
+        alignItems:"center",
+        justifyContent:"space-between",
+        position:"fixed",
+        top:0, left:0, right:0,
+        zIndex:50,
+      }}>
+        {/* Logo */}
+        <div style={{ fontSize:16, fontWeight:800, color:THEME.textPrimary, flexShrink:0 }}>
+          Screener
         </div>
+
+        {/* Recherche centrale */}
+        <div ref={searchRef} style={{ flex:1, maxWidth:560, margin:"0 32px", position:"relative" }}>
+          <input
+            value={query}
+            onChange={e => handleQueryChange(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === "Enter")  { setShowSuggestions(false); doAnalyze(); }
+              if (e.key === "Escape")   setShowSuggestions(false);
+            }}
+            onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
+            placeholder="Rechercher un actif… AAPL, BTC, EUR/USD"
+            style={{
+              width:"100%",
+              background:THEME.bgPanel,
+              border:`1px solid ${THEME.borderMid}`,
+              borderRadius:8,
+              color:THEME.textPrimary,
+              padding:"9px 16px",
+              fontSize:13,
+              fontWeight:600,
+              outline:"none",
+            }}
+          />
+          {/* Dropdown suggestions */}
+          {showSuggestions && suggestions.length > 0 && (
+            <div style={{
+              position:"absolute", top:"calc(100% + 6px)", left:0, right:0,
+              background:THEME.bgPanel, border:`1px solid ${THEME.borderMid}`,
+              borderRadius:10, overflow:"hidden",
+              zIndex:100, boxShadow:"0 8px 32px #000d",
+            }}>
+              {suggestions.map((s, i) => {
+                const b = getBadge(s.type);
+                return (
+                  <div
+                    key={i}
+                    onMouseDown={() => selectSuggestion(s)}
+                    style={{
+                      display:"flex", alignItems:"center", gap:10,
+                      padding:"9px 16px", cursor:"pointer",
+                      borderBottom: i < suggestions.length - 1
+                        ? `1px solid ${THEME.borderSubtle}` : "none",
+                      background:"transparent", transition:"background .1s",
+                    }}
+                    onMouseEnter={e => (e.currentTarget.style.background = THEME.borderSubtle)}
+                    onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+                  >
+                    <span style={{ fontFamily:"'IBM Plex Mono',monospace", fontWeight:800,
+                      color:THEME.textPrimary, fontSize:13, minWidth:70, flexShrink:0 }}>
+                      {s.symbol}
+                    </span>
+                    <span style={{ flex:1, fontSize:12, color:THEME.textSecondary,
+                      overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                      {s.name}
+                    </span>
+                    <span style={{ fontSize:9, fontWeight:800, color:b.color,
+                      background:b.bg, borderRadius:4, padding:"2px 6px",
+                      letterSpacing:1, textTransform:"uppercase", flexShrink:0 }}>
+                      {b.label}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Bouton analyser */}
+        <button onClick={() => { setShowSuggestions(false); doAnalyze(); }}
+          disabled={loading}
+          style={{
+            background: loading ? THEME.borderSubtle : THEME.accent,
+            color: loading ? "#445" : "#000",
+            border:"none", borderRadius:8, padding:"9px 20px",
+            fontSize:13, fontWeight:800,
+            cursor: loading ? "not-allowed" : "pointer",
+            flexShrink:0,
+          }}>
+          {loading ? "…" : "Analyser →"}
+        </button>
       </div>
 
-      {/* BARRE DE RECHERCHE */}
-      <div style={{ paddingTop:24, paddingBottom:0 }}>
-        <div className="app-inner">
+      {/* LAYOUT DASHBOARD */}
+      <div className="dashboard-layout">
 
-          {/* Filtres par mode */}
-          <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:10 }}>
-            {SEARCH_MODES.map(m => {
-              const active = mode === m.key;
+        {/* COLONNE NAV GAUCHE */}
+        <nav className="nav-left">
+
+          {/* Actif analysé */}
+          {result && (
+            <div style={{ padding:"16px 16px 12px", borderBottom:`1px solid ${THEME.borderSubtle}` }}>
+              <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase",
+                letterSpacing:1.5, marginBottom:4 }}>
+                Actif analysé
+              </div>
+              <div style={{ fontSize:13, fontWeight:800, color:THEME.textPrimary,
+                lineHeight:1.3, marginBottom:4 }}>
+                {result.type === "stock"  && (result.metrics?.name || result.ticker)}
+                {result.type === "crypto" && result.data?.name}
+                {result.type === "forex"  && `EUR / ${result.currency}`}
+              </div>
+              <TypeBadge type={
+                result.type === "stock"  ? result.metrics?.quoteType :
+                result.type === "crypto" ? "CRYPTOCURRENCY" : "CURRENCY"
+              }/>
+            </div>
+          )}
+
+          {/* Items navigation */}
+          <div style={{ padding:"8px 0", flex:1 }}>
+            {(result?.type === "stock" ? [
+              { icon:"📊", label:"Résumé",        tab:"resume"        as const },
+              { icon:"📈", label:"Technique",     tab:"technique"     as const },
+              { icon:"🏢", label:"Fondamentaux",  tab:"fondamentaux"  as const },
+              { icon:"🌍", label:"Macro & News",  tab:"macro"         as const },
+            ] : result?.type === "crypto" ? [
+              { icon:"📊", label:"Résumé",        tab:"resume"        as const },
+              { icon:"📈", label:"Technique",     tab:"technique"     as const },
+              { icon:"🪙", label:"Marché",        tab:"marche"        as const },
+              { icon:"📰", label:"News",          tab:"macro"         as const },
+            ] : [
+              { icon:"📊", label:"Résumé",        tab:"resume"        as const },
+              { icon:"📈", label:"Technique",     tab:"technique"     as const },
+              { icon:"💱", label:"Marché",        tab:"marche"        as const },
+              { icon:"📰", label:"News",          tab:"macro"         as const },
+            ]).map(item => {
+              const isActive = activeTab === item.tab;
               return (
-                <button
-                  key={m.key}
-                  onClick={() => handleModeChange(m.key)}
+                <div
+                  key={item.tab}
+                  onClick={() => result && setActiveTab(item.tab)}
                   style={{
-                    background:  active ? m.color + "22" : "transparent",
-                    border:     `1px solid ${active ? m.color : THEME.borderMid}`,
-                    color:       active ? m.color : "#556",
-                    borderRadius: 6, padding: "5px 13px",
-                    fontSize: 11, fontWeight: active ? 800 : 600,
-                    cursor: "pointer", transition: "all .15s",
-                    letterSpacing: 0.2,
+                    display:"flex", alignItems:"center", gap:10,
+                    padding:"11px 16px",
+                    color: isActive ? THEME.accent : THEME.textMuted,
+                    fontSize:13, fontWeight: isActive ? 700 : 600,
+                    cursor: result ? "pointer" : "default",
+                    opacity: result ? 1 : 0.4,
+                    background: isActive ? THEME.accent + "15" : "transparent",
+                    borderLeft: isActive
+                      ? `3px solid ${THEME.accent}`
+                      : "3px solid transparent",
+                    transition:"all .15s",
                   }}
                 >
-                  {m.label}
-                </button>
+                  <span style={{ fontSize:15 }}>{item.icon}</span>
+                  <span>{item.label}</span>
+                </div>
               );
             })}
           </div>
 
-          {/* Champ + suggestions */}
-          <div style={{ maxWidth:760, display:"flex", gap:10, alignItems:"flex-start" }}>
-            <div ref={searchRef} style={{ flex:1, position:"relative" }}>
-              <input
-                value={query}
-                onChange={e => handleQueryChange(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === "Enter")  { setShowSuggestions(false); doAnalyze(); }
-                  if (e.key === "Escape")   setShowSuggestions(false);
-                }}
-                onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
-                placeholder={
-                  mode === "equity"  ? "Ticker action : AAPL · MC.PA · AIR.PA · SAP.DE..." :
-                  mode === "etf"     ? "Ticker ETF / Fonds : SPY · IWDA.AS · CW8.PA..." :
-                  mode === "futures" ? "Contrat à terme : ES=F · NQ=F · CL=F · GC=F..." :
-                  mode === "forex"   ? "Paire Forex : USD · EUR/GBP · JPY · CHF..." :
-                  mode === "crypto"  ? "Crypto : BTC · ethereum · SOL · MATIC..." :
-                  mode === "index"   ? "Indice : ^GSPC · ^FCHI · ^GDAXI · ^N225..." :
-                  mode === "bond"    ? "Obligation : ^TNX · ^IRX · TLT..." :
-                  "Ticker : AAPL · MC.PA · BTC · bitcoin · USD · EUR/GBP..."
-                }
-                style={{
-                  width:"100%", background:THEME.bgPanel, border:`1px solid ${THEME.borderMid}`,
-                  borderRadius:10, color:THEME.textPrimary, padding:"14px 18px",
-                  fontSize:15, fontWeight:600, outline:"none",
-                }}
-              />
-
-              {/* Dropdown suggestions */}
-              {showSuggestions && suggestions.length > 0 && (
-                <div style={{
-                  position:"absolute", top:"calc(100% + 6px)", left:0, right:0,
-                  background:THEME.bgPanel, border:`1px solid ${THEME.borderMid}`,
-                  borderRadius:10, overflow:"hidden",
-                  zIndex:50, boxShadow:"0 8px 32px #000d",
-                }}>
-                  {suggestions.map((s, i) => {
-                    const b = getBadge(s.type);
-                    return (
-                      <div
-                        key={i}
-                        onMouseDown={() => selectSuggestion(s)}
-                        style={{
-                          display:"flex", alignItems:"center", gap:10,
-                          padding:"9px 16px", cursor:"pointer",
-                          borderBottom: i < suggestions.length - 1 ? `1px solid ${THEME.borderSubtle}` : "none",
-                          background:"transparent", transition:"background .1s",
-                        }}
-                        onMouseEnter={e => (e.currentTarget.style.background = THEME.borderSubtle)}
-                        onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
-                      >
-                        <span style={{ fontFamily:"'IBM Plex Mono',monospace", fontWeight:800, color:THEME.textPrimary, fontSize:13, minWidth:70, flexShrink:0 }}>
-                          {s.symbol}
-                        </span>
-                        <span style={{ flex:1, fontSize:12, color:THEME.textSecondary, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
-                          {s.name}
-                        </span>
-                        <span style={{ fontSize:9, fontWeight:800, color:b.color, background:b.bg, borderRadius:4, padding:"2px 6px", letterSpacing:1, textTransform:"uppercase", flexShrink:0 }}>
-                          {b.label}
-                        </span>
-                        {s.exchange && (
-                          <span style={{ fontSize:9, color:"#445", flexShrink:0 }}>{s.exchange}</span>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-
-            <button onClick={() => { setShowSuggestions(false); doAnalyze(); }} disabled={loading} style={{
-              background: loading ? THEME.borderSubtle : THEME.accent,
-              color: loading ? "#445" : "#000",
-              border:"none", borderRadius:10, padding:"14px 26px",
-              fontSize:14, fontWeight:800,
-              cursor: loading ? "not-allowed" : "pointer",
-              whiteSpace:"nowrap", flexShrink:0,
-            }}>
-              {loading ? "…" : "Analyser →"}
-            </button>
-          </div>
-
-        </div>
-      </div>
-
-      {/* JOURNAL */}
-      {log.length > 0 && (
-        <div style={{ marginTop:14 }}>
-          <div className="app-inner">
-            <div style={{ background:THEME.bgHeader, border:`1px solid ${THEME.borderSubtle}`, borderRadius:8, padding:"8px 14px" }}>
-              <div style={{ fontSize:9, color:"#445", textTransform:"uppercase", letterSpacing:1.5, marginBottom:5 }}>Journal</div>
-              {log.map((l,i) => (
-                <div key={i} style={{ fontSize:11, color:THEME.textSecondary, fontFamily:"'IBM Plex Mono',monospace" }}>{l}</div>
-              ))}
+          {/* Jeu — futur */}
+          <div style={{ padding:"12px 16px", borderTop:`1px solid ${THEME.borderSubtle}` }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8,
+              color:THEME.textMuted, fontSize:12, opacity:0.5 }}>
+              <span>🎮</span>
+              <span>Jeu</span>
+              <span style={{ fontSize:9, background:THEME.borderMid,
+                color:THEME.textMuted, borderRadius:4, padding:"1px 6px",
+                marginLeft:"auto" }}>Bientôt</span>
             </div>
           </div>
-        </div>
-      )}
+        </nav>
 
-      {/* ERREUR */}
-      {error && (
-        <div style={{ marginTop:14 }}>
-          <div className="app-inner">
-            <div style={{ background:"#1e0a0a", border:"1px solid #5a1a1a", borderRadius:8, padding:"12px 16px", color:THEME.scoreRed, fontSize:13 }}>
-              ⚠️ {error}
+        {/* ZONE CONTENU */}
+        <main className="content-area">
+
+          {/* Journal */}
+          {log.length > 0 && <LogPanel log={log}/>}
+
+          {/* Erreur */}
+          {error && (
+            <div style={{ marginBottom:14 }}>
+              <div style={{ background:"#1e0a0a", border:"1px solid #5a1a1a",
+                borderRadius:8, padding:"12px 16px",
+                color:THEME.scoreRed, fontSize:13 }}>
+                ⚠️ {error}
+              </div>
             </div>
-          </div>
-        </div>
-      )}
+          )}
 
-      {/* LOADING */}
-      {loading && (
-        <div style={{ display:"flex", justifyContent:"center", padding:60 }}>
-          <div style={{ width:34, height:34, border:`3px solid ${THEME.borderSubtle}`, borderTopColor:THEME.accent, borderRadius:"50%", animation:"spin 1s linear infinite" }}/>
-        </div>
-      )}
+          {/* Loading */}
+          {loading && (
+            <div style={{ display:"flex", justifyContent:"center", padding:60 }}>
+              <div style={{ width:34, height:34,
+                border:`3px solid ${THEME.borderSubtle}`,
+                borderTopColor:THEME.accent,
+                borderRadius:"50%",
+                animation:"spin 1s linear infinite" }}/>
+            </div>
+          )}
 
-      {/* RÉSULTATS */}
-      {result && !loading && (
-        <div style={{ paddingTop:22, paddingBottom:40 }}>
-          <div className="app-inner">
-            {result.type === "stock"  && <StockView metrics={result.metrics} chartData={result.chartData} ticker={result.ticker ?? ""} optimalUTKey={result.optimalUTKey} macro={result.macro} zone={result.zone} eurRate={result.eurRate}/>}
-            {result.type === "crypto" && <CryptoView data={result.data}/>}
-            {result.type === "forex"  && <ForexView {...result}/>}
-          </div>
-        </div>
-      )}
+          {/* Écran d'accueil — aucun résultat */}
+          {!result && !loading && (
+            <div style={{ display:"flex", flexDirection:"column",
+              alignItems:"center", justifyContent:"center",
+              minHeight:"60vh", gap:16, textAlign:"center" }}>
+              <div style={{ fontSize:48 }}>📊</div>
+              <div style={{ fontSize:20, fontWeight:800, color:THEME.textPrimary }}>
+                Recherchez un actif pour commencer
+              </div>
+              <div style={{ fontSize:13, color:THEME.textMuted, maxWidth:400 }}>
+                Actions · ETF · Indices · Crypto · Forex
+              </div>
+              <div style={{ display:"flex", gap:8, flexWrap:"wrap",
+                justifyContent:"center", marginTop:8 }}>
+                {["AAPL","BTC","EUR/USD","^GSPC","MC.PA"].map(t => (
+                  <button key={t} onMouseDown={() => {
+                    setQuery(t); doAnalyze(t);
+                  }} style={{
+                    background:THEME.bgPanel,
+                    border:`1px solid ${THEME.borderMid}`,
+                    borderRadius:6, padding:"6px 14px",
+                    fontSize:12, fontWeight:700,
+                    color:THEME.textSecondary, cursor:"pointer",
+                  }}>
+                    {t}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
-      {/* DISCLAIMER LÉGAL */}
-      <div style={{ borderTop:`1px solid ${THEME.borderSubtle}`, background:THEME.bgHeader, marginTop:"auto", padding:"20px 0" }}>
-        <div className="app-inner">
-          <div style={{
-            background:THEME.bgPanel, border:`1px solid ${THEME.borderPanel}`, borderRadius:10,
-            padding:"16px 20px", display:"flex", gap:14, alignItems:"flex-start",
-          }}>
-            <span style={{ fontSize:18, flexShrink:0 }}>⚖️</span>
+          {/* Résultats */}
+          {result && !loading && (
             <div>
-              <div style={{ fontSize:11, fontWeight:800, color:THEME.textSecondary, textTransform:"uppercase", letterSpacing:1.2, marginBottom:6 }}>
-                Avertissement — Pas de conseil en investissement
-              </div>
-              <div style={{ fontSize:11, color:THEME.textSecondary, lineHeight:1.8 }}>
-                Les informations, analyses et signaux présentés sur ce screener sont fournis à titre <strong style={{ color:THEME.textPrimary }}>purement informatif et éducatif</strong>.
-                Ils ne constituent en aucun cas un conseil en investissement, une recommandation d'achat ou de vente, ni une incitation à investir.
-                Tout investissement comporte un <strong style={{ color:THEME.textPrimary }}>risque de perte partielle ou totale du capital</strong>.
-                Les performances passées ne préjugent pas des performances futures.
-                L'auteur de cet outil <strong style={{ color:THEME.textPrimary }}>décline toute responsabilité</strong> quant aux décisions prises sur la base de ces données
-                et aux pertes éventuelles qui pourraient en résulter.
-                Consultez un conseiller financier agréé avant toute décision d'investissement.
+              {result.type === "stock"  && <StockView metrics={result.metrics} chartData={result.chartData} ticker={result.ticker ?? ""} optimalUTKey={result.optimalUTKey} macro={result.macro} zone={result.zone} eurRate={result.eurRate} activeTab={activeTab as "resume"|"technique"|"fondamentaux"|"macro"}/>}
+              {result.type === "crypto" && <CryptoView data={result.data} activeTab={activeTab as "resume"|"technique"|"marche"|"macro"}/>}
+              {result.type === "forex"  && <ForexView {...result} activeTab={activeTab as "resume"|"technique"|"marche"|"macro"}/>}
+            </div>
+          )}
+
+          {/* Disclaimer */}
+          <div style={{ borderTop:`1px solid ${THEME.borderSubtle}`, marginTop:40, paddingTop:20 }}>
+            <div style={{
+              background:THEME.bgPanel, border:`1px solid ${THEME.borderPanel}`,
+              borderRadius:10, padding:"16px 20px", display:"flex", gap:14, alignItems:"flex-start",
+            }}>
+              <span style={{ fontSize:18, flexShrink:0 }}>⚖️</span>
+              <div>
+                <div style={{ fontSize:11, fontWeight:800, color:THEME.textSecondary,
+                  textTransform:"uppercase", letterSpacing:1.2, marginBottom:6 }}>
+                  Avertissement — Pas de conseil en investissement
+                </div>
+                <div style={{ fontSize:11, color:THEME.textSecondary, lineHeight:1.8 }}>
+                  Les informations, analyses et signaux présentés sur ce screener sont fournis à titre{" "}
+                  <strong style={{ color:THEME.textPrimary }}>purement informatif et éducatif</strong>.
+                  Ils ne constituent en aucun cas un conseil en investissement, une recommandation d'achat ou de vente, ni une incitation à investir.
+                  Tout investissement comporte un{" "}
+                  <strong style={{ color:THEME.textPrimary }}>risque de perte partielle ou totale du capital</strong>.
+                  Les performances passées ne préjugent pas des performances futures.
+                  L'auteur de cet outil{" "}
+                  <strong style={{ color:THEME.textPrimary }}>décline toute responsabilité</strong>{" "}
+                  quant aux décisions prises sur la base de ces données et aux pertes éventuelles qui pourraient en résulter.
+                  Consultez un conseiller financier agréé avant toute décision d'investissement.
+                </div>
               </div>
             </div>
           </div>
-        </div>
+
+        </main>
       </div>
 
     </div>
