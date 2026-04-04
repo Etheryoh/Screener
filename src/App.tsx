@@ -142,6 +142,16 @@ const CHART_RANGES: Record<string, { range: string; interval: string; label: str
   "10a": { range: "10y",  interval: "1mo", label: "10 ans" },
 };
 
+const STOCK_UT_CONFIG: Record<string, {
+  range: string; interval: string; label: string; displayLabel: string;
+}> = {
+  "1D": { range: "6mo",  interval: "1d",  label: "1D", displayLabel: "Journalier"   },
+  "1W": { range: "5y",   interval: "1wk", label: "1W", displayLabel: "Hebdomadaire" },
+  "1M": { range: "10y",  interval: "1mo", label: "1M", displayLabel: "Mensuel"      },
+};
+const STOCK_UT_PERIODS = Object.entries(STOCK_UT_CONFIG)
+  .map(([key, cfg]) => ({ key, label: cfg.label }));
+
 // ── DÉTECTION UNIFIÉE DU TYPE D'ACTIF ────────────────────────
 const KNOWN_CRYPTO_SYMBOLS = new Set([
   "BTC","ETH","SOL","BNB","XRP","ADA","DOGE","AVAX","DOT","MATIC",
@@ -4235,8 +4245,8 @@ function ChartBlock({
               {showEur ? `↩ ${currency}` : `≈ ${(priceValue*eurRate).toLocaleString("fr-FR",{minimumFractionDigits:2,maximumFractionDigits:2})} EUR`}
             </button>
           )}
-          {/* Boutons de période — uniquement en mode Performance */}
-          {chartMode === "perf" && periods && periods.length > 0 && (
+          {/* Boutons UT — visibles dans les deux modes */}
+          {periods && periods.length > 0 && (
             <div style={{display:"flex",gap:3,flexWrap:"wrap"}}>
               {periods.map(p => (
                 <button key={p.key} onClick={()=>onPeriodChange(p.key)} style={{
@@ -5856,8 +5866,8 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
   } = metrics;
 
   // État graphique interactif
-  const defaultPeriod = optimalUTKey || "1a";
-  const [period,       setPeriod]    = useState(defaultPeriod);
+  const defaultUT: "1D"|"1W"|"1M" = "1D";
+  const [ut,           setUt]       = useState<"1D"|"1W"|"1M">(defaultUT);
   const [chartData,    setChartData] = useState<{ closes:(number|null)[]; timestamps:number[]; opens:(number|null)[]; highs:(number|null)[]; lows:(number|null)[]; volumes:(number|null)[] } | null>(
     initialChartData
   );
@@ -5869,7 +5879,8 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
   // Sync chartData quand initialChartData change (nouvelle recherche)
   useEffect(() => {
     setChartData(initialChartData);
-    setPeriod(defaultPeriod);
+    setUt("1D");
+    loadChart("1D");
   }, [initialChartData]);
 
   useEffect(() => {
@@ -5920,32 +5931,32 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
     if (fallback) setDescFr(fallback);
   }, [metrics]);
 
-  const loadChart = useCallback(async (p: string) => {
+  const loadChart = useCallback(async (u: "1D"|"1W"|"1M") => {
     setChartLoading(true);
     try {
-      const { range, interval } = CHART_RANGES[p] || CHART_RANGES["1a"];
-      const url = `${PROXY}?ticker=${encodeURIComponent(ticker)}&type=chart&range=${range}&interval=${interval}`;
+      const cfg = STOCK_UT_CONFIG[u];
+      const url = `${PROXY}?ticker=${encodeURIComponent(ticker)}&type=chart&range=${cfg.range}&interval=${cfg.interval}`;
       const d   = await (await fetch(url)).json();
       const res = d?.chart?.result?.[0];
       if (res) {
-        const q          = res.indicators?.quote?.[0] || {};
-        const closes     = res.indicators?.adjclose?.[0]?.adjclose || q.close || [];
-        const timestamps = res.timestamp || [];
+        const q = res.indicators?.quote?.[0] || {};
         setChartData({
-          closes, timestamps,
-          opens:   q.open   || [],
-          highs:   q.high   || [],
-          lows:    q.low    || [],
-          volumes: q.volume || [],
+          closes:     res.indicators?.adjclose?.[0]?.adjclose || q.close || [],
+          timestamps: res.timestamp || [],
+          opens:      q.open   || [],
+          highs:      q.high   || [],
+          lows:       q.low    || [],
+          volumes:    q.volume || [],
         });
       }
     } catch {}
     setChartLoading(false);
   }, [ticker]);
 
-  const handlePeriodChange = (p: string) => {
-    setPeriod(p);
-    loadChart(p);
+  const handleUTChange = (u: string) => {
+    const ut = u as "1D"|"1W"|"1M";
+    setUt(ut);
+    loadChart(ut);
   };
 
   const SECTIONS = [
@@ -6180,7 +6191,8 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
   // ── Signaux techniques : calcul unique, partagé par score + badge + TechnicalPanel ──
   // L'intervalle du graphique est déduit de l'UT sélectionnée (nécessaire pour normaliser dp sinewave)
   const chartInterval: "1d" | "1wk" | "1mo" =
-    period === "10a" ? "1mo" : period === "3a" || period === "5a" ? "1wk" : "1d";
+    ut === "1M" ? "1mo" :
+    ut === "1W" ? "1wk" : "1d";
   const techComputed = closes.length > 0
     ? computeTechSignals(closes, volumes, highs, lows, chartInterval)
     : { signals: [], sinewave: null };
@@ -6249,9 +6261,9 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
               chartData={chartData}
               currency={currency}
               quoteType={quoteType}
-              period={period}
-              periods={Object.entries(CHART_RANGES).map(([k,v])=>({key:k,label:v.label}))}
-              onPeriodChange={handlePeriodChange}
+              period={ut}
+              periods={STOCK_UT_PERIODS}
+              onPeriodChange={handleUTChange}
               loading={chartLoading}
               optimalUTKey={optimalUTKey}
               showEur={showEur}
@@ -6396,7 +6408,7 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
             volumes={chartData?.volumes ?? []}
             currency={metrics?.currency ?? "USD"}
             chartInterval={chartInterval}
-            period={period}
+            period={ut}
             marketContext={finalScoreResult?.context ?? null}
           />
         </div>
