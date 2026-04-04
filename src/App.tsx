@@ -4235,8 +4235,8 @@ function ChartBlock({
               {showEur ? `↩ ${currency}` : `≈ ${(priceValue*eurRate).toLocaleString("fr-FR",{minimumFractionDigits:2,maximumFractionDigits:2})} EUR`}
             </button>
           )}
-          {/* Boutons de période — visibles dans les deux modes */}
-          {periods && periods.length > 0 && (
+          {/* Boutons de période — uniquement en mode Performance */}
+          {chartMode === "perf" && periods && periods.length > 0 && (
             <div style={{display:"flex",gap:3,flexWrap:"wrap"}}>
               {periods.map(p => (
                 <button key={p.key} onClick={()=>onPeriodChange(p.key)} style={{
