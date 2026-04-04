@@ -9,6 +9,7 @@
             "dom",
             "es2020"
         ],
-        "jsx": "react-jsx"
+        "jsx": "react-jsx",
+        "skipLibCheck": true
     }
 }

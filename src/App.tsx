@@ -1617,7 +1617,10 @@ function calcBreakoutTarget(
 
   // Détection breakout baissier : prix actuel < rangeLow
   if (last < rangeLow * 0.995) {
-    const target    = rangeLow - rangeAmp;
+    const targetRaw = rangeLow - rangeAmp;
+    // Un prix ne peut pas être négatif ou nul — invalider la target
+    if (targetRaw <= 0) return NONE;
+    const target    = targetRaw;
     const targetPct = ((target - last) / last) * 100;
     let barsElapsed = 0;
     for (let i = c.length - 1; i >= Math.max(0, c.length - 30); i--) {
@@ -2712,9 +2715,18 @@ function computeSituationalContext(
       horizon = `${sw.optimalUT.label} · ${sw.optimalUT.horizon}`;
     }
     if (sw.cycleTurn === "trough" && globalScore != null && globalScore >= 5.5) {
-      signals.push({ emoji:"🎯", color:"#22c55e",
-        label:"Timing favorable — creux de cycle",
-        detail:`Score fondamental ${globalScore.toFixed(1)}/10 + retournement de cycle haussier → configuration d'entrée potentiellement optimale.` });
+      // Ne pas afficher "Timing favorable" si la tendance de fond est baissière
+      // (Death Cross actif) — contradiction avec EntryRecommendationPanel
+      const isBearishTrend = sw.sine > 0.2 && sw.momentum14 < -5;
+      if (!isBearishTrend) {
+        signals.push({ emoji:"🎯", color:"#22c55e",
+          label:"Timing favorable — creux de cycle",
+          detail:`Score fondamental ${globalScore.toFixed(1)}/10 + retournement de cycle haussier → configuration d'entrée potentiellement optimale.` });
+      } else {
+        signals.push({ emoji:"🔍", color:"#60a5fa",
+          label:"Creux de cycle détecté — mais tendance baissière active",
+          detail:`Score fondamental ${globalScore.toFixed(1)}/10. Creux cyclique présent mais la tendance de fond reste baissière — rebond tactique possible uniquement, pas une opportunité d'entrée longue.` });
+      }
     } else if (sw.cycleTurn === "peak" && gValorisation != null && gValorisation <= 3.5) {
       signals.push({ emoji:"⏸️", color:"#f59e0b",
         label:"Timing défavorable — sommet de cycle",
@@ -6263,10 +6275,13 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
               }}>
                 {/* Jauges */}
                 <div style={{ display:"flex", justifyContent:"space-evenly",
-                  marginBottom:14, flexWrap:"wrap", gap:12 }}>
+                  marginBottom:14, gap:12,
+                  flexWrap:"nowrap",
+                  overflowX:"auto" }}>
                   {metrics?.globalScore != null && (
                     <div style={{ display:"flex", flexDirection:"column",
-                      alignItems:"center", gap:4 }}>
+                      alignItems:"center", gap:4,
+                      minWidth:120, maxWidth:160, flex:"1 1 120px" }}>
                       <ScoreGauge score={metrics.globalScore}/>
                       <div style={{ display:"flex", alignItems:"baseline", gap:3 }}>
                         <span style={{ fontSize:36, fontWeight:900,
@@ -6285,7 +6300,8 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
                   )}
                   {finalScore != null && (
                     <div style={{ display:"flex", flexDirection:"column",
-                      alignItems:"center", gap:4 }}>
+                      alignItems:"center", gap:4,
+                      minWidth:120, maxWidth:160, flex:"1 1 120px" }}>
                       <ScoreGauge score={finalScore}/>
                       <div style={{ display:"flex", alignItems:"baseline", gap:3 }}>
                         <span style={{ fontSize:36, fontWeight:900,
@@ -7488,8 +7504,8 @@ function CryptoView({ data, activeTab = "resume" }: { data: any; activeTab?: "re
                     border:`1px solid ${v.color}33`,
                     borderRadius:14, padding:"18px 20px",
                   }}>
-                    <div style={{ display:"flex", justifyContent:"space-evenly",
-                      marginBottom:14, flexWrap:"wrap", gap:12 }}>
+                    <div style={{ display:"flex", justifyContent:"center",
+                      marginBottom:14 }}>
                       <div style={{ display:"flex", flexDirection:"column",
                         alignItems:"center", gap:4 }}>
                         <ScoreGauge score={score}/>
