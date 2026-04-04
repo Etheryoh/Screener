@@ -145,9 +145,9 @@ const CHART_RANGES: Record<string, { range: string; interval: string; label: str
 const STOCK_UT_CONFIG: Record<string, {
   range: string; interval: string; label: string; displayLabel: string;
 }> = {
-  "1D": { range: "6mo",  interval: "1d",  label: "1D", displayLabel: "Journalier"   },
-  "1W": { range: "5y",   interval: "1wk", label: "1W", displayLabel: "Hebdomadaire" },
-  "1M": { range: "10y",  interval: "1mo", label: "1M", displayLabel: "Mensuel"      },
+  "1D": { range: "1y",  interval: "1d",  label: "1D", displayLabel: "Journalier"   },
+  "1W": { range: "10y", interval: "1wk", label: "1W", displayLabel: "Hebdomadaire" },
+  "1M": { range: "max", interval: "1mo", label: "1M", displayLabel: "Mensuel"      },
 };
 const STOCK_UT_PERIODS = Object.entries(STOCK_UT_CONFIG)
   .map(([key, cfg]) => ({ key, label: cfg.label }));
@@ -4183,7 +4183,6 @@ function CollapsibleEduBlock({
 function ChartBlock({
   chartData,
   chartDataWeekly,
-  candleData,
   candleLoading,
   candleDisplay,
   currency,
@@ -4217,7 +4216,7 @@ function ChartBlock({
 }) {
   const [chartMode, setChartMode] = useState<"perf"|"tech">("perf");
 
-  const candleSource = candleData !== undefined ? candleData : chartData;
+  const candleSource = chartData;
 
   const breakoutForChart = (candleSource && candleSource.closes.length > 0 && candleSource.highs.length > 0)
     ? calcBreakoutTarget(candleSource.closes, candleSource.highs, candleSource.lows)
@@ -4225,6 +4224,18 @@ function ChartBlock({
 
   const hasCandleData = candleSource != null &&
     candleSource.opens.filter((v): v is number => v != null).length >= 10;
+
+  // Limiter l'affichage à 120 bougies pour la cohérence avec CandleChart
+  const perfDisplayData = chartData && chartData.closes.length > 120
+    ? {
+        closes:     chartData.closes.slice(-120),
+        timestamps: chartData.timestamps.slice(-120),
+        opens:      chartData.opens.slice(-120),
+        highs:      chartData.highs.slice(-120),
+        lows:       chartData.lows.slice(-120),
+        volumes:    chartData.volumes.slice(-120),
+      }
+    : chartData;
 
   return (
     <div style={{background:THEME.bgPanel,border:`1px solid ${THEME.borderPanel}`,borderRadius:12,padding:"14px 18px",marginBottom:4}}>
@@ -4278,7 +4289,7 @@ function ChartBlock({
       </div>
       {chartMode==="perf" ? (
         <PerfChart
-          chartData={candleSource}
+          chartData={perfDisplayData}
           chartDataWeekly={chartDataWeekly}
           currency={currency}
           quoteType={quoteType}
@@ -5854,8 +5865,8 @@ function EntryRecommendationPanel({ rec }: { rec: EntryRecommendation }) {
 }
 
 
-function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey, macro, zone, eurRate, activeTab = "resume" }: {
-  metrics: any; chartData: any; ticker: string; optimalUTKey?: string; macro?: MacroContext | null; zone?: MacroZone; eurRate?: number | null;
+function StockView({ metrics, ticker, optimalUTKey, macro, zone, eurRate, activeTab = "resume" }: {
+  metrics: any; ticker: string; optimalUTKey?: string; macro?: MacroContext | null; zone?: MacroZone; eurRate?: number | null;
   activeTab?: "resume"|"technique"|"fondamentaux"|"macro";
 }) {
   if (!metrics) return null;
@@ -5866,22 +5877,21 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
   } = metrics;
 
   // État graphique interactif
-  const defaultUT: "1D"|"1W"|"1M" = "1D";
-  const [ut,           setUt]       = useState<"1D"|"1W"|"1M">(defaultUT);
-  const [chartData,    setChartData] = useState<{ closes:(number|null)[]; timestamps:number[]; opens:(number|null)[]; highs:(number|null)[]; lows:(number|null)[]; volumes:(number|null)[] } | null>(
-    initialChartData
-  );
+  const [ut,           setUt]         = useState<"1D"|"1W"|"1M">("1D");
+  const [chartData1D,  setChartData1D] = useState<{ closes:(number|null)[]; timestamps:number[]; opens:(number|null)[]; highs:(number|null)[]; lows:(number|null)[]; volumes:(number|null)[] } | null>(null);
+  const [chartData1W,  setChartData1W] = useState<typeof chartData1D>(null);
+  const [chartData1M,  setChartData1M] = useState<typeof chartData1D>(null);
+  const chartData = ut === "1W" ? chartData1W : ut === "1M" ? chartData1M : chartData1D;
   const [chartLoading, setChartLoading] = useState(false);
   const [showEur,      setShowEur]      = useState(false);
   const [descFr, setDescFr] = useState<string>("");
   const [descOpen, setDescOpen] = useState(false);
 
-  // Sync chartData quand initialChartData change (nouvelle recherche)
+  // Chargement parallèle des 3 UT au montage / changement de ticker
   useEffect(() => {
-    setChartData(initialChartData);
     setUt("1D");
-    loadChart("1D");
-  }, [initialChartData]);
+    loadAllCharts();
+  }, [ticker]);
 
   useEffect(() => {
     setDescFr("");
@@ -5931,32 +5941,39 @@ function StockView({ metrics, chartData: initialChartData, ticker, optimalUTKey,
     if (fallback) setDescFr(fallback);
   }, [metrics]);
 
-  const loadChart = useCallback(async (u: "1D"|"1W"|"1M") => {
+  const loadAllCharts = useCallback(async () => {
     setChartLoading(true);
     try {
-      const cfg = STOCK_UT_CONFIG[u];
-      const url = `${PROXY}?ticker=${encodeURIComponent(ticker)}&type=chart&range=${cfg.range}&interval=${cfg.interval}`;
-      const d   = await (await fetch(url)).json();
-      const res = d?.chart?.result?.[0];
-      if (res) {
+      const fetchUT = async (utKey: "1D"|"1W"|"1M") => {
+        const cfg = STOCK_UT_CONFIG[utKey];
+        const url = `${PROXY}?ticker=${encodeURIComponent(ticker)}&type=chart&range=${cfg.range}&interval=${cfg.interval}`;
+        const d   = await (await fetch(url)).json();
+        const res = d?.chart?.result?.[0];
+        if (!res) return null;
         const q = res.indicators?.quote?.[0] || {};
-        setChartData({
+        return {
           closes:     res.indicators?.adjclose?.[0]?.adjclose || q.close || [],
           timestamps: res.timestamp || [],
           opens:      q.open   || [],
           highs:      q.high   || [],
           lows:       q.low    || [],
           volumes:    q.volume || [],
-        });
-      }
+        };
+      };
+      const [d1D, d1W, d1M] = await Promise.all([
+        fetchUT("1D"),
+        fetchUT("1W"),
+        fetchUT("1M"),
+      ]);
+      if (d1D) setChartData1D(d1D);
+      if (d1W) setChartData1W(d1W);
+      if (d1M) setChartData1M(d1M);
     } catch {}
     setChartLoading(false);
   }, [ticker]);
 
   const handleUTChange = (u: string) => {
-    const ut = u as "1D"|"1W"|"1M";
-    setUt(ut);
-    loadChart(ut);
+    setUt(u as "1D"|"1W"|"1M");
   };
 
   const SECTIONS = [
@@ -8881,7 +8898,7 @@ export default function App() {
           {/* Résultats */}
           {result && !loading && (
             <div>
-              {result.type === "stock"  && <StockView metrics={result.metrics} chartData={result.chartData} ticker={result.ticker ?? ""} optimalUTKey={result.optimalUTKey} macro={result.macro} zone={result.zone} eurRate={result.eurRate} activeTab={activeTab as "resume"|"technique"|"fondamentaux"|"macro"}/>}
+              {result.type === "stock"  && <StockView metrics={result.metrics} ticker={result.ticker ?? ""} optimalUTKey={result.optimalUTKey} macro={result.macro} zone={result.zone} eurRate={result.eurRate} activeTab={activeTab as "resume"|"technique"|"fondamentaux"|"macro"}/>}
               {result.type === "crypto" && <CryptoView data={result.data} activeTab={activeTab as "resume"|"technique"|"marche"|"macro"}/>}
               {result.type === "forex"  && <ForexView {...result} activeTab={activeTab as "resume"|"technique"|"marche"|"macro"}/>}
             </div>
