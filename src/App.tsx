@@ -3387,7 +3387,7 @@ function CandleChart({
   const svgRef = useRef<SVGSVGElement>(null);
 
   const [activeOverlays, setActiveOverlays] = useState<Set<OverlayKey>>(
-    new Set(["bb", "ema20", "ema50", "ema200", "target"] as OverlayKey[])
+    new Set([] as OverlayKey[])
   );
   const [tooltip, setTooltip] = useState<{
     x: number; o: number; h: number; l: number; c: number; v: number; date: string;
@@ -8375,60 +8375,68 @@ export default function App() {
 
   const ForexView = ({ currency, rate, allRates, ticker: forexTicker, activeTab = "resume" }: { currency: string; rate: number; allRates: Record<string, number>; ticker?: string; activeTab?: "resume"|"technique"|"marche"|"macro" }) => {
     const yfTicker = forexTicker ?? `EUR${currency}=X`;
-    const defaultPeriod = "1a";
-    const [period,       setPeriod]    = useState(defaultPeriod);
-    const [chartData,    setChartData] = useState<{ closes:(number|null)[]; timestamps:number[]; opens:(number|null)[]; highs:(number|null)[]; lows:(number|null)[]; volumes:(number|null)[] } | null>(null);
-    const [chartLoading, setChartLoading] = useState(false);
+    const [ut, setUt] = useState<"1D"|"1W"|"1M">("1D");
 
-    useEffect(() => {
-      setChartData(null);
-      setChartLoading(true);
-      const { range, interval } = CHART_RANGES[defaultPeriod] || CHART_RANGES["1a"];
-      const url = `${PROXY}?ticker=${encodeURIComponent(yfTicker)}&type=chart&range=${range}&interval=${interval}`;
-      fetch(url).then(r => r.json()).then(d => {
-        const res = d?.chart?.result?.[0];
-        if (res) {
-          const q = res.indicators?.quote?.[0] || {};
-          setChartData({
-            closes:     res.indicators?.adjclose?.[0]?.adjclose || q.close || [],
-            timestamps: res.timestamp || [],
-            opens:      q.open   || [],
-            highs:      q.high   || [],
-            lows:       q.low    || [],
-            volumes:    q.volume || [],
-          });
-        }
-      }).catch(() => {}).finally(() => setChartLoading(false));
-    }, [yfTicker]);
+    const [chartData1D, setChartData1D] = useState<{
+      closes:(number|null)[]; timestamps:number[];
+      opens:(number|null)[]; highs:(number|null)[];
+      lows:(number|null)[]; volumes:(number|null)[];
+    } | null>(null);
+    const [chartData1W, setChartData1W] = useState<typeof chartData1D>(null);
+    const [chartData1M, setChartData1M] = useState<typeof chartData1D>(null);
+    const [chartLoading, setChartLoading] = useState(true);
 
-    const loadChart = async (p: string) => {
+    const chartData = ut === "1W" ? chartData1W
+      : ut === "1M" ? chartData1M
+      : chartData1D;
+
+    const loadAllCharts = useCallback(async () => {
       setChartLoading(true);
       try {
-        const { range, interval } = CHART_RANGES[p] || CHART_RANGES["1a"];
-        const url = `${PROXY}?ticker=${encodeURIComponent(yfTicker)}&type=chart&range=${range}&interval=${interval}`;
-        const d   = await (await fetch(url)).json();
-        const res = d?.chart?.result?.[0];
-        if (res) {
+        const fetchUT = async (utKey: "1D"|"1W"|"1M") => {
+          const cfg = STOCK_UT_CONFIG[utKey];
+          const url = `${PROXY}?ticker=${encodeURIComponent(yfTicker)}&type=chart&range=${cfg.range}&interval=${cfg.interval}`;
+          const d   = await (await fetch(url)).json();
+          const res = d?.chart?.result?.[0];
+          if (!res) return null;
           const q = res.indicators?.quote?.[0] || {};
-          setChartData({
+          return {
             closes:     res.indicators?.adjclose?.[0]?.adjclose || q.close || [],
             timestamps: res.timestamp || [],
             opens:      q.open   || [],
             highs:      q.high   || [],
             lows:       q.low    || [],
             volumes:    q.volume || [],
-          });
-        }
+          };
+        };
+        const [d1D, d1W, d1M] = await Promise.all([
+          fetchUT("1D"),
+          fetchUT("1W"),
+          fetchUT("1M"),
+        ]);
+        if (d1D) setChartData1D(d1D);
+        if (d1W) setChartData1W(d1W);
+        if (d1M) setChartData1M(d1M);
       } catch {}
       setChartLoading(false);
+    }, [yfTicker]);
+
+    const handleUTChange = (u: string) => {
+      setUt(u as "1D"|"1W"|"1M");
     };
+
+    useEffect(() => {
+      setUt("1D");
+      loadAllCharts();
+    }, [yfTicker]); // eslint-disable-line
 
     const closes  = chartData?.closes  ?? [];
     const highs   = chartData?.highs   ?? [];
     const lows    = chartData?.lows    ?? [];
     const volumes = chartData?.volumes ?? [];
     const chartInterval: "1d" | "1wk" | "1mo" =
-      period === "10a" ? "1mo" : period === "3a" || period === "5a" ? "1wk" : "1d";
+      ut === "1M" ? "1mo" :
+      ut === "1W" ? "1wk" : "1d";
 
     const marketCtx = (closes.length > 20 && highs.length > 20 && lows.length > 20)
       ? classifyMarketContext(closes, highs, lows, volumes)
@@ -8489,9 +8497,9 @@ export default function App() {
                 chartData={chartData}
                 currency={currency}
                 quoteType="CURRENCY"
-                period={period}
-                periods={Object.entries(CHART_RANGES).map(([k,v])=>({key:k,label:v.label}))}
-                onPeriodChange={p => { setPeriod(p); loadChart(p); }}
+                period={ut}
+                periods={STOCK_UT_PERIODS}
+                onPeriodChange={handleUTChange}
                 loading={chartLoading}
               />
             </div>
@@ -8560,7 +8568,7 @@ export default function App() {
                 volumes={volumes}
                 currency={currency}
                 chartInterval={chartInterval}
-                period={period}
+                period={ut}
                 marketContext={finalScoreResult?.context ?? null}
               />
             )}
