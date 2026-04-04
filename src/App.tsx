@@ -3981,25 +3981,43 @@ function PerfChart({
   const baseLineY = toY(100);
 
   const amplitude = maxI - minI;
-  const tickStep  = amplitude > 150 ? 50 : amplitude > 60 ? 25 : amplitude > 25 ? 10 : 5;
+  // Adapter le pas selon l'amplitude — limiter à 6 ticks max
+  const tickStep = (() => {
+    if (amplitude > 5000) return Math.ceil(amplitude / 6 / 500) * 500;
+    if (amplitude > 1000) return Math.ceil(amplitude / 6 / 100) * 100;
+    if (amplitude > 500)  return Math.ceil(amplitude / 6 / 50)  * 50;
+    if (amplitude > 150)  return 50;
+    if (amplitude > 60)   return 25;
+    if (amplitude > 25)   return 10;
+    return 5;
+  })();
   const firstTick = Math.ceil(yMin / tickStep) * tickStep;
   const yTicks    = Array.from(
     { length: Math.floor((yMax - firstTick) / tickStep) + 1 },
     (_, i) => firstTick + i * tickStep
-  ).filter(v => v >= yMin && v <= yMax).map(v => ({ val:v, y:toY(v) }));
+  ).filter(v => v >= yMin && v <= yMax)
+   .slice(0, 6)  // max 6 ticks quoi qu'il arrive
+   .map(v => ({ val:v, y:toY(v) }));
 
-  const xStep  = Math.max(1, Math.floor(displayPts.length / 5));
+  const xStep         = Math.max(1, Math.floor(displayPts.length / 5));
+  const xStepAdjusted = displayPts.length > 60
+    ? Math.max(1, Math.floor(displayPts.length / 5))
+    : xStep;
   const xTicks = displayPts
-    .filter((_,i) => i===0 || i===displayPts.length-1 || i%xStep===0)
+    .filter((_,i) => i===0 || i===displayPts.length-1 || i%xStepAdjusted===0)
     .slice(0, 6)
     .map(p => {
       const i = displayPts.indexOf(p);
       const d = new Date(p.ts * 1000);
-      const label = period === "3m"
-        ? d.toLocaleDateString("fr-FR",{day:"numeric",month:"short"})
-        : period === "1a"
-        ? d.toLocaleDateString("fr-FR",{month:"short",year:"2-digit"})
-        : d.toLocaleDateString("fr-FR",{month:"short",year:"numeric"});
+      const label = (() => {
+        if (period === "1M" || displayPts.length > 60)
+          return d.getFullYear().toString();
+        if (period === "3m")
+          return d.toLocaleDateString("fr-FR",{day:"numeric",month:"short"});
+        if (period === "1D" || period === "1a")
+          return d.toLocaleDateString("fr-FR",{month:"short",year:"2-digit"});
+        return d.toLocaleDateString("fr-FR",{month:"short",year:"numeric"});
+      })();
       return { x:toX(i), label };
     });
 
@@ -5865,9 +5883,11 @@ function EntryRecommendationPanel({ rec }: { rec: EntryRecommendation }) {
 }
 
 
-function StockView({ metrics, ticker, optimalUTKey, macro, zone, eurRate, activeTab = "resume" }: {
+function StockView({ metrics, ticker, optimalUTKey, macro, zone, eurRate, activeTab = "resume", onUTChange, onUTNotify }: {
   metrics: any; ticker: string; optimalUTKey?: string; macro?: MacroContext | null; zone?: MacroZone; eurRate?: number | null;
   activeTab?: "resume"|"technique"|"fondamentaux"|"macro";
+  onUTChange?: (handler: (ut: string) => void) => void;
+  onUTNotify?: (ut: string) => void;
 }) {
   if (!metrics) return null;
   const {
@@ -5974,7 +5994,10 @@ function StockView({ metrics, ticker, optimalUTKey, macro, zone, eurRate, active
 
   const handleUTChange = (u: string) => {
     setUt(u as "1D"|"1W"|"1M");
+    onUTNotify?.(u);
   };
+
+  useEffect(() => { onUTChange?.(handleUTChange); }, []); // eslint-disable-line
 
   const SECTIONS = [
     {
@@ -7198,7 +7221,7 @@ function computeCryptoSentimentSynthesis(
   return null;
 }
 
-function CryptoView({ data, activeTab = "resume" }: { data: any; activeTab?: "resume"|"technique"|"marche"|"macro" }) {
+function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { data: any; activeTab?: "resume"|"technique"|"marche"|"macro"; onUTChange?: (handler: (ut: string) => void) => void; onUTNotify?: (ut: string) => void; }) {
   const md     = data.market_data || {};
   const price    = md.current_price?.usd as number | undefined;
   const priceEur = md.current_price?.eur as number | undefined;
@@ -7300,7 +7323,9 @@ function CryptoView({ data, activeTab = "resume" }: { data: any; activeTab?: "re
     setCandleLoading(false);
   }, [data.symbol]); // eslint-disable-line
 
-  const handleUTChange = (u: string) => { setUt(u); loadCandleData(u); };
+  const handleUTChange = (u: string) => { setUt(u); loadCandleData(u); onUTNotify?.(u); };
+
+  useEffect(() => { onUTChange?.(handleUTChange); }, []); // eslint-disable-line
 
   // ── Description traduite ─────────────────────────────────────
   const [descFr, setDescFr] = useState<string>("");
@@ -7471,17 +7496,13 @@ function CryptoView({ data, activeTab = "resume" }: { data: any; activeTab?: "re
           {/* Colonne gauche — graphique */}
           <div style={{ flex:"1 1 55%", minWidth:320 }}>
             <ChartBlock
-              chartData={allChartData}
-              chartDataWeekly={allChartDataWeekly}
-              candleData={candleData}
-              candleLoading={candleLoading}
-              candleDisplay={candleData !== undefined ? UT_DISPLAY : undefined}
+              chartData={candleData ?? null}
               currency="USD"
               quoteType="CRYPTOCURRENCY"
               period={ut}
               periods={UT_PERIODS}
               onPeriodChange={handleUTChange}
-              loading={chartLoading}
+              loading={chartLoading || candleLoading}
               optimalUTKey={optimalUTKey}
             />
           </div>
@@ -8058,7 +8079,18 @@ export default function App() {
   const [suggestions,     setSuggestions]     = useState<SearchSuggestion[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [activeTab, setActiveTab] = useState<"resume"|"technique"|"fondamentaux"|"marche"|"macro">("resume");
-  useEffect(() => { setActiveTab("resume"); }, [result]);
+  const [globalUT, setGlobalUT] = useState<string>("1D");
+  const [utOpen,   setUtOpen]   = useState(false);
+  const stockUTRef  = useRef<((ut: string) => void) | null>(null);
+  const forexUTRef  = useRef<((ut: string) => void) | null>(null);
+  const cryptoUTRef = useRef<((ut: string) => void) | null>(null);
+  useEffect(() => { setActiveTab("resume"); setGlobalUT("1D"); setUtOpen(false); }, [result]);
+  useEffect(() => {
+    if (!utOpen) return;
+    const handler = () => setUtOpen(false);
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [utOpen]);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchRef   = useRef<HTMLDivElement>(null);
 
@@ -8423,7 +8455,10 @@ export default function App() {
 
     const handleUTChange = (u: string) => {
       setUt(u as "1D"|"1W"|"1M");
+      setGlobalUT(u);
     };
+
+    useEffect(() => { forexUTRef.current = handleUTChange; }, []); // eslint-disable-line
 
     useEffect(() => {
       setUt("1D");
@@ -8787,6 +8822,72 @@ export default function App() {
             </div>
           )}
 
+          {/* Badge UT */}
+          {result && (
+            <div style={{ padding:"8px 16px", borderBottom:`1px solid ${THEME.borderSubtle}` }}>
+              <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase",
+                letterSpacing:1.5, marginBottom:6 }}>
+                Unité de temps
+              </div>
+              <div style={{ position:"relative" }} onMouseDown={e => e.stopPropagation()}>
+                <button
+                  onClick={() => setUtOpen(o => !o)}
+                  style={{
+                    width:"100%",
+                    background: THEME.bgCard,
+                    border:`1px solid ${THEME.accent}`,
+                    borderRadius:6, padding:"6px 10px",
+                    fontSize:12, fontWeight:800,
+                    color:THEME.accent, cursor:"pointer",
+                    display:"flex", alignItems:"center",
+                    justifyContent:"space-between", gap:6,
+                  }}
+                >
+                  <span style={{ fontSize:9, color:THEME.textMuted }}>UT</span>
+                  <span>{globalUT}</span>
+                  <span style={{ fontSize:9 }}>▼</span>
+                </button>
+                {utOpen && (
+                  <div style={{
+                    position:"absolute", top:"calc(100% + 4px)", left:0, right:0,
+                    background:THEME.bgPanel,
+                    border:`1px solid ${THEME.borderMid}`,
+                    borderRadius:8, overflow:"hidden",
+                    zIndex:100,
+                    boxShadow:"0 8px 24px #000c",
+                  }}>
+                    {(result.type === "crypto"
+                      ? ["1H","4H","1D","1W","1M"]
+                      : ["1D","1W","1M"]
+                    ).map(ut => (
+                      <div
+                        key={ut}
+                        onClick={() => {
+                          setGlobalUT(ut);
+                          setUtOpen(false);
+                          if (result.type === "stock")  stockUTRef.current?.(ut);
+                          if (result.type === "forex")  forexUTRef.current?.(ut);
+                          if (result.type === "crypto") cryptoUTRef.current?.(ut);
+                        }}
+                        style={{
+                          padding:"8px 14px", cursor:"pointer",
+                          fontSize:12, fontWeight: ut === globalUT ? 800 : 600,
+                          color: ut === globalUT ? THEME.accent : THEME.textSecondary,
+                          background: ut === globalUT ? THEME.accent+"15" : "transparent",
+                          transition:"background .1s",
+                        }}
+                        onMouseEnter={e => (e.currentTarget.style.background = THEME.borderSubtle)}
+                        onMouseLeave={e => (e.currentTarget.style.background = ut === globalUT ? THEME.accent+"15" : "transparent")}
+                      >
+                        {ut}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Items navigation */}
           <div style={{ padding:"8px 0", flex:1 }}>
             {(result?.type === "stock" ? [
@@ -8906,8 +9007,8 @@ export default function App() {
           {/* Résultats */}
           {result && !loading && (
             <div>
-              {result.type === "stock"  && <StockView metrics={result.metrics} ticker={result.ticker ?? ""} optimalUTKey={result.optimalUTKey} macro={result.macro} zone={result.zone} eurRate={result.eurRate} activeTab={activeTab as "resume"|"technique"|"fondamentaux"|"macro"}/>}
-              {result.type === "crypto" && <CryptoView data={result.data} activeTab={activeTab as "resume"|"technique"|"marche"|"macro"}/>}
+              {result.type === "stock"  && <StockView metrics={result.metrics} ticker={result.ticker ?? ""} optimalUTKey={result.optimalUTKey} macro={result.macro} zone={result.zone} eurRate={result.eurRate} activeTab={activeTab as "resume"|"technique"|"fondamentaux"|"macro"} onUTChange={h => { stockUTRef.current = h; }} onUTNotify={u => setGlobalUT(u)}/>}
+              {result.type === "crypto" && <CryptoView data={result.data} activeTab={activeTab as "resume"|"technique"|"marche"|"macro"} onUTChange={h => { cryptoUTRef.current = h; }} onUTNotify={u => setGlobalUT(u)}/>}
               {result.type === "forex"  && <ForexView {...result} activeTab={activeTab as "resume"|"technique"|"marche"|"macro"}/>}
             </div>
           )}
