@@ -5883,8 +5883,202 @@ function EntryRecommendationPanel({ rec }: { rec: EntryRecommendation }) {
 }
 
 
-function StockView({ metrics, ticker, optimalUTKey, macro, zone, eurRate, activeTab = "resume", onUTChange, onUTNotify }: {
-  metrics: any; ticker: string; optimalUTKey?: string; macro?: MacroContext | null; zone?: MacroZone; eurRate?: number | null;
+// ── HOOK UNIFIÉ DE CHARGEMENT GRAPHIQUE ──────────────────────
+type ChartSeries = {
+  closes: (number|null)[]; opens: (number|null)[]; highs: (number|null)[];
+  lows: (number|null)[]; volumes: (number|null)[]; timestamps: number[];
+};
+
+const UT_CRYPTO_CONFIG: Record<string, { interval: string; limit: number; label: string }> = {
+  "1H": { interval: "1h", limit: 370, label: "1H" },
+  "4H": { interval: "4h", limit: 370, label: "4H" },
+  "1D": { interval: "1d", limit: 370, label: "1D" },
+  "1W": { interval: "1w", limit: 370, label: "1W" },
+  "1M": { interval: "1M", limit: 370, label: "1M" },
+};
+
+// Durée minimale en jours pour qu'une UT génère 30 bougies exploitables
+const UT_MIN_DAYS: Record<string, number> = {
+  "1H": 1.25,   // 30 × 1h
+  "4H": 5,      // 30 × 4h
+  "1D": 30,     // 30 × 1j
+  "1W": 210,    // 30 × 1sem
+  "1M": 900,    // 30 × 1mois
+};
+
+function useChartLoader(
+  ticker:        string,
+  assetType:     "stock" | "forex" | "crypto",
+  genesisDate?:  string | null,
+  onDefaultUTReady?: (ut: string) => void,
+) {
+  type UTKey = string;
+  const [ut,             setUt]             = useState<UTKey>("1D");
+  const [chartDataMap,   setChartDataMap]   = useState<Record<UTKey, ChartSeries | null>>({});
+  const [chartDataUpper, setChartDataUpper] = useState<ChartSeries | null>(null);
+  const [chartLoading,   setChartLoading]   = useState(true);
+  const [availableUTs,   setAvailableUTs]   = useState<{ key: string; label: string }[]>([]);
+  const [defaultUT,      setDefaultUT]      = useState<UTKey>("1D");
+  const chartDataMapRef  = useRef<Record<UTKey, ChartSeries | null>>({});
+
+  useEffect(() => {
+    if (!ticker) return;
+    setChartLoading(true);
+    setChartDataMap({});
+    setChartDataUpper(null);
+    setAvailableUTs([]);
+    setDefaultUT("1D");
+    setUt("1D");
+
+    (async () => {
+      // ── 1. Détecter l'amplitude temporelle des données disponibles ──
+      let totalDays = 730; // fallback 2 ans — couvre 1H/4H/1D/1W pour la plupart des cryptos
+
+      if (assetType === "crypto") {
+        if (genesisDate) {
+          const genesis = new Date(genesisDate).getTime();
+          totalDays = (Date.now() - genesis) / 86400000;
+        } else {
+          try {
+            const sym = ticker.toUpperCase().replace(/-USD$|-USDT$/i, "");
+            const r   = await fetch(
+              `${PROXY}?type=klines&symbol=${encodeURIComponent(sym)}&interval=1d&limit=1000`
+            );
+            const d   = await r.json();
+            if (Array.isArray(d) && d.length > 0) {
+              totalDays = (Date.now() - d[0][0]) / 86400000;
+            }
+          } catch { /* garder le fallback */ }
+        }
+      } else {
+        try {
+          const url = `${PROXY}?ticker=${encodeURIComponent(ticker)}&type=chart&range=max&interval=1mo`;
+          const d   = await (await fetch(url)).json();
+          const ts  = d?.chart?.result?.[0]?.timestamp ?? [];
+          if (ts.length >= 2) {
+            totalDays = (ts[ts.length - 1] - ts[0]) / 86400;
+          }
+        } catch { /* garder le fallback */ }
+      }
+
+      // ── 2. Déduire les UT disponibles ──────────────────────────────
+      let candidates: UTKey[] = [];
+      if (assetType === "crypto") {
+        candidates = ["1H","4H","1D","1W","1M"].filter(
+          u => totalDays >= UT_MIN_DAYS[u]
+        );
+        if (candidates.length === 0) candidates = ["1H"];
+      } else {
+        candidates = ["1D","1W","1M"].filter(
+          u => totalDays >= UT_MIN_DAYS[u]
+        );
+        if (candidates.length === 0) candidates = ["1D"];
+      }
+
+      const available = candidates.map(k => ({
+        key:   k,
+        label: assetType === "crypto" ? UT_CRYPTO_CONFIG[k]?.label ?? k : STOCK_UT_CONFIG[k]?.label ?? k,
+      }));
+      setAvailableUTs(available);
+
+      // ── 3. Charger toutes les UT disponibles en parallèle ──────────
+      const fetchUT = async (utKey: UTKey): Promise<ChartSeries | null> => {
+        try {
+          if (assetType === "crypto") {
+            const cfg = UT_CRYPTO_CONFIG[utKey];
+            if (!cfg) return null;
+            const sym = ticker.toUpperCase().replace(/-USD$|-USDT$/i, "");
+            return await binanceOHLCV(sym, cfg.interval, cfg.limit);
+          } else {
+            const cfg = STOCK_UT_CONFIG[utKey];
+            if (!cfg) return null;
+            const url = `${PROXY}?ticker=${encodeURIComponent(ticker)}&type=chart&range=${cfg.range}&interval=${cfg.interval}`;
+            const d   = await (await fetch(url)).json();
+            const res = d?.chart?.result?.[0];
+            if (!res) return null;
+            const q = res.indicators?.quote?.[0] || {};
+            return {
+              closes:     res.indicators?.adjclose?.[0]?.adjclose || q.close || [],
+              timestamps: res.timestamp || [],
+              opens:      q.open   || [],
+              highs:      q.high   || [],
+              lows:       q.low    || [],
+              volumes:    q.volume || [],
+            };
+          }
+        } catch { return null; }
+      };
+
+      const results = await Promise.all(candidates.map(k => fetchUT(k)));
+      const newMap: Record<UTKey, ChartSeries | null> = {};
+      candidates.forEach((k, i) => { newMap[k] = results[i]; });
+      setChartDataMap(newMap);
+      chartDataMapRef.current = newMap;
+
+      // ── 4. Charger upper timeframe (1W) si 1D disponible ──────────
+      if (candidates.includes("1D")) {
+        const upper = await fetchUT("1W");
+        setChartDataUpper(upper);
+      }
+
+      // ── 5. Calculer defaultUT via Sinewave sur 1D ──────────────────
+      const daily = newMap["1D"] ?? null;
+      let best: UTKey = candidates[Math.floor(candidates.length / 2)] ?? candidates[0] ?? "1D";
+
+      if (daily) {
+        const sw = calcSinewave(daily.closes);
+        if (sw) {
+          const dp    = sw.dominantPeriod;
+          const daily1W = newMap["1W"];
+          const ctxD  = classifyMarketContext(daily.closes, daily.highs, daily.lows, daily.volumes);
+          const ctxW  = daily1W ? classifyMarketContext(daily1W.closes, daily1W.highs, daily1W.lows, daily1W.volumes) : null;
+          const contradiction = ctxW != null && (
+            (ctxD.structure.type === "bearish" && ctxW.structure.type === "bullish") ||
+            (ctxD.structure.type === "bullish" && ctxW.structure.type === "bearish")
+          );
+          const cycleUT: UTKey =
+            dp <= 10  ? "1D" :
+            dp <= 50  ? (candidates.includes("1W") ? "1W" : "1D") :
+                        (candidates.includes("1M") ? "1M" : candidates[candidates.length - 1]);
+          if (ctxD.type === "chaos") {
+            best = candidates.includes("1W") ? "1W" : candidates[candidates.length - 1];
+          } else if (contradiction && ctxD.structure.type === "bearish" && ctxW?.structure.type === "bullish") {
+            best = candidates.includes("1W") ? "1W" : cycleUT;
+          } else {
+            best = candidates.includes(cycleUT) ? cycleUT : candidates[candidates.length - 1];
+          }
+        }
+      }
+      if (!candidates.includes(best)) best = candidates[0] ?? "1D";
+      setDefaultUT(best);
+      setUt(best);
+      onDefaultUTReady?.(best);
+      setChartLoading(false);
+    })();
+  }, [ticker, assetType, genesisDate]); // eslint-disable-line
+
+  const firstAvailableKey = Object.keys(chartDataMap).find(k => chartDataMap[k] != null);
+  const chartData = chartDataMap[ut] ?? chartDataMap[defaultUT] ?? (firstAvailableKey ? chartDataMap[firstAvailableKey] : null);
+
+  const handleUTChange = useCallback((newUT: string) => {
+    if (chartDataMapRef.current[newUT] !== undefined) {
+      setUt(newUT);
+    }
+  }, []);
+
+  return {
+    chartData,
+    chartDataUpper,
+    chartLoading,
+    ut,
+    availableUTs,
+    defaultUT,
+    handleUTChange,
+  };
+}
+
+function StockView({ metrics, ticker, macro, zone, eurRate, activeTab = "resume", onUTChange, onUTNotify }: {
+  metrics: any; ticker: string; macro?: MacroContext | null; zone?: MacroZone; eurRate?: number | null;
   activeTab?: "resume"|"technique"|"fondamentaux"|"macro";
   onUTChange?: (handler: (ut: string) => void) => void;
   onUTNotify?: (ut: string) => void;
@@ -5897,21 +6091,27 @@ function StockView({ metrics, ticker, optimalUTKey, macro, zone, eurRate, active
   } = metrics;
 
   // État graphique interactif
-  const [ut,           setUt]         = useState<"1D"|"1W"|"1M">("1D");
-  const [chartData1D,  setChartData1D] = useState<{ closes:(number|null)[]; timestamps:number[]; opens:(number|null)[]; highs:(number|null)[]; lows:(number|null)[]; volumes:(number|null)[] } | null>(null);
-  const [chartData1W,  setChartData1W] = useState<typeof chartData1D>(null);
-  const [chartData1M,  setChartData1M] = useState<typeof chartData1D>(null);
-  const chartData = ut === "1W" ? chartData1W : ut === "1M" ? chartData1M : chartData1D;
-  const [chartLoading, setChartLoading] = useState(false);
+  const {
+    chartData,
+    chartLoading,
+    ut,
+    availableUTs,
+    defaultUT: optimalUTKey,
+    handleUTChange: _handleUTChange,
+  } = useChartLoader(ticker, "stock", null, (best) => {
+    onUTNotify?.(best);
+  });
+
+  const handleUTChange = useCallback((u: string) => {
+    _handleUTChange(u);
+    onUTNotify?.(u);
+  }, [_handleUTChange]); // eslint-disable-line
+
+  useEffect(() => { onUTChange?.(handleUTChange); }); // eslint-disable-line
+
   const [showEur,      setShowEur]      = useState(false);
   const [descFr, setDescFr] = useState<string>("");
   const [descOpen, setDescOpen] = useState(false);
-
-  // Chargement parallèle des 3 UT au montage / changement de ticker
-  useEffect(() => {
-    setUt("1D");
-    loadAllCharts();
-  }, [ticker]);
 
   useEffect(() => {
     setDescFr("");
@@ -5960,44 +6160,6 @@ function StockView({ metrics, ticker, optimalUTKey, macro, zone, eurRate, active
 
     if (fallback) setDescFr(fallback);
   }, [metrics]);
-
-  const loadAllCharts = useCallback(async () => {
-    setChartLoading(true);
-    try {
-      const fetchUT = async (utKey: "1D"|"1W"|"1M") => {
-        const cfg = STOCK_UT_CONFIG[utKey];
-        const url = `${PROXY}?ticker=${encodeURIComponent(ticker)}&type=chart&range=${cfg.range}&interval=${cfg.interval}`;
-        const d   = await (await fetch(url)).json();
-        const res = d?.chart?.result?.[0];
-        if (!res) return null;
-        const q = res.indicators?.quote?.[0] || {};
-        return {
-          closes:     res.indicators?.adjclose?.[0]?.adjclose || q.close || [],
-          timestamps: res.timestamp || [],
-          opens:      q.open   || [],
-          highs:      q.high   || [],
-          lows:       q.low    || [],
-          volumes:    q.volume || [],
-        };
-      };
-      const [d1D, d1W, d1M] = await Promise.all([
-        fetchUT("1D"),
-        fetchUT("1W"),
-        fetchUT("1M"),
-      ]);
-      if (d1D) setChartData1D(d1D);
-      if (d1W) setChartData1W(d1W);
-      if (d1M) setChartData1M(d1M);
-    } catch {}
-    setChartLoading(false);
-  }, [ticker]);
-
-  const handleUTChange = (u: string) => {
-    setUt(u as "1D"|"1W"|"1M");
-    onUTNotify?.(u);
-  };
-
-  useEffect(() => { onUTChange?.(handleUTChange); }, []); // eslint-disable-line
 
   const SECTIONS = [
     {
@@ -6302,7 +6464,7 @@ function StockView({ metrics, ticker, optimalUTKey, macro, zone, eurRate, active
               currency={currency}
               quoteType={quoteType}
               period={ut}
-              periods={STOCK_UT_PERIODS}
+              periods={availableUTs}
               onPeriodChange={handleUTChange}
               loading={chartLoading}
               optimalUTKey={optimalUTKey}
@@ -7265,67 +7427,32 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
   // ── Chart state ──────────────────────────────────────────────
   const genesisYear = data.genesis_date ? new Date(data.genesis_date).getFullYear() : null;
   const age = genesisYear ? new Date().getFullYear() - genesisYear : 0;
-
-  const UT_CONFIG: Record<string, { interval: string; limit: number; label: string; perfLabel: string }> = {
-    "1H": { interval: "1h", limit: 370, label: "1H", perfLabel: "~5 jours"  },
-    "4H": { interval: "4h", limit: 370, label: "4H", perfLabel: "~20 jours" },
-    "1D": { interval: "1d", limit: 370, label: "1D", perfLabel: "~6 mois"   },
-    "1W": { interval: "1w", limit: 370, label: "1W", perfLabel: "~2.5 ans"  },
-    "1M": { interval: "1M", limit: 370, label: "1M", perfLabel: "~10 ans"   },
-  };
   const UT_DISPLAY = 120;
-  const UT_PERIODS = Object.entries(UT_CONFIG).map(([key, cfg]) => ({ key, label: cfg.label }));
 
-  const [ut,           setUt]           = useState("1D");
-  type ChartSeries = { closes: (number|null)[]; opens: (number|null)[]; highs: (number|null)[]; lows: (number|null)[]; volumes: (number|null)[]; timestamps: number[] } | null;
-  const [allChartData,       setAllChartData]       = useState<ChartSeries>(null);
-  const [allChartDataWeekly, setAllChartDataWeekly] = useState<ChartSeries>(null);
-  const [chartLoading, setChartLoading] = useState(true);
-  const [candleData,   setCandleData]   = useState<ChartSeries | undefined>(undefined);
-  const [candleLoading, setCandleLoading] = useState(false);
-  const [optimalUTKey, setOptimalUTKey] = useState<string | undefined>(undefined);
+  const {
+    chartData:      candleData,
+    chartDataUpper: allChartDataWeekly,
+    chartLoading,
+    ut,
+    availableUTs,
+    defaultUT:      optimalUTKey,
+    handleUTChange: _handleUTChange,
+  } = useChartLoader(
+    (data.symbol || "").toUpperCase(),
+    "crypto",
+    data.genesis_date,
+    (best) => { onUTNotify?.(best); },
+  );
 
-  useEffect(() => {
-    setChartLoading(true);
-    setCandleData(undefined);
-    const timer = setTimeout(async () => {
-      const sym = (data.symbol || "").toUpperCase();
-      const [daily, weekly, candle1D] = await Promise.all([
-        binanceOHLCV(sym, "1d", 1000),
-        binanceOHLCV(sym, "1w", 1000),
-        binanceOHLCV(sym, "1d", UT_CONFIG["1D"].limit),
-      ]);
-      const fallback = (!daily && !weekly) ? await cgOHLCV(data.id) : null;
-      setAllChartData(daily || fallback);
-      setAllChartDataWeekly(weekly || null);
-      setChartLoading(false);
-      setCandleData(candle1D ?? fallback ?? null);
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [data.id]); // eslint-disable-line
+  const handleUTChange = useCallback((u: string) => {
+    _handleUTChange(u);
+    onUTNotify?.(u);
+  }, [_handleUTChange]); // eslint-disable-line
 
-  useEffect(() => {
-    if (!allChartData?.closes) return;
-    const sw = calcSinewave(allChartData.closes);
-    if (sw) {
-      const dp = sw.dominantPeriod;
-      setOptimalUTKey(dp <= 10 ? "1H" : "1D");
-    }
-  }, [allChartData]);
+  useEffect(() => { onUTChange?.(handleUTChange); }); // eslint-disable-line
 
-  const loadCandleData = useCallback(async (u: string) => {
-    const cfg = UT_CONFIG[u];
-    if (!cfg) return;
-    setCandleLoading(true);
-    const sym = (data.symbol || "").toUpperCase();
-    const raw = await binanceOHLCV(sym, cfg.interval, cfg.limit);
-    setCandleData(raw ?? null);
-    setCandleLoading(false);
-  }, [data.symbol]); // eslint-disable-line
-
-  const handleUTChange = (u: string) => { setUt(u); loadCandleData(u); onUTNotify?.(u); };
-
-  useEffect(() => { onUTChange?.(handleUTChange); }, []); // eslint-disable-line
+  // allChartData = candleData (alias pour compatibilité avec les calculs techniques existants)
+  const allChartData = candleData;
 
   // ── Description traduite ─────────────────────────────────────
   const [descFr, setDescFr] = useState<string>("");
@@ -7500,9 +7627,9 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
               currency="USD"
               quoteType="CRYPTOCURRENCY"
               period={ut}
-              periods={UT_PERIODS}
+              periods={availableUTs}
               onPeriodChange={handleUTChange}
-              loading={chartLoading || candleLoading}
+              loading={chartLoading}
               optimalUTKey={optimalUTKey}
             />
           </div>
@@ -8033,7 +8160,7 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
 // COUCHE 4e — APPLICATION PRINCIPALE
 // ════════════════════════════════════════════════════════════════
 type ResultType =
-  | { type: "stock";  metrics: any; chartData: any; ticker: string; optimalUTKey?: string; macro?: MacroContext | null; zone?: MacroZone; eurRate?: number | null }
+  | { type: "stock";  metrics: any; chartData: any; ticker: string; macro?: MacroContext | null; zone?: MacroZone; eurRate?: number | null }
   | { type: "crypto"; data: any }
   | { type: "forex";  currency: string; rate: number; allRates: Record<string, number>; ticker?: string };
 
@@ -8066,6 +8193,222 @@ function LogPanel({ log }: { log: string[] }) {
         </div>
       )}
     </div>
+  );
+}
+
+function ForexView({ currency, rate, allRates, ticker: forexTicker, activeTab = "resume", onForexUTRef, onGlobalUTChange }: {
+  currency: string;
+  rate: number;
+  allRates: Record<string, number>;
+  ticker?: string;
+  activeTab?: "resume"|"technique"|"marche"|"macro";
+  onForexUTRef?: (handler: (ut: string) => void) => void;
+  onGlobalUTChange?: (ut: string) => void;
+}) {
+  const yfTicker = forexTicker ?? `EUR${currency}=X`;
+
+  const {
+    chartData,
+    chartLoading,
+    ut,
+    availableUTs,
+    handleUTChange: _handleUTChange,
+  } = useChartLoader(yfTicker, "forex", null, (best) => {
+    onGlobalUTChange?.(best);
+  });
+
+  const handleUTChange = useCallback((u: string) => {
+    _handleUTChange(u);
+    onGlobalUTChange?.(u);
+  }, [_handleUTChange]); // eslint-disable-line
+
+  useEffect(() => { onForexUTRef?.(handleUTChange); }); // eslint-disable-line
+
+  const closes  = chartData?.closes  ?? [];
+  const highs   = chartData?.highs   ?? [];
+  const lows    = chartData?.lows    ?? [];
+  const volumes = chartData?.volumes ?? [];
+  const chartInterval: "1d" | "1wk" | "1mo" =
+    ut === "1M" ? "1mo" :
+    ut === "1W" ? "1wk" : "1d";
+
+  const marketCtx = (closes.length > 20 && highs.length > 20 && lows.length > 20)
+    ? classifyMarketContext(closes, highs, lows, volumes)
+    : null;
+  const techComputed = closes.length > 0
+    ? computeTechSignals(closes, volumes, highs, lows, chartInterval)
+    : { signals: [], sinewave: null };
+  const confluenceResult = (closes.length > 0 && highs.length > 0 && lows.length > 0)
+    ? calcConfluenceScore(closes, highs, lows, volumes)
+    : null;
+  const finalScoreResult = marketCtx
+    ? computeFinalScore(null, marketCtx, techComputed.signals, closes, confluenceResult?.score ?? null)
+    : null;
+  const finalScore = finalScoreResult?.score ?? null;
+  const v = getVerdict(finalScore);
+
+  const entryRec = (finalScoreResult && techComputed)
+    ? computeEntryRecommendation(
+        null,
+        finalScoreResult.context,
+        techComputed.signals,
+        techComputed.sinewave,
+        null,
+        finalScore,
+        null,
+      )
+    : { type: "none" as const, icon: "", title: "", reasons: [], triggers: [] };
+
+  return (
+    <>
+    <div style={{ animation:"fadeIn .4s ease" }}>
+
+      {/* ── HEADER — toujours visible ── */}
+      <div style={{ marginBottom:16 }}>
+        <div style={{ fontSize:11, color:"#445", textTransform:"uppercase", letterSpacing:1.5, marginBottom:4 }}>
+          Banque Centrale Européenne · Officiel
+        </div>
+        <div style={{ fontSize:22, fontWeight:800, color:THEME.textPrimary, marginBottom:8 }}>
+          EUR / {currency}<TypeBadge type="CURRENCY"/>
+        </div>
+        <div style={{ display:"flex", alignItems:"baseline", gap:12, flexWrap:"wrap" }}>
+          <span style={{ fontSize:38, fontWeight:900, color:THEME.accent, fontFamily:"'IBM Plex Mono',monospace" }}>
+            {parseFloat(String(rate)).toFixed(4)}
+          </span>
+          <span style={{ fontSize:13, color:"#556" }}>1 EUR = {rate} {currency}</span>
+        </div>
+      </div>
+
+      {/* ══════════════════════════════════════
+          ONGLET RÉSUMÉ
+      ══════════════════════════════════════ */}
+      {activeTab === "resume" && (
+        <div style={{ display:"flex", gap:24, alignItems:"flex-start", flexWrap:"wrap" }}>
+
+          {/* Colonne gauche — graphique */}
+          <div style={{ flex:"1 1 55%", minWidth:320 }}>
+            <ChartBlock
+              chartData={chartData}
+              currency={currency}
+              quoteType="CURRENCY"
+              period={ut}
+              periods={availableUTs}
+              onPeriodChange={handleUTChange}
+              loading={chartLoading}
+            />
+          </div>
+
+          {/* Colonne droite — verdict + recommandation */}
+          <div style={{ flex:"1 1 35%", minWidth:280,
+            display:"flex", flexDirection:"column", gap:12,
+            position:"sticky", top:"72px" }}>
+            {v && finalScore != null && (
+              <div style={{ background:v.color+"0f",
+                border:`1px solid ${v.color}33`,
+                borderRadius:14, padding:"18px 20px" }}>
+                <div style={{ display:"flex", justifyContent:"center", marginBottom:14 }}>
+                  <div style={{ display:"flex", flexDirection:"column",
+                    alignItems:"center", gap:4 }}>
+                    <ScoreGauge score={finalScore}/>
+                    <div style={{ display:"flex", alignItems:"baseline", gap:3 }}>
+                      <span style={{ fontSize:36, fontWeight:900,
+                        color:scoreColor(finalScore),
+                        fontFamily:"'IBM Plex Mono',monospace" }}>
+                        {finalScore}
+                      </span>
+                      <span style={{ fontSize:12, color:THEME.textSecondary,
+                        fontFamily:"'IBM Plex Mono',monospace" }}>/10</span>
+                    </div>
+                    <div style={{ fontSize:9, color:THEME.textMuted,
+                      textTransform:"uppercase", letterSpacing:1.5 }}>
+                      Timing Technique
+                    </div>
+                  </div>
+                </div>
+                <div style={{ fontSize:18, fontWeight:900,
+                  color:v.color, marginBottom:4 }}>
+                  {v.emoji} {v.label}
+                </div>
+                <div style={{ fontSize:11, color:THEME.textSecondary, lineHeight:1.4 }}>
+                  {v.desc}
+                </div>
+              </div>
+            )}
+            <EntryRecommendationPanel rec={entryRec}/>
+          </div>
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════
+          ONGLET TECHNIQUE
+      ══════════════════════════════════════ */}
+      {activeTab === "technique" && (
+        <div style={{ display:"flex", flexDirection:"column", gap:0 }}>
+          {marketCtx && finalScoreResult && (
+            <MarketContextPanel
+              context={finalScoreResult.context}
+              modifiers={finalScoreResult.modifiers}
+            />
+          )}
+          <TechnicalPanel
+            precomputed={techComputed}
+            context={finalScoreResult?.context ?? null}
+          />
+          {closes.length >= 50 && (
+            <ProjectionPanel
+              closes={closes}
+              highs={highs}
+              lows={lows}
+              volumes={volumes}
+              currency={currency}
+              chartInterval={chartInterval}
+              period={ut}
+              marketContext={finalScoreResult?.context ?? null}
+            />
+          )}
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════
+          ONGLET MARCHÉ — Taux ECB
+      ══════════════════════════════════════ */}
+      {activeTab === "marche" && (
+        <div>
+          <div style={{ fontSize:10, color:THEME.textMuted,
+            textTransform:"uppercase", letterSpacing:1.5, marginBottom:8 }}>
+            Taux de change ECB · Toutes devises
+          </div>
+          <div style={{ display:"grid",
+            gridTemplateColumns:"repeat(auto-fill,minmax(120px,1fr))", gap:7 }}>
+            {Object.entries(allRates).sort().map(([cur, r]) => (
+              <div key={cur} style={{
+                background:THEME.bgCardAlt,
+                border:`1px solid ${cur === currency ? THEME.accent : THEME.borderMid}`,
+                borderRadius:8, padding:"8px 12px",
+              }}>
+                <div style={{ fontSize:9, color:"#445" }}>EUR / {cur}</div>
+                <div style={{ fontSize:13, fontWeight:700,
+                  fontFamily:"'IBM Plex Mono',monospace" }}>
+                  {parseFloat(String(r)).toFixed(4)}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div style={{ marginTop:8, fontSize:10, color:"#333", textAlign:"right" }}>
+            Source : Banque Centrale Européenne · Temps réel
+          </div>
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════
+          ONGLET NEWS
+      ══════════════════════════════════════ */}
+      {activeTab === "macro" && (
+        <NewsPanel ticker={yfTicker} quoteType="CURRENCY"/>
+      )}
+
+    </div>
+    </>
   );
 }
 
@@ -8169,87 +8512,7 @@ export default function App() {
       return ecbRatesData[currency] ? 1 / ecbRatesData[currency] : null;
     })();
 
-    // ── UT OPTIMALE MULTI-TIMEFRAME ───────────────────────────
-    // 1. Cycle Sinewave daily → UT candidate
-    // 2. Contexte daily vs weekly → correction si contradiction
-    let optimalUTKey = "5a";
-    const dailyC = (yfDataDaily?.closes ?? []) as (number|null)[];
-    const weeklyC = (yfDataWeekly?.closes ?? []) as (number|null)[];
-
-    // Étape 1 : cycle dominant sur daily
-    let cycleBasedUT = "5a";
-    let dominantPeriod = 30;
-    if (dailyC.filter((v: number|null): v is number => v != null).length >= 50) {
-      const swUT = calcSinewave(dailyC);
-      dominantPeriod = swUT?.dominantPeriod ?? 30;
-      if (dominantPeriod <= 10)      cycleBasedUT = "2a";
-      else if (dominantPeriod <= 50) cycleBasedUT = "5a";
-      else                           cycleBasedUT = "10a";
-    }
-
-    // Étape 2 : contexte daily et weekly pour vérification cohérence
-    const ctxDaily = dailyC.filter((v: number|null): v is number => v != null).length >= 20
-      ? classifyMarketContext(
-          yfDataDaily?.closes ?? [],
-          yfDataDaily?.highs  ?? [],
-          yfDataDaily?.lows   ?? [],
-          yfDataDaily?.volumes ?? [],
-        )
-      : null;
-
-    const ctxWeekly = weeklyC.filter((v: number|null): v is number => v != null).length >= 20
-      ? classifyMarketContext(
-          yfDataWeekly?.closes  ?? [],
-          yfDataWeekly?.highs   ?? [],
-          yfDataWeekly?.lows    ?? [],
-          yfDataWeekly?.volumes ?? [],
-        )
-      : null;
-
-    // Étape 3 : règle de sélection multi-TF
-    if (ctxDaily == null) {
-      // Données insuffisantes
-      optimalUTKey = cycleBasedUT;
-      addLog(`  📊 Cycle ~${dominantPeriod}j → UT: ${cycleBasedUT} (données daily insuffisantes)`);
-    } else if (ctxDaily.type === "chaos") {
-      // Chaos daily → forcer weekly
-      optimalUTKey = "5a";
-      addLog(`  📊 Chaos daily → UT forcée : Hebdomadaire (5 ans)`);
-    } else if (ctxWeekly == null) {
-      // Pas de données weekly → garder cycle daily
-      optimalUTKey = cycleBasedUT;
-      addLog(`  📊 Cycle ~${dominantPeriod}j → UT: ${cycleBasedUT} (weekly indisponible)`);
-    } else {
-      // Les deux TF disponibles → vérifier cohérence directionnelle
-      const dailyBear  = ctxDaily.structure.type  === "bearish";
-      const dailyBull  = ctxDaily.structure.type  === "bullish";
-      const weeklyBear = ctxWeekly.structure.type === "bearish";
-      const weeklyBull = ctxWeekly.structure.type === "bullish";
-
-      const contradiction = (dailyBear && weeklyBull) || (dailyBull && weeklyBear);
-
-      if (!contradiction) {
-        // Alignés → cycle daily fait foi
-        optimalUTKey = cycleBasedUT;
-        addLog(`  📊 Cycle ~${dominantPeriod}j, TF alignés → UT: ${cycleBasedUT}`);
-      } else if (dailyBear && weeklyBull) {
-        // Daily baissier, weekly haussier → TF supérieur (long terme) dominant
-        optimalUTKey = "5a";
-        addLog(`  📊 Contradiction TF : daily ↓ / weekly ↑ → UT Hebdomadaire (contexte long terme haussier)`);
-      } else {
-        // Daily haussier, weekly baissier → prudence, rester sur daily
-        optimalUTKey = cycleBasedUT === "2a" ? "2a" : "5a";
-        addLog(`  📊 Contradiction TF : daily ↑ / weekly ↓ → UT Daily (prudence)`);
-      }
-    }
-
-    let yfDataMonthly: any = null;
-    if (optimalUTKey === "10a") yfDataMonthly = await yfChart(upper, addLog, "10a");
-
-    const yfData =
-      optimalUTKey === "10a" ? (yfDataMonthly || yfDataWeekly || yfDataDaily) :
-      optimalUTKey === "5a"  ? (yfDataWeekly  || yfDataDaily) :
-                               (yfDataDaily   || yfDataWeekly);
+    const yfData = yfDataWeekly || yfDataDaily;
 
     const yfQuoteType = (yfData?.meta?.instrumentType || yfData?.meta?.quoteType || "").toUpperCase();
 
@@ -8275,7 +8538,7 @@ export default function App() {
       addLog(`✅ Yahoo Finance : ${yfData.meta.quoteType || "EQUITY"}`);
       const yf = await yfFundamentals(upper, addLog);
       const metrics = buildMetrics(yf, yfData.meta);
-      setResult({ type:"stock", metrics, ticker: upper, optimalUTKey, macro, zone, eurRate, chartData: {
+      setResult({ type:"stock", metrics, ticker: upper, macro, zone, eurRate, chartData: {
         closes:     yfData.closes,
         timestamps: yfData.timestamps,
         opens:      yfData.opens     ?? [],
@@ -8404,254 +8667,6 @@ export default function App() {
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
-
-  const ForexView = ({ currency, rate, allRates, ticker: forexTicker, activeTab = "resume" }: { currency: string; rate: number; allRates: Record<string, number>; ticker?: string; activeTab?: "resume"|"technique"|"marche"|"macro" }) => {
-    const yfTicker = forexTicker ?? `EUR${currency}=X`;
-    const [ut, setUt] = useState<"1D"|"1W"|"1M">("1D");
-
-    const [chartData1D, setChartData1D] = useState<{
-      closes:(number|null)[]; timestamps:number[];
-      opens:(number|null)[]; highs:(number|null)[];
-      lows:(number|null)[]; volumes:(number|null)[];
-    } | null>(null);
-    const [chartData1W, setChartData1W] = useState<typeof chartData1D>(null);
-    const [chartData1M, setChartData1M] = useState<typeof chartData1D>(null);
-    const [chartLoading, setChartLoading] = useState(true);
-
-    const chartData = ut === "1W" ? chartData1W
-      : ut === "1M" ? chartData1M
-      : chartData1D;
-
-    const loadAllCharts = useCallback(async () => {
-      setChartLoading(true);
-      try {
-        const fetchUT = async (utKey: "1D"|"1W"|"1M") => {
-          const cfg = STOCK_UT_CONFIG[utKey];
-          const url = `${PROXY}?ticker=${encodeURIComponent(yfTicker)}&type=chart&range=${cfg.range}&interval=${cfg.interval}`;
-          const d   = await (await fetch(url)).json();
-          const res = d?.chart?.result?.[0];
-          if (!res) return null;
-          const q = res.indicators?.quote?.[0] || {};
-          return {
-            closes:     res.indicators?.adjclose?.[0]?.adjclose || q.close || [],
-            timestamps: res.timestamp || [],
-            opens:      q.open   || [],
-            highs:      q.high   || [],
-            lows:       q.low    || [],
-            volumes:    q.volume || [],
-          };
-        };
-        const [d1D, d1W, d1M] = await Promise.all([
-          fetchUT("1D"),
-          fetchUT("1W"),
-          fetchUT("1M"),
-        ]);
-        if (d1D) setChartData1D(d1D);
-        if (d1W) setChartData1W(d1W);
-        if (d1M) setChartData1M(d1M);
-      } catch {}
-      setChartLoading(false);
-    }, [yfTicker]);
-
-    const handleUTChange = (u: string) => {
-      setUt(u as "1D"|"1W"|"1M");
-      setGlobalUT(u);
-    };
-
-    useEffect(() => { forexUTRef.current = handleUTChange; }, []); // eslint-disable-line
-
-    useEffect(() => {
-      setUt("1D");
-      loadAllCharts();
-    }, [yfTicker]); // eslint-disable-line
-
-    const closes  = chartData?.closes  ?? [];
-    const highs   = chartData?.highs   ?? [];
-    const lows    = chartData?.lows    ?? [];
-    const volumes = chartData?.volumes ?? [];
-    const chartInterval: "1d" | "1wk" | "1mo" =
-      ut === "1M" ? "1mo" :
-      ut === "1W" ? "1wk" : "1d";
-
-    const marketCtx = (closes.length > 20 && highs.length > 20 && lows.length > 20)
-      ? classifyMarketContext(closes, highs, lows, volumes)
-      : null;
-    const techComputed = closes.length > 0
-      ? computeTechSignals(closes, volumes, highs, lows, chartInterval)
-      : { signals: [], sinewave: null };
-    const confluenceResult = (closes.length > 0 && highs.length > 0 && lows.length > 0)
-      ? calcConfluenceScore(closes, highs, lows, volumes)
-      : null;
-    const finalScoreResult = marketCtx
-      ? computeFinalScore(null, marketCtx, techComputed.signals, closes, confluenceResult?.score ?? null)
-      : null;
-    const finalScore = finalScoreResult?.score ?? null;
-    const v = getVerdict(finalScore);
-
-    const entryRec = (finalScoreResult && techComputed)
-      ? computeEntryRecommendation(
-          null,
-          finalScoreResult.context,
-          techComputed.signals,
-          techComputed.sinewave,
-          null,
-          finalScore,
-          null,
-        )
-      : { type: "none" as const, icon: "", title: "", reasons: [], triggers: [] };
-
-    return (
-      <>
-      <div style={{ animation:"fadeIn .4s ease" }}>
-
-        {/* ── HEADER — toujours visible ── */}
-        <div style={{ marginBottom:16 }}>
-          <div style={{ fontSize:11, color:"#445", textTransform:"uppercase", letterSpacing:1.5, marginBottom:4 }}>
-            Banque Centrale Européenne · Officiel
-          </div>
-          <div style={{ fontSize:22, fontWeight:800, color:THEME.textPrimary, marginBottom:8 }}>
-            EUR / {currency}<TypeBadge type="CURRENCY"/>
-          </div>
-          <div style={{ display:"flex", alignItems:"baseline", gap:12, flexWrap:"wrap" }}>
-            <span style={{ fontSize:38, fontWeight:900, color:THEME.accent, fontFamily:"'IBM Plex Mono',monospace" }}>
-              {parseFloat(String(rate)).toFixed(4)}
-            </span>
-            <span style={{ fontSize:13, color:"#556" }}>1 EUR = {rate} {currency}</span>
-          </div>
-        </div>
-
-        {/* ══════════════════════════════════════
-            ONGLET RÉSUMÉ
-        ══════════════════════════════════════ */}
-        {activeTab === "resume" && (
-          <div style={{ display:"flex", gap:24, alignItems:"flex-start", flexWrap:"wrap" }}>
-
-            {/* Colonne gauche — graphique */}
-            <div style={{ flex:"1 1 55%", minWidth:320 }}>
-              <ChartBlock
-                chartData={chartData}
-                currency={currency}
-                quoteType="CURRENCY"
-                period={ut}
-                periods={STOCK_UT_PERIODS}
-                onPeriodChange={handleUTChange}
-                loading={chartLoading}
-              />
-            </div>
-
-            {/* Colonne droite — verdict + recommandation */}
-            <div style={{ flex:"1 1 35%", minWidth:280,
-              display:"flex", flexDirection:"column", gap:12,
-              position:"sticky", top:"72px" }}>
-              {v && finalScore != null && (
-                <div style={{ background:v.color+"0f",
-                  border:`1px solid ${v.color}33`,
-                  borderRadius:14, padding:"18px 20px" }}>
-                  <div style={{ display:"flex", justifyContent:"center", marginBottom:14 }}>
-                    <div style={{ display:"flex", flexDirection:"column",
-                      alignItems:"center", gap:4 }}>
-                      <ScoreGauge score={finalScore}/>
-                      <div style={{ display:"flex", alignItems:"baseline", gap:3 }}>
-                        <span style={{ fontSize:36, fontWeight:900,
-                          color:scoreColor(finalScore),
-                          fontFamily:"'IBM Plex Mono',monospace" }}>
-                          {finalScore}
-                        </span>
-                        <span style={{ fontSize:12, color:THEME.textSecondary,
-                          fontFamily:"'IBM Plex Mono',monospace" }}>/10</span>
-                      </div>
-                      <div style={{ fontSize:9, color:THEME.textMuted,
-                        textTransform:"uppercase", letterSpacing:1.5 }}>
-                        Timing Technique
-                      </div>
-                    </div>
-                  </div>
-                  <div style={{ fontSize:18, fontWeight:900,
-                    color:v.color, marginBottom:4 }}>
-                    {v.emoji} {v.label}
-                  </div>
-                  <div style={{ fontSize:11, color:THEME.textSecondary, lineHeight:1.4 }}>
-                    {v.desc}
-                  </div>
-                </div>
-              )}
-              <EntryRecommendationPanel rec={entryRec}/>
-            </div>
-          </div>
-        )}
-
-        {/* ══════════════════════════════════════
-            ONGLET TECHNIQUE
-        ══════════════════════════════════════ */}
-        {activeTab === "technique" && (
-          <div style={{ display:"flex", flexDirection:"column", gap:0 }}>
-            {marketCtx && finalScoreResult && (
-              <MarketContextPanel
-                context={finalScoreResult.context}
-                modifiers={finalScoreResult.modifiers}
-              />
-            )}
-            <TechnicalPanel
-              precomputed={techComputed}
-              context={finalScoreResult?.context ?? null}
-            />
-            {closes.length >= 50 && (
-              <ProjectionPanel
-                closes={closes}
-                highs={highs}
-                lows={lows}
-                volumes={volumes}
-                currency={currency}
-                chartInterval={chartInterval}
-                period={ut}
-                marketContext={finalScoreResult?.context ?? null}
-              />
-            )}
-          </div>
-        )}
-
-        {/* ══════════════════════════════════════
-            ONGLET MARCHÉ — Taux ECB
-        ══════════════════════════════════════ */}
-        {activeTab === "marche" && (
-          <div>
-            <div style={{ fontSize:10, color:THEME.textMuted,
-              textTransform:"uppercase", letterSpacing:1.5, marginBottom:8 }}>
-              Taux de change ECB · Toutes devises
-            </div>
-            <div style={{ display:"grid",
-              gridTemplateColumns:"repeat(auto-fill,minmax(120px,1fr))", gap:7 }}>
-              {Object.entries(allRates).sort().map(([cur, r]) => (
-                <div key={cur} style={{
-                  background:THEME.bgCardAlt,
-                  border:`1px solid ${cur === currency ? THEME.accent : THEME.borderMid}`,
-                  borderRadius:8, padding:"8px 12px",
-                }}>
-                  <div style={{ fontSize:9, color:"#445" }}>EUR / {cur}</div>
-                  <div style={{ fontSize:13, fontWeight:700,
-                    fontFamily:"'IBM Plex Mono',monospace" }}>
-                    {parseFloat(String(r)).toFixed(4)}
-                  </div>
-                </div>
-              ))}
-            </div>
-            <div style={{ marginTop:8, fontSize:10, color:"#333", textAlign:"right" }}>
-              Source : Banque Centrale Européenne · Temps réel
-            </div>
-          </div>
-        )}
-
-        {/* ══════════════════════════════════════
-            ONGLET NEWS
-        ══════════════════════════════════════ */}
-        {activeTab === "macro" && (
-          <NewsPanel ticker={yfTicker} quoteType="CURRENCY"/>
-        )}
-
-      </div>
-      </>
-    );
-  };
 
   return (
     <div style={{ minHeight:"100vh", background:THEME.bgPage, fontFamily:"'IBM Plex Sans','Segoe UI',sans-serif", color:THEME.textPrimary, overflowX:"hidden", maxWidth:"100vw" }}>
@@ -9007,9 +9022,9 @@ export default function App() {
           {/* Résultats */}
           {result && !loading && (
             <div>
-              {result.type === "stock"  && <StockView metrics={result.metrics} ticker={result.ticker ?? ""} optimalUTKey={result.optimalUTKey} macro={result.macro} zone={result.zone} eurRate={result.eurRate} activeTab={activeTab as "resume"|"technique"|"fondamentaux"|"macro"} onUTChange={h => { stockUTRef.current = h; }} onUTNotify={u => setGlobalUT(u)}/>}
+              {result.type === "stock"  && <StockView metrics={result.metrics} ticker={result.ticker ?? ""} macro={result.macro} zone={result.zone} eurRate={result.eurRate} activeTab={activeTab as "resume"|"technique"|"fondamentaux"|"macro"} onUTChange={h => { stockUTRef.current = h; }} onUTNotify={u => setGlobalUT(u)}/>}
               {result.type === "crypto" && <CryptoView data={result.data} activeTab={activeTab as "resume"|"technique"|"marche"|"macro"} onUTChange={h => { cryptoUTRef.current = h; }} onUTNotify={u => setGlobalUT(u)}/>}
-              {result.type === "forex"  && <ForexView {...result} activeTab={activeTab as "resume"|"technique"|"marche"|"macro"}/>}
+              {result.type === "forex"  && <ForexView {...result} activeTab={activeTab as "resume"|"technique"|"marche"|"macro"} onForexUTRef={h => { forexUTRef.current = h; }} onGlobalUTChange={u => setGlobalUT(u)}/>}
             </div>
           )}
 
