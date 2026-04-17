@@ -8460,18 +8460,9 @@ export default function App() {
     const assetType = detectAssetType(raw, mode);
     const isForexPattern = assetType === "forex";
 
-    const KNOWN_CRYPTO_SYMBOLS_LOCAL = new Set([
-      "BTC","ETH","SOL","BNB","XRP","ADA","DOGE","AVAX","DOT","MATIC",
-      "LINK","UNI","ATOM","LTC","BCH","XLM","ALGO","VET","ICP","FIL",
-      "HBAR","ETC","MANA","SAND","AXS","THETA","XTZ","EOS","AAVE","MKR",
-      "COMP","SNX","CRV","YFI","SUSHI","1INCH","GRT","ENJ","CHZ","BAT",
-      "ZEC","DASH","XMR","NEO","WAVES","QTUM","ONT","ZIL","ICX","IOTA",
-      "OP","ARB","APT","SUI","SEI","TIA","INJ","PYTH","JUP","WIF",
-    ]);
-
     const looksLikeCrypto =
       assetType === "crypto" ||
-      KNOWN_CRYPTO_SYMBOLS_LOCAL.has(upper) ||
+      KNOWN_CRYPTO_SYMBOLS.has(upper) ||
       (/^[A-Z0-9]{2,10}-USD$/i.test(raw) && !isForexPattern);
 
     if (looksLikeCrypto || forceType?.toUpperCase() === "CRYPTOCURRENCY") {
