@@ -126,8 +126,9 @@ const ECB_URL = "https://data-api.ecb.europa.eu/service/data/EXR/D..EUR.SP00.A?l
 
 const getJson = async (url: string): Promise<any> => {
   const controller = new AbortController();
-  setTimeout(() => controller.abort(), 12000);
+  const timeoutId = setTimeout(() => controller.abort(), 12000);
   const r = await fetch(url, { signal: controller.signal });
+  clearTimeout(timeoutId);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 };
