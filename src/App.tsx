@@ -5923,6 +5923,7 @@ function useChartLoader(
 
   useEffect(() => {
     if (!ticker) return;
+    let cancelled = false;
     setChartLoading(true);
     setChartDataMap({});
     setChartDataUpper(null);
@@ -5979,6 +5980,7 @@ function useChartLoader(
         key:   k,
         label: assetType === "crypto" ? UT_CRYPTO_CONFIG[k]?.label ?? k : STOCK_UT_CONFIG[k]?.label ?? k,
       }));
+      if (cancelled) return;
       setAvailableUTs(available);
 
       // ── 3. Charger toutes les UT disponibles en parallèle ──────────
@@ -6012,12 +6014,14 @@ function useChartLoader(
       const results = await Promise.all(candidates.map(k => fetchUT(k)));
       const newMap: Record<UTKey, ChartSeries | null> = {};
       candidates.forEach((k, i) => { newMap[k] = results[i]; });
+      if (cancelled) return;
       setChartDataMap(newMap);
       chartDataMapRef.current = newMap;
 
       // ── 4. Charger upper timeframe (1W) si 1D disponible ──────────
       if (candidates.includes("1D")) {
         const upper = await fetchUT("1W");
+        if (cancelled) return;
         setChartDataUpper(upper);
       }
 
@@ -6050,11 +6054,17 @@ function useChartLoader(
         }
       }
       if (!candidates.includes(best)) best = candidates[0] ?? "1D";
+      if (newMap[best] === null) {
+        const nonNull = candidates.find(k => newMap[k] !== null);
+        if (nonNull) best = nonNull;
+      }
+      if (cancelled) return;
       setDefaultUT(best);
       setUt(best);
       onDefaultUTReady?.(best);
       setChartLoading(false);
     })();
+    return () => { cancelled = true; };
   }, [ticker, assetType, genesisDate]); // eslint-disable-line
 
   const firstAvailableKey = Object.keys(chartDataMap).find(k => chartDataMap[k] != null);
@@ -6107,7 +6117,7 @@ function StockView({ metrics, ticker, macro, zone, eurRate, activeTab = "resume"
     onUTNotify?.(u);
   }, [_handleUTChange]); // eslint-disable-line
 
-  useEffect(() => { onUTChange?.(handleUTChange); }); // eslint-disable-line
+  useEffect(() => { onUTChange?.(handleUTChange); }, [handleUTChange]); // eslint-disable-line
 
   const [showEur,      setShowEur]      = useState(false);
   const [descFr, setDescFr] = useState<string>("");
@@ -7449,7 +7459,7 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
     onUTNotify?.(u);
   }, [_handleUTChange]); // eslint-disable-line
 
-  useEffect(() => { onUTChange?.(handleUTChange); }); // eslint-disable-line
+  useEffect(() => { onUTChange?.(handleUTChange); }, [handleUTChange]); // eslint-disable-line
 
   // allChartData = candleData (alias pour compatibilité avec les calculs techniques existants)
   const allChartData = candleData;
@@ -8222,7 +8232,7 @@ function ForexView({ currency, rate, allRates, ticker: forexTicker, activeTab = 
     onGlobalUTChange?.(u);
   }, [_handleUTChange]); // eslint-disable-line
 
-  useEffect(() => { onForexUTRef?.(handleUTChange); }); // eslint-disable-line
+  useEffect(() => { onForexUTRef?.(handleUTChange); }, [handleUTChange]); // eslint-disable-line
 
   const closes  = chartData?.closes  ?? [];
   const highs   = chartData?.highs   ?? [];
