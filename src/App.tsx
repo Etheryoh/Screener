@@ -195,6 +195,25 @@ const SCORING_THRESHOLDS = {
     greedX:       80,  // F&G >= 80 : greed fort
     greedXX:      85,  // F&G > 85  : greed extrême
   },
+  adx: {
+    weak:        15,   // ADX < 15 : pas de tendance
+    emerging:    20,   // ADX >= 20 : tendance jeune
+    moderate:    25,   // ADX >= 25 : tendance modérée
+    strong:      35,   // ADX > 35 : tendance forte
+    veryStrong:  40,   // ADX > 40 : tendance très forte
+    dominant:    45,   // ADX > 45 : tendance dominante
+    extreme:     50,   // ADX > 50 : tendance extrême
+    developing:  30,   // ADX >= 30 : tendance en développement
+  },
+  macro: {
+    rate10y_high:  4.5,    // taux 10y > 4.5% : restrictif
+    rate10y_mod:   3.0,    // taux 10y > 3.0% : modéré
+    funding_high:  0.0003, // funding rate > 0.03% : très optimiste
+    funding_mod:   0.0002, // funding rate > 0.02% : optimiste
+    funding_low:   0.0001, // funding rate > 0.01% : légèrement optimiste
+    funding_neg:  -0.0001, // funding rate < -0.01% : pessimiste
+    funding_negX: -0.0002, // funding rate < -0.02% : très pessimiste
+  },
 } as const;
 
 const FOREX_CURRENCY_CODES = new Set([
@@ -1853,9 +1872,9 @@ function calcTrendMaturity(
   const last   = c.length > 0 ? c[c.length - 1] : null;
 
   if (div.type === "bearish" || div.type === "bullish") return "divergence";
-  if (adx > 40 || (rsi != null && rsi > SCORING_THRESHOLDS.rsi.overbought) || (ema200 != null && last != null && last > ema200 * 1.25)) return "mature";
-  if (adx >= 30) return "en_developpement";
-  if (adx >= 20) return "jeune";
+  if (adx > SCORING_THRESHOLDS.adx.veryStrong || (rsi != null && rsi > SCORING_THRESHOLDS.rsi.overbought) || (ema200 != null && last != null && last > ema200 * 1.25)) return "mature";
+  if (adx >= SCORING_THRESHOLDS.adx.developing) return "en_developpement";
+  if (adx >= SCORING_THRESHOLDS.adx.emerging) return "jeune";
   return null;
 }
 
@@ -1922,14 +1941,14 @@ function classifyMarketContext(
   }
   // ── EXCÈS ─────────────────────────────────────────────────────
   else if (
-    adx != null && adx > 40 &&
+    adx != null && adx > SCORING_THRESHOLDS.adx.veryStrong &&
     ema50 != null && ema200 != null && last != null &&
     ema50 > ema200 * 1.02 && last > ema50 &&
     (rsi == null || rsi > SCORING_THRESHOLDS.rsi.neutral_hi) &&
     (vol == null || vol.ratio > 1.3)
   ) {
     type = "exces";
-    confidence = Math.min(60 + (adx > 50 ? 20 : adx > 45 ? 10 : 0), 90);
+    confidence = Math.min(60 + (adx > SCORING_THRESHOLDS.adx.extreme ? 20 : adx > SCORING_THRESHOLDS.adx.dominant ? 10 : 0), 90);
     subtype = (ema20 != null && ema50 != null && ema200 != null &&
                ema20 > ema50 * 1.02 && ema50 > ema200 * 1.02)
       ? "exces_final" : undefined;
@@ -1940,7 +1959,7 @@ function classifyMarketContext(
   // Une structure HH/HL locale peut exister dans une tendance baissière de fond —
   // c'est un rebond, pas un retournement.
   else if (
-    adx != null && adx > 25 &&
+    adx != null && adx > SCORING_THRESHOLDS.adx.moderate &&
     Math.abs(ema50Slope) > 0.8 &&
     (struct.type === "bullish" || struct.type === "bearish" ||
      (ltBull && ema50Slope > 2.0) || (ltBear && ema50Slope < -2.0))
@@ -1953,7 +1972,7 @@ function classifyMarketContext(
     if (div.type === (bullish ? "bearish" : "bullish")) {
       subtype = "divergence";
       confidence = 55;
-    } else if (adx > 35) {
+    } else if (adx > SCORING_THRESHOLDS.adx.strong) {
       subtype = "suivi";
       confidence = Math.min(70 + Math.round(adx - 35), 88);
     } else {
@@ -1967,7 +1986,7 @@ function classifyMarketContext(
   else if (
     (struct.type === "bullish" || struct.type === "bearish" || ltBull || ltBear) &&
     adx != null &&
-    (adx >= 15 || (adx >= 10 && (struct.type === "bullish" || struct.type === "bearish"))) &&
+    (adx >= SCORING_THRESHOLDS.adx.weak || (adx >= 10 && (struct.type === "bullish" || struct.type === "bearish"))) &&
     Math.abs(ema50Slope) >= 0.15
   ) {
     type = "tendance";
@@ -1977,7 +1996,7 @@ function classifyMarketContext(
     const effectiveStructType = deathCrossActive ? "bearish" : struct.type;
     const hasDivergence = div.type !== null &&
       div.type !== (effectiveStructType === "bullish" ? "bullish" : "bearish");
-    confidence = hasDivergence ? 70 : adx >= 20 ? 62 : 52;
+    confidence = hasDivergence ? 70 : adx >= SCORING_THRESHOLDS.adx.emerging ? 62 : 52;
     // Propager la direction corrigée dans la structure pour l'affichage
     if (deathCrossActive && struct.type === "bullish") {
       struct.type = "bearish";
@@ -1986,7 +2005,7 @@ function classifyMarketContext(
   // ── RANGE ─────────────────────────────────────────────────────
   else {
     type = "range";
-    confidence = adx != null && adx < 15 ? 80 : 62;
+    confidence = adx != null && adx < SCORING_THRESHOLDS.adx.weak ? 80 : 62;
     subtype = (struct.swings >= 3 && (struct.type === "mixed" || struct.type === "flat"))
       ? "3br" : "neuneu";
     if (subtype === "3br") confidence = Math.min(confidence + 10, 85);
@@ -2466,13 +2485,13 @@ function computeTechSignals(
   if (highs.length > 0 && lows.length > 0) {
     const adxVal = calcADX(highs, lows, closes);
     if (adxVal != null) {
-      if (adxVal >= 40) {
+      if (adxVal >= SCORING_THRESHOLDS.adx.veryStrong) {
         signals.push({ emoji:"🟢", color:"#22c55e",
           plain:`Tendance très forte — ADX à ${adxVal.toFixed(0)}, marché fortement directionnel`,
           label:`ADX ${adxVal.toFixed(0)}`, detail:"Force de tendance · Zone forte (>40)",
           strength:"bull", edu: { ...adxEdu,
             example:`ADX de ${adxVal.toFixed(0)} : tendance très puissante. Dans ce contexte, les corrections sont souvent courtes. Mais un ADX > 50 peut aussi signaler un excès proche d'un retournement.` } });
-      } else if (adxVal >= 25) {
+      } else if (adxVal >= SCORING_THRESHOLDS.adx.moderate) {
         signals.push({ emoji:"📐", color:"#8b949e",
           plain:`Tendance modérée présente — ADX à ${adxVal.toFixed(0)}`,
           label:`ADX ${adxVal.toFixed(0)}`, detail:"Force de tendance · Zone modérée (25-40)",
@@ -3097,7 +3116,7 @@ function TechnicalPanel({ precomputed, context }: { precomputed: { signals: Tech
     if (bears >= bulls * 2 && hasDivBull)
       return "Les oscillateurs penchent baissier mais une divergence haussière RSI signale un possible essoufflement de la baisse.";
     if (bears > bulls)
-      return adxVal != null && adxVal > 35
+      return adxVal != null && adxVal > SCORING_THRESHOLDS.adx.strong
         ? "Prédominance baissière dans un contexte de tendance forte (ADX élevé) — confirme la pression vendeuse."
         : "Plus d'oscillateurs baissiers que haussiers — prudence à court terme.";
     if (bulls >= bears * 2 && hasGoldenCross)
@@ -3105,7 +3124,7 @@ function TechnicalPanel({ precomputed, context }: { precomputed: { signals: Tech
     if (bulls >= bears * 2 && hasDivBear)
       return "Les oscillateurs sont majoritairement haussiers mais une divergence baissière RSI tempère l'optimisme.";
     if (bulls > bears)
-      return adxVal != null && adxVal > 35
+      return adxVal != null && adxVal > SCORING_THRESHOLDS.adx.strong
         ? "Prédominance haussière dans une tendance forte (ADX élevé) — momentum directionnel confirmé."
         : "Plus d'oscillateurs haussiers que baissiers — setup technique positif.";
     return "Signaux techniques mixtes — pas de biais directionnel clair à ce stade.";
@@ -5026,11 +5045,11 @@ function MacroContextPanel({ macro, zone }: { macro: MacroContext | null | undef
     howToRead: "Au-dessus de 4.5% : environnement restrictif, les obligations deviennent compétitives face aux actions. Entre 3% et 4.5% : zone neutre. En dessous de 3% : argent bon marché, favorable aux actifs risqués et aux valorisations élevées.",
   };
   const rateSignal = macro.rate10y == null ? null
-    : macro.rate10y > 4.5
+    : macro.rate10y > SCORING_THRESHOLDS.macro.rate10y_high
       ? { label: "Taux 10 ans US — Élevés", color: "#ef4444",
           detail: `Taux 10 ans à ${macro.rate10y}% — coût du capital élevé, pression sur les valorisations growth.`,
           edu: { ...rateEduBase, example: `À ${macro.rate10y}%, le coût du capital est élevé — les entreprises à forte dette ou sans bénéfices sont particulièrement pénalisées.` } }
-    : macro.rate10y > 3.0
+    : macro.rate10y > SCORING_THRESHOLDS.macro.rate10y_mod
       ? { label: "Taux 10 ans US — Modérés", color: "#f59e0b",
           detail: `Taux 10 ans à ${macro.rate10y}% — environnement neutre pour les valorisations.`,
           edu: { ...rateEduBase, example: `À ${macro.rate10y}%, l'environnement est neutre — ni favorable ni défavorable aux valorisations actuelles.` } }
@@ -5341,7 +5360,7 @@ function computeCryptoEntryRecommendation(
   };
 
   // W2 — Death Cross + baissier + funding positif (longs piégés)
-  if (hasDeathCross && context.structure.type === "bearish" && fundingRate != null && fundingRate > 0.0001) return {
+  if (hasDeathCross && context.structure.type === "bearish" && fundingRate != null && fundingRate > SCORING_THRESHOLDS.macro.funding_low) return {
     type: "wait", icon: "⛔",
     title: "Tendance baissière confirmée — longs encore dominants",
     reasons: [
@@ -5361,7 +5380,7 @@ function computeCryptoEntryRecommendation(
   };
 
   // W4 — RSI extrême + sommet de cycle ou funding élevé
-  if (rsiValue != null && rsiValue > SCORING_THRESHOLDS.rsi.overboughtXX && (sinewave?.cycleTurn === "peak" || (fundingRate != null && fundingRate > 0.0003))) return {
+  if (rsiValue != null && rsiValue > SCORING_THRESHOLDS.rsi.overboughtXX && (sinewave?.cycleTurn === "peak" || (fundingRate != null && fundingRate > SCORING_THRESHOLDS.macro.funding_high))) return {
     type: "wait", icon: "⛔",
     title: "Zone de surachat extrême — attendre le prochain cycle",
     reasons: [
@@ -5436,7 +5455,7 @@ function computeCryptoEntryRecommendation(
   };
 
   // C6 — Funding négatif persistant sur structure non baissière
-  if (fundingRate != null && fundingRate < -0.0002 && context.structure.type !== "bearish") return {
+  if (fundingRate != null && fundingRate < SCORING_THRESHOLDS.macro.funding_negX && context.structure.type !== "bearish") return {
     type: "caution", icon: "⚠️",
     title: "Shorts dominants — compression possible",
     reasons: [
@@ -5460,7 +5479,7 @@ function computeCryptoEntryRecommendation(
     if (sinewave?.cycleTurn === "trough") reasons.push("Creux de cycle Sinewave — timing optimal");
     if (momentum14 > 5) reasons.push(`Momentum positif +${momentum14.toFixed(1)}% sur 14 jours`);
     if (fg != null && fg > SCORING_THRESHOLDS.fearGreed.fifty && fg < SCORING_THRESHOLDS.fearGreed.greed) reasons.push(`Fear & Greed ${fg}/100 — sentiment haussier modéré`);
-    if (fundingRate != null && fundingRate > 0 && fundingRate < 0.0002) reasons.push("Funding rate légèrement positif — longs dominants sans euphorie");
+    if (fundingRate != null && fundingRate > 0 && fundingRate < SCORING_THRESHOLDS.macro.funding_mod) reasons.push("Funding rate légèrement positif — longs dominants sans euphorie");
     return {
       type: "favorable", icon: "✅",
       title: "Configuration favorable — entrée progressive possible",
@@ -5724,13 +5743,13 @@ function computeEntryRecommendation(
   };
   // C5 — Macro modérément défavorable (après F1/F2/F3)
   if (macro && !macro.error && finalScore != null && finalScore >= 5
-      && ((macro.vix != null && macro.vix > SCORING_THRESHOLDS.vix.caution) || (macro.rate10y != null && macro.rate10y > 4.5))) {
+      && ((macro.vix != null && macro.vix > SCORING_THRESHOLDS.vix.caution) || (macro.rate10y != null && macro.rate10y > SCORING_THRESHOLDS.macro.rate10y_high))) {
     const reasons: string[] = [];
     if (macro.vix != null && macro.vix > SCORING_THRESHOLDS.vix.caution) reasons.push(`VIX à ${macro.vix} — volatilité élevée`);
-    if (macro.rate10y != null && macro.rate10y > 4.5) reasons.push(`Taux à ${macro.rate10y}% — pression sur les valorisations`);
+    if (macro.rate10y != null && macro.rate10y > SCORING_THRESHOLDS.macro.rate10y_high) reasons.push(`Taux à ${macro.rate10y}% — pression sur les valorisations`);
     const triggers: string[] = [];
     if (macro.vix != null && macro.vix > SCORING_THRESHOLDS.vix.caution) triggers.push("VIX redescend sous 20");
-    if (macro.rate10y != null && macro.rate10y > 4.5) triggers.push("Taux 10 ans repassent sous 4%");
+    if (macro.rate10y != null && macro.rate10y > SCORING_THRESHOLDS.macro.rate10y_high) triggers.push("Taux 10 ans repassent sous 4%");
     return {
       type: "caution", icon: "⚠️",
       title: "Contexte macro à surveiller — position réduite recommandée",
@@ -7353,7 +7372,7 @@ function computeCryptoSentimentSynthesis(
 
   // ── MATRICE DE LECTURE CROISÉE ────────────────────────────
   // Priorité 1 : Peur extrême + longs piégés + funding négatif → capitulation
-  if (fg != null && fg <= SCORING_THRESHOLDS.fearGreed.extremeFear && ls != null && ls > 1.8 && fr != null && fr < -0.0001) {
+  if (fg != null && fg <= SCORING_THRESHOLDS.fearGreed.extremeFear && ls != null && ls > 1.8 && fr != null && fr < SCORING_THRESHOLDS.macro.funding_neg) {
     return {
       emoji: "💥", color: "#ef4444", bg: "#1e0808", border: "#ef4444",
       badge: "Risque de cascade",
@@ -7363,7 +7382,7 @@ function computeCryptoSentimentSynthesis(
   }
 
   // Priorité 2 : Peur extrême + shorts dominants + funding négatif → rebond violent possible
-  if (fg != null && fg <= SCORING_THRESHOLDS.fearGreed.extremeFear && ls != null && ls < 0.7 && fr != null && fr < -0.0002) {
+  if (fg != null && fg <= SCORING_THRESHOLDS.fearGreed.extremeFear && ls != null && ls < 0.7 && fr != null && fr < SCORING_THRESHOLDS.macro.funding_negX) {
     return {
       emoji: "🌀", color: "#22c55e", bg: "#0a1e0f", border: "#22c55e",
       badge: "Short squeeze potentiel",
@@ -7373,7 +7392,7 @@ function computeCryptoSentimentSynthesis(
   }
 
   // Priorité 3 : Euphorie + longs dominants + funding positif → retournement imminent
-  if (fg != null && fg >= SCORING_THRESHOLDS.fearGreed.greedX && ls != null && ls > 2.0 && fr != null && fr > 0.0003) {
+  if (fg != null && fg >= SCORING_THRESHOLDS.fearGreed.greedX && ls != null && ls > 2.0 && fr != null && fr > SCORING_THRESHOLDS.macro.funding_high) {
     return {
       emoji: "⚠️", color: "#ef4444", bg: "#1e0808", border: "#ef4444",
       badge: "Euphorie dangereuse",
@@ -8074,9 +8093,9 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
                     </div>
                     <div style={{ fontSize:10, fontWeight:600, marginBottom:8,
                       color: funding.rate > 0 ? THEME.scoreGreen : funding.rate < 0 ? THEME.scoreRed : THEME.textSecondary }}>
-                      {funding.rate > 0.0002  ? "Marché très optimiste — longs dominants"  :
+                      {funding.rate > SCORING_THRESHOLDS.macro.funding_mod  ? "Marché très optimiste — longs dominants"  :
                        funding.rate > 0       ? "Légère dominance haussière"                :
-                       funding.rate < -0.0002 ? "Marché très pessimiste — shorts dominants" :
+                       funding.rate < SCORING_THRESHOLDS.macro.funding_negX ? "Marché très pessimiste — shorts dominants" :
                                                 "Légère dominance baissière"}
                     </div>
                     <div style={{ fontSize:9, color:THEME.textMuted, lineHeight:1.6 }}>
