@@ -126,9 +126,8 @@ const ECB_URL = "https://data-api.ecb.europa.eu/service/data/EXR/D..EUR.SP00.A?l
 
 const getJson = async (url: string): Promise<any> => {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 12000);
+  setTimeout(() => controller.abort(), 12000);
   const r = await fetch(url, { signal: controller.signal });
-  clearTimeout(timeoutId);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 };
@@ -162,40 +161,6 @@ const KNOWN_CRYPTO_SYMBOLS = new Set([
   "ZEC","DASH","XMR","NEO","WAVES","QTUM","ONT","ZIL","ICX","IOTA",
   "OP","ARB","APT","SUI","SEI","TIA","INJ","PYTH","JUP","WIF",
 ]);
-
-const SCORING_THRESHOLDS = {
-  vix: {
-    stress:      30,   // VIX > 30 : stress élevé
-    caution:     25,   // VIX > 25 : prudence
-    elevated:    20,   // VIX > 20 : légèrement élevé
-    calm:        15,   // VIX < 15 : environnement serein
-    extreme:     35,   // VIX > 35 : stress extrême (bloquant)
-  },
-  rsi: {
-    overbought:  70,   // RSI > 70 : surachat
-    overboughtX: 75,   // RSI > 75 : surachat fort
-    overboughtXX:78,   // RSI > 78 : surachat extrême
-    oversold:    30,   // RSI < 30 : survente
-    oversoldX:   25,   // RSI < 25 : survente forte
-    neutral_hi:  65,   // RSI > 65 : zone haute
-    neutral_lo:  35,   // RSI < 35 : zone basse
-    caution_lo:  40,   // RSI < 40 : zone basse modérée
-    mid:         55,   // RSI < 55 : sous la médiane
-  },
-  fearGreed: {
-    extremeFear:  15,  // F&G <= 15 : peur extrême forte
-    fearX:        20,  // F&G < 20  : peur extrême modérée
-    fear:         25,  // F&G < 25  : peur
-    fearMod:      30,  // F&G <= 30 : peur modérée
-    neutral_lo:   45,  // F&G <= 45 : neutre bas
-    fifty:        50,  // F&G < 50  : sous la médiane
-    neutral_hi:   55,  // F&G <= 55 : neutre haut
-    greed:        75,  // F&G <= 75 : greed
-    greedMod:     70,  // F&G >= 70 : greed modéré
-    greedX:       80,  // F&G >= 80 : greed fort
-    greedXX:      85,  // F&G > 85  : greed extrême
-  },
-} as const;
 
 const FOREX_CURRENCY_CODES = new Set([
   "USD","EUR","GBP","JPY","CHF","CAD","AUD","NZD","SEK","NOK",
@@ -699,10 +664,10 @@ function scoreSentimentPressure(
 
   // VIX contextuel
   if (vix != null) {
-    if (vix > SCORING_THRESHOLDS.vix.stress) {
+    if (vix > 30) {
       score -= 1.0;
       signals.push({ color: "#ef4444", label: `VIX ${vix} — stress élevé`, detail: "Volatilité implicite élevée — prime de risque marché accrue, prudence sur le timing.", edu: eduVix });
-    } else if (vix < SCORING_THRESHOLDS.vix.calm) {
+    } else if (vix < 15) {
       score += 0.5;
       signals.push({ color: "#22c55e", label: `VIX ${vix} — marché serein`, detail: "Faible volatilité implicite — environnement favorable à la prise de position.", edu: eduVix });
     }
@@ -1723,7 +1688,7 @@ function calcConfluenceScore(
   const nearEma200   = (ema200 != null && last != null)
     ? Math.abs(last - ema200) / ema200 < 0.05
     : false;
-  const rsiExtreme   = rsi != null && (rsi < SCORING_THRESHOLDS.rsi.neutral_lo || rsi > SCORING_THRESHOLDS.rsi.neutral_hi);
+  const rsiExtreme   = rsi != null && (rsi < 35 || rsi > 65);
   const regDiscount  = reg != null && reg.r2 >= 0.4 && reg.deviation < -5;
   const priceOk      = nearEma200 || rsiExtreme || regDiscount;
 
@@ -1809,8 +1774,8 @@ function calcCyclePhase(closes: (number|null)[]): CyclePhaseResult | null {
     : 0;
 
   const phase: "rising" | "peak" | "falling" | "trough" =
-    lastRsi > SCORING_THRESHOLDS.rsi.neutral_hi && rsiSlope <= 0  ? "peak"    :
-    lastRsi < SCORING_THRESHOLDS.rsi.neutral_lo && rsiSlope >= 0  ? "trough"  :
+    lastRsi > 65 && rsiSlope <= 0  ? "peak"    :
+    lastRsi < 35 && rsiSlope >= 0  ? "trough"  :
     rsiSlope > 2                   ? "rising"  :
     rsiSlope < -2                  ? "falling" :
     lastRsi > 50                   ? "peak"    : "trough";
@@ -1853,7 +1818,7 @@ function calcTrendMaturity(
   const last   = c.length > 0 ? c[c.length - 1] : null;
 
   if (div.type === "bearish" || div.type === "bullish") return "divergence";
-  if (adx > 40 || (rsi != null && rsi > SCORING_THRESHOLDS.rsi.overbought) || (ema200 != null && last != null && last > ema200 * 1.25)) return "mature";
+  if (adx > 40 || (rsi != null && rsi > 70) || (ema200 != null && last != null && last > ema200 * 1.25)) return "mature";
   if (adx >= 30) return "en_developpement";
   if (adx >= 20) return "jeune";
   return null;
@@ -1925,7 +1890,7 @@ function classifyMarketContext(
     adx != null && adx > 40 &&
     ema50 != null && ema200 != null && last != null &&
     ema50 > ema200 * 1.02 && last > ema50 &&
-    (rsi == null || rsi > SCORING_THRESHOLDS.rsi.neutral_hi) &&
+    (rsi == null || rsi > 65) &&
     (vol == null || vol.ratio > 1.3)
   ) {
     type = "exces";
@@ -2877,10 +2842,10 @@ function Tooltip({ content, id: _id }: { content: TooltipContent; id: string }) 
                         THEME.textSecondary;
 
   return (
-    <div ref={wrapperRef} style={{ position: "relative", display: "inline-flex", alignItems: "center", zIndex: visible ? 1000 : "auto" }}>
+    <div ref={wrapperRef} style={ { position: "relative", display: "inline-flex", alignItems: "center", zIndex: visible ? 1000 : "auto" }}>
       <button
         onClick={handleOpen}
-        style={{
+        style={ {
           background:    visible ? THEME.borderMid : THEME.bgCard,
           border:        `1px solid ${THEME.borderMid}`,
           borderRadius:  "50%",
@@ -2898,7 +2863,7 @@ function Tooltip({ content, id: _id }: { content: TooltipContent; id: string }) 
         title="En savoir plus"
       >?</button>
       {visible && (
-        <div style={{
+        <div style={ {
           position:     "fixed",
           top:          pos.top,
           left:         pos.left,
@@ -2914,29 +2879,29 @@ function Tooltip({ content, id: _id }: { content: TooltipContent; id: string }) 
           color:        THEME.textSecondary,
         }}>
           {content.title && (
-            <div style={{ color: THEME.accent, fontWeight: 700, fontSize: 12, marginBottom: 8 }}>
+            <div style={ { color: THEME.accent, fontWeight: 700, fontSize: 12, marginBottom: 8 }}>
               📚 {content.title}
             </div>
           )}
           {content.sections.map((sec, i) => (
-            <div key={i} style={{
+            <div key={i} style={ {
               marginBottom: i < content.sections.length - 1 ? 10 : 0,
               background:   sec.variant === "highlight" ? THEME.bgCard : "transparent",
               borderLeft:   sec.variant === "highlight" ? `3px solid ${THEME.accent}` : "none",
               padding:      sec.variant === "highlight" ? "8px 10px" : "0",
               borderRadius: sec.variant === "highlight" ? 6 : 0,
             }}>
-              <div style={{ color: variantColor(sec.variant), fontWeight: 600, marginBottom: 3 }}>
+              <div style={ { color: variantColor(sec.variant), fontWeight: 600, marginBottom: 3 }}>
                 {sec.label}
               </div>
-              <div style={{ color: sec.variant === "highlight" ? THEME.textSecondary : THEME.textSecondary }}>
+              <div style={ { color: sec.variant === "highlight" ? THEME.textSecondary : THEME.textSecondary }}>
                 {sec.text}
               </div>
             </div>
           ))}
           <button
             onClick={e => { e.stopPropagation(); _eduSubscribers.forEach(s => s(false)); }}
-            style={{ marginTop: 10, fontSize: 9, color: THEME.textMuted, background: "none", border: "none", cursor: "pointer", padding: 0 }}
+            style={ { marginTop: 10, fontSize: 9, color: THEME.textMuted, background: "none", border: "none", cursor: "pointer", padding: 0 }}
           >▲ fermer</button>
         </div>
       )}
@@ -2981,7 +2946,7 @@ function Panel({ icon, title, badge, badge2, badge3, rightLabel, rightValue, con
   const border = borderColor ? `1px solid ${borderColor}55` : `1px solid ${THEME.borderPanel}`;
   const bg     = bgColor ?? THEME.bgPanel;
   return (
-    <div style={{
+    <div style={ {
       background:   bg,
       border,
       borderRadius: 12,
@@ -2990,7 +2955,7 @@ function Panel({ icon, title, badge, badge2, badge3, rightLabel, rightValue, con
     }}>
       <div
         onClick={() => setOpen(o => !o)}
-        style={{
+        style={ {
           display:        "flex",
           alignItems:     "center",
           justifyContent: "space-between",
@@ -3000,8 +2965,8 @@ function Panel({ icon, title, badge, badge2, badge3, rightLabel, rightValue, con
           gap:            8,
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <span style={{
+        <div style={ { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <span style={ {
             fontSize:      12,
             fontWeight:    800,
             color:         THEME.textPrimary,
@@ -3011,7 +2976,7 @@ function Panel({ icon, title, badge, badge2, badge3, rightLabel, rightValue, con
             {icon} {title}
           </span>
           {badge && (
-            <span style={{
+            <span style={ {
               fontSize:     11,
               fontWeight:   800,
               color:        badge.color,
@@ -3023,7 +2988,7 @@ function Panel({ icon, title, badge, badge2, badge3, rightLabel, rightValue, con
             </span>
           )}
           {badge2 && (
-            <span style={{
+            <span style={ {
               fontSize:     11,
               fontWeight:   700,
               color:        badge2.color,
@@ -3035,7 +3000,7 @@ function Panel({ icon, title, badge, badge2, badge3, rightLabel, rightValue, con
             </span>
           )}
           {badge3 && (
-            <span style={{
+            <span style={ {
               fontSize:     11,
               fontWeight:   700,
               color:        badge3.color,
@@ -3047,26 +3012,26 @@ function Panel({ icon, title, badge, badge2, badge3, rightLabel, rightValue, con
             </span>
           )}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 14, flexShrink: 0 }}>
+        <div style={ { display: "flex", alignItems: "center", gap: 14, flexShrink: 0 }}>
           {rightValue && (
-            <div style={{ textAlign: "right" }}>
-              <div style={{ fontSize: 9, color: THEME.textMuted, textTransform: "uppercase", letterSpacing: 1, marginBottom: 2 }}>
+            <div style={ { textAlign: "right" }}>
+              <div style={ { fontSize: 9, color: THEME.textMuted, textTransform: "uppercase", letterSpacing: 1, marginBottom: 2 }}>
                 {rightValue.label}
               </div>
-              <div style={{ fontSize: 15, fontWeight: 800, color: rightValue.color }}>
+              <div style={ { fontSize: 15, fontWeight: 800, color: rightValue.color }}>
                 {rightValue.value}
               </div>
             </div>
           )}
           {rightLabel && (
-            <span style={{ fontSize: 10, color: THEME.textMuted }}>{rightLabel}</span>
+            <span style={ { fontSize: 10, color: THEME.textMuted }}>{rightLabel}</span>
           )}
-          <span style={{ fontSize: 10, color: THEME.textMuted }}>{open ? "▲" : "▼"}</span>
+          <span style={ { fontSize: 10, color: THEME.textMuted }}>{open ? "▲" : "▼"}</span>
         </div>
       </div>
       {confidence != null && (
-        <div style={{ height: 3, background: THEME.borderPanel, borderRadius: 2, margin: open ? "10px 0 12px" : "10px 0 0", overflow: "hidden" }}>
-          <div style={{ width: `${confidence}%`, height: "100%", background: borderColor ?? THEME.accent, borderRadius: 2 }}/>
+        <div style={ { height: 3, background: THEME.borderPanel, borderRadius: 2, margin: open ? "10px 0 12px" : "10px 0 0", overflow: "hidden" }}>
+          <div style={ { width: `${confidence}%`, height: "100%", background: borderColor ?? THEME.accent, borderRadius: 2 }}/>
         </div>
       )}
       {open && children}
@@ -3116,13 +3081,13 @@ function TechnicalPanel({ precomputed, context }: { precomputed: { signals: Tech
   const neutralSignals = signals.filter(s => s.strength === "neutral");
 
   const SignalRow = ({ s, idx }: { s: TechSignal; idx: number }) => (
-    <div style={{ display:"flex", alignItems:"flex-start", gap:8, padding:"8px 10px", background:THEME.bgCardAlt, borderRadius:6, borderLeft:`2px solid ${s.color}` }}>
-      <span style={{ fontSize:12, flexShrink:0 }}>{s.emoji}</span>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 12, fontWeight: 700, color: s.color, lineHeight: 1.4 }}>
+    <div style={ { display:"flex", alignItems:"flex-start", gap:8, padding:"8px 10px", background:THEME.bgCardAlt, borderRadius:6, borderLeft:`2px solid ${s.color}` }}>
+      <span style={ { fontSize:12, flexShrink:0 }}>{s.emoji}</span>
+      <div style={ { flex: 1, minWidth: 0 }}>
+        <div style={ { fontSize: 12, fontWeight: 700, color: s.color, lineHeight: 1.4 }}>
           {s.plain}
         </div>
-        <div style={{ fontSize: 9, color: THEME.textSecondary,
+        <div style={ { fontSize: 9, color: THEME.textSecondary,
                       fontFamily: "'IBM Plex Mono',monospace", marginTop: 3 }}>
           {s.label} · {s.detail}
         </div>
@@ -3135,25 +3100,25 @@ function TechnicalPanel({ precomputed, context }: { precomputed: { signals: Tech
     <Panel
       icon="📊"
       title="Signaux oscillateurs"
-      badge2={{ label: `${bulls} +`, color: THEME.scoreGreen }}
-      badge3={{ label: `${bears} -`, color: THEME.scoreRed }}
+      badge2={ { label: `${bulls} +`, color: THEME.scoreGreen }}
+      badge3={ { label: `${bears} -`, color: THEME.scoreRed }}
       rightLabel={`/ ${total}`}
       defaultOpen={true}
     >
-      <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+      <div style={ { display:"flex", flexDirection:"column", gap:8 }}>
 
         {/* ── Unité de temps optimale ── */}
         {sinewave && (
-          <div style={{ background:THEME.bgCard, borderRadius:8, padding:"10px 14px", borderLeft:`3px solid ${THEME.accent}` }}>
-            <div style={{ fontSize:9, color:THEME.accent, textTransform:"uppercase", letterSpacing:1.5, fontWeight:800, marginBottom:5 }}>
+          <div style={ { background:THEME.bgCard, borderRadius:8, padding:"10px 14px", borderLeft:`3px solid ${THEME.accent}` }}>
+            <div style={ { fontSize:9, color:THEME.accent, textTransform:"uppercase", letterSpacing:1.5, fontWeight:800, marginBottom:5 }}>
               🕐 Unité de temps optimale
             </div>
-            <div style={{ display:"flex", gap:16, flexWrap:"wrap", alignItems:"flex-start" }}>
-              <div style={{ minWidth:130 }}>
-                <div style={{ fontSize:12, fontWeight:800, color:THEME.textPrimary }}>{sinewave.optimalUT.label}</div>
-                <div style={{ fontSize:10, color:THEME.textSecondary, marginTop:2 }}>{sinewave.optimalUT.horizon}</div>
+            <div style={ { display:"flex", gap:16, flexWrap:"wrap", alignItems:"flex-start" }}>
+              <div style={ { minWidth:130 }}>
+                <div style={ { fontSize:12, fontWeight:800, color:THEME.textPrimary }}>{sinewave.optimalUT.label}</div>
+                <div style={ { fontSize:10, color:THEME.textSecondary, marginTop:2 }}>{sinewave.optimalUT.horizon}</div>
               </div>
-              <div style={{ flex:1, fontSize:10, color:THEME.textSecondary, lineHeight:1.6, borderLeft:`1px solid ${THEME.borderMid}`, paddingLeft:14 }}>
+              <div style={ { flex:1, fontSize:10, color:THEME.textSecondary, lineHeight:1.6, borderLeft:`1px solid ${THEME.borderMid}`, paddingLeft:14 }}>
                 {sinewave.optimalUT.note}
               </div>
             </div>
@@ -3162,47 +3127,47 @@ function TechnicalPanel({ precomputed, context }: { precomputed: { signals: Tech
 
         {/* ── Grille haussier / baissier ── */}
         {(bullSignals.length > 0 || bearSignals.length > 0) ? (
-          <div style={{ display:"flex", flexDirection:"column", gap:12, overflow:"hidden" }}>
+          <div style={ { display:"flex", flexDirection:"column", gap:12, overflow:"hidden" }}>
             {/* Colonne haussière */}
-            <div style={{ width:"100%" }}>
-              <div style={{ fontSize:10, color:THEME.scoreGreen, textTransform:"uppercase", letterSpacing:1.2, fontWeight:800, marginBottom:6 }}>
+            <div style={ { width:"100%" }}>
+              <div style={ { fontSize:10, color:THEME.scoreGreen, textTransform:"uppercase", letterSpacing:1.2, fontWeight:800, marginBottom:6 }}>
                 ✅ Points positifs ({bullSignals.length})
               </div>
-              <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
+              <div style={ { display:"flex", flexDirection:"column", gap:5 }}>
                 {bullSignals.length === 0
-                  ? <div style={{ fontSize:10, color:THEME.textMuted, padding:"6px 0" }}>—</div>
+                  ? <div style={ { fontSize:10, color:THEME.textMuted, padding:"6px 0" }}>—</div>
                   : bullSignals.map((s, i) => <SignalRow key={i} s={s} idx={i} />)
                 }
               </div>
             </div>
             {/* Colonne baissière */}
-            <div style={{ width:"100%" }}>
-              <div style={{ fontSize:10, color:THEME.scoreRed, textTransform:"uppercase", letterSpacing:1.2, fontWeight:800, marginBottom:6 }}>
+            <div style={ { width:"100%" }}>
+              <div style={ { fontSize:10, color:THEME.scoreRed, textTransform:"uppercase", letterSpacing:1.2, fontWeight:800, marginBottom:6 }}>
                 ⚠️ Points négatifs ({bearSignals.length})
               </div>
-              <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
+              <div style={ { display:"flex", flexDirection:"column", gap:5 }}>
                 {bearSignals.length === 0
-                  ? <div style={{ fontSize:10, color:THEME.textMuted, padding:"6px 0" }}>—</div>
+                  ? <div style={ { fontSize:10, color:THEME.textMuted, padding:"6px 0" }}>—</div>
                   : bearSignals.map((s, i) => <SignalRow key={i} s={s} idx={bullSignals.length + i} />)
                 }
               </div>
             </div>
           </div>
         ) : (
-          <div style={{ fontSize:12, color:THEME.textMuted, padding:"8px 0" }}>
+          <div style={ { fontSize:12, color:THEME.textMuted, padding:"8px 0" }}>
             Aucun signal directionnel fort à ce stade.
           </div>
         )}
 
         {/* ── Contexte (signaux neutres) ── */}
         {neutralSignals.length > 0 && (
-          <div style={{ borderTop:`1px solid ${THEME.borderSubtle}`, paddingTop:8 }}>
-            <div style={{ fontSize:9, color:"#a78bfa", textTransform:"uppercase", letterSpacing:1.2, fontWeight:800, marginBottom:6 }}>
+          <div style={ { borderTop:`1px solid ${THEME.borderSubtle}`, paddingTop:8 }}>
+            <div style={ { fontSize:9, color:"#a78bfa", textTransform:"uppercase", letterSpacing:1.2, fontWeight:800, marginBottom:6 }}>
               Contexte ({neutralSignals.length})
             </div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, width: "100%" }}>
+            <div style={ { display: "flex", flexWrap: "wrap", gap: 6, width: "100%" }}>
               {neutralSignals.map((s, i) => (
-                <div key={i} style={{
+                <div key={i} style={ {
                   display: "flex", alignItems: "center", gap: 8,
                   padding: "7px 10px",
                   background: THEME.bgCard,
@@ -3213,14 +3178,14 @@ function TechnicalPanel({ precomputed, context }: { precomputed: { signals: Tech
                   boxSizing: "border-box",
                   overflow: "visible",
                 }}>
-                  <span style={{ fontSize: 12, flexShrink: 0 }}>{s.emoji}</span>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 11, fontWeight: 600, color: THEME.textPrimary,
+                  <span style={ { fontSize: 12, flexShrink: 0 }}>{s.emoji}</span>
+                  <div style={ { flex: 1, minWidth: 0 }}>
+                    <div style={ { fontSize: 11, fontWeight: 600, color: THEME.textPrimary,
                                   overflow: "hidden",
                                   textOverflow: "ellipsis" }}>
                       {s.plain}
                     </div>
-                    <div style={{ fontSize: 9, color: THEME.textMuted,
+                    <div style={ { fontSize: 9, color: THEME.textMuted,
                                   fontFamily: "'IBM Plex Mono',monospace", marginTop: 2 }}>
                       {s.label}
                     </div>
@@ -3234,19 +3199,19 @@ function TechnicalPanel({ precomputed, context }: { precomputed: { signals: Tech
 
         {/* ── Synthèse ── */}
         {synthPhrase && (
-          <div style={{ padding:"10px 14px", background:THEME.bgCard, borderRadius:8, borderLeft:"3px solid #4a90d9" }}>
-            <div style={{ fontSize:9, color:"#4a90d9", textTransform:"uppercase", letterSpacing:1.5, fontWeight:800, marginBottom:5 }}>
+          <div style={ { padding:"10px 14px", background:THEME.bgCard, borderRadius:8, borderLeft:"3px solid #4a90d9" }}>
+            <div style={ { fontSize:9, color:"#4a90d9", textTransform:"uppercase", letterSpacing:1.5, fontWeight:800, marginBottom:5 }}>
               Synthèse —{" "}
-              <span style={{ color: THEME.scoreGreen, fontWeight: 800 }}>{bulls}+</span>
-              <span style={{ color: THEME.textMuted }}> · </span>
-              <span style={{ color: THEME.scoreRed, fontWeight: 800 }}>{bears}-</span>
-              <span style={{ color: THEME.textMuted }}> / {total}</span>
+              <span style={ { color: THEME.scoreGreen, fontWeight: 800 }}>{bulls}+</span>
+              <span style={ { color: THEME.textMuted }}> · </span>
+              <span style={ { color: THEME.scoreRed, fontWeight: 800 }}>{bears}-</span>
+              <span style={ { color: THEME.textMuted }}> / {total}</span>
             </div>
-            <div style={{ fontSize:11, color:THEME.textSecondary, lineHeight:1.7 }}>{synthPhrase}</div>
+            <div style={ { fontSize:11, color:THEME.textSecondary, lineHeight:1.7 }}>{synthPhrase}</div>
           </div>
         )}
 
-        <div style={{ fontSize:9, color:THEME.textMuted }}>
+        <div style={ { fontSize:9, color:THEME.textMuted }}>
           RSI/MACD calculés sur les prix de clôture · Moyennes mobiles sur données journalières (ou hebdomadaires si insuffisant)
         </div>
       </div>
@@ -3290,34 +3255,34 @@ function SituationalPanel({ metrics, closes }: { metrics: any; closes?: (number|
     <Panel
       icon="⚡"
       title="Contexte d'investissement"
-      badge={{ label: `${ctx.profileEmoji} ${ctx.profile}`, color: ctx.profileColor }}
+      badge={ { label: `${ctx.profileEmoji} ${ctx.profile}`, color: ctx.profileColor }}
       borderColor={ctx.profileColor}
       defaultOpen={true}
     >
       <div>
-        <div style={{ fontSize:11, color:ctx.profileColor, fontWeight:600, marginBottom:10, padding:"6px 10px", background:ctx.profileColor+"11", borderRadius:6 }}>
+        <div style={ { fontSize:11, color:ctx.profileColor, fontWeight:600, marginBottom:10, padding:"6px 10px", background:ctx.profileColor+"11", borderRadius:6 }}>
           🕐 {ctx.horizon}
         </div>
-        <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+        <div style={ { display:"flex", flexDirection:"column", gap:6 }}>
           {ctx.signals.map((s, i) => (
-            <div key={i} style={{ display:"flex", alignItems:"flex-start", gap:10, padding:"8px 10px", background:THEME.bgCard, borderRadius:8, borderLeft:`3px solid ${s.color}` }}>
-              <span style={{ fontSize:13, flexShrink:0 }}>{s.emoji}</span>
+            <div key={i} style={ { display:"flex", alignItems:"flex-start", gap:10, padding:"8px 10px", background:THEME.bgCard, borderRadius:8, borderLeft:`3px solid ${s.color}` }}>
+              <span style={ { fontSize:13, flexShrink:0 }}>{s.emoji}</span>
               <div>
-                <div style={{ fontSize:12, fontWeight:700, color:s.color }}>{s.label}</div>
-                <div style={{ fontSize:11, color:THEME.textSecondary, marginTop:2, lineHeight:1.5 }}>{s.detail}</div>
+                <div style={ { fontSize:12, fontWeight:700, color:s.color }}>{s.label}</div>
+                <div style={ { fontSize:11, color:THEME.textSecondary, marginTop:2, lineHeight:1.5 }}>{s.detail}</div>
               </div>
             </div>
           ))}
         </div>
         {sitPhrase && (
-          <div style={{ marginTop:10, padding:"10px 14px", background:THEME.bgCard, borderRadius:8, borderLeft:`3px solid ${ctx.profileColor}` }}>
-            <div style={{ fontSize:9, color:ctx.profileColor, textTransform:"uppercase", letterSpacing:1.5, fontWeight:800, marginBottom:5 }}>
+          <div style={ { marginTop:10, padding:"10px 14px", background:THEME.bgCard, borderRadius:8, borderLeft:`3px solid ${ctx.profileColor}` }}>
+            <div style={ { fontSize:9, color:ctx.profileColor, textTransform:"uppercase", letterSpacing:1.5, fontWeight:800, marginBottom:5 }}>
               Synthèse — {n} {n > 1 ? "signaux" : "signal"}
             </div>
-            <div style={{ fontSize:11, color:THEME.textSecondary, lineHeight:1.7 }}>{sitPhrase}</div>
+            <div style={ { fontSize:11, color:THEME.textSecondary, lineHeight:1.7 }}>{sitPhrase}</div>
           </div>
         )}
-        <div style={{ fontSize:9, color:THEME.textMuted, marginTop:8 }}>
+        <div style={ { fontSize:9, color:THEME.textMuted, marginTop:8 }}>
           ⚠️ Ces signaux sont informatifs et non contractuels. Tout investissement comporte un risque de perte en capital.
         </div>
       </div>
@@ -3331,7 +3296,7 @@ function SituationalPanel({ metrics, closes }: { metrics: any; closes?: (number|
 function TypeBadge({ type }: { type?: string }) {
   const b = getBadge(type);
   return (
-    <span style={{
+    <span style={ {
       background:b.bg, color:b.color, border:`1px solid ${b.color}66`,
       borderRadius:4, fontSize:10, fontWeight:800,
       padding:"2px 7px", letterSpacing:1.2, textTransform:"uppercase",
@@ -3437,7 +3402,7 @@ function CandleChart({
   };
 
   if (!chartData) return (
-    <div style={{ color: THEME.textMuted, fontSize: 12, padding: "30px 0", textAlign: "center" }}>
+    <div style={ { color: THEME.textMuted, fontSize: 12, padding: "30px 0", textAlign: "center" }}>
       Données OHLCV indisponibles
     </div>
   );
@@ -3453,7 +3418,7 @@ function CandleChart({
     }
   }
   if (candles.length < 10) return (
-    <div style={{ color: THEME.textMuted, fontSize: 12, padding: "30px 0", textAlign: "center" }}>
+    <div style={ { color: THEME.textMuted, fontSize: 12, padding: "30px 0", textAlign: "center" }}>
       Données insuffisantes (minimum 10 bougies OHLC)
     </div>
   );
@@ -3667,14 +3632,14 @@ function CandleChart({
   return (
     <div>
       {/* Pills overlays */}
-      <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:10, alignItems:"center" }}>
+      <div style={ { display:"flex", gap:5, flexWrap:"wrap", marginBottom:10, alignItems:"center" }}>
         {OVERLAYS.map(ov => {
           const active = activeOverlays.has(ov.key);
           return (
             <button
               key={ov.key}
               onClick={() => toggleOverlay(ov.key)}
-              style={{
+              style={ {
                 padding:"3px 10px",
                 borderRadius:20,
                 border:`1px solid ${active ? ov.color : THEME.borderMid}`,
@@ -3688,7 +3653,7 @@ function CandleChart({
             </button>
           );
         })}
-        <span style={{ fontSize:9, color:THEME.textMuted, marginLeft:"auto" }}>
+        <span style={ { fontSize:9, color:THEME.textMuted, marginLeft:"auto" }}>
           {display.length} bougies
           {period ? ` · ${period}` : ""}
           {" "}· {currency}
@@ -3696,12 +3661,12 @@ function CandleChart({
       </div>
 
       {/* SVG principal */}
-      <div style={{ position:"relative" }}>
+      <div style={ { position:"relative" }}>
         <svg
           ref={svgRef}
           width="100%"
           viewBox={`0 0 ${W} ${totalH}`}
-          style={{ overflow:"visible", cursor:"crosshair", display:"block" }}
+          style={ { overflow:"visible", cursor:"crosshair", display:"block" }}
           onMouseMove={handleMouseMove}
           onMouseLeave={() => setTooltip(null)}
         >
@@ -3892,7 +3857,7 @@ function CandleChart({
 
         {/* ── TOOLTIP ── */}
         {tooltip && (
-          <div style={{
+          <div style={ {
             position:"absolute",
             left:`${(tooltip.x / W) * 100}%`,
             top: 4,
@@ -3905,8 +3870,8 @@ function CandleChart({
             pointerEvents:"none", whiteSpace:"nowrap", zIndex:10,
             fontSize:10, fontFamily:"'IBM Plex Mono',monospace",
           }}>
-            <div style={{ fontSize:9, color:THEME.textMuted, marginBottom:5 }}>{tooltip.date}</div>
-            <div style={{ display:"grid", gridTemplateColumns:"auto auto", gap:"2px 14px" }}>
+            <div style={ { fontSize:9, color:THEME.textMuted, marginBottom:5 }}>{tooltip.date}</div>
+            <div style={ { display:"grid", gridTemplateColumns:"auto auto", gap:"2px 14px" }}>
               {[["O", tooltip.o, THEME.textSecondary],
                 ["H", tooltip.h, "#22c55e"],
                 ["L", tooltip.l, "#ef4444"],
@@ -3914,8 +3879,8 @@ function CandleChart({
                 ["V", tooltip.v, THEME.textMuted],
               ].map(([lbl, val, col]) => (
                 <>
-                  <span style={{ color: THEME.textMuted }}>{lbl as string}</span>
-                  <span style={{ color: col as string, fontWeight: lbl === "C" ? 700 : 400 }}>
+                  <span style={ { color: THEME.textMuted }}>{lbl as string}</span>
+                  <span style={ { color: col as string, fontWeight: lbl === "C" ? 700 : 400 }}>
                     {lbl === "V" ? fmt(val as number, 0) : fmtP(val as number)}
                   </span>
                 </>
@@ -3989,7 +3954,7 @@ function PerfChart({
   const displayPts = points.length >= 2 ? points : [];
 
   if (displayPts.length < 2) return (
-    <div style={{ color:THEME.textMuted, fontSize:12, padding:"30px 0", textAlign:"center" }}>
+    <div style={ { color:THEME.textMuted, fontSize:12, padding:"30px 0", textAlign:"center" }}>
       {loading ? "Chargement…" : "Données graphique indisponibles"}
     </div>
   );
@@ -4076,17 +4041,17 @@ function PerfChart({
 
   return (
     <div>
-      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10,flexWrap:"wrap"}}>
-        <span style={{fontSize:11,color:c,fontWeight:700}}>
+      <div style={ {display:"flex",alignItems:"center",gap:10,marginBottom:10,flexWrap:"wrap"}}>
+        <span style={ {fontSize:11,color:c,fontWeight:700}}>
           {up?"▲":"▼"} {Math.abs(parseFloat(chgPct))}% sur {periodLabel}
         </span>
-        <span style={{fontSize:10,color:THEME.textSecondary}}>
+        <span style={ {fontSize:10,color:THEME.textSecondary}}>
           {fmtPrice(displayPts[0].price)} → {fmtPrice(displayPts[displayPts.length-1].price)} {currency}
         </span>
       </div>
-      <div style={{position:"relative"}}>
+      <div style={ {position:"relative"}}>
         <svg ref={svgRef} width="100%" viewBox={`0 0 ${W} ${H}`}
-          style={{overflow:"visible",cursor:"crosshair",display:"block"}}
+          style={ {overflow:"visible",cursor:"crosshair",display:"block"}}
           onMouseMove={handleMouseMove} onMouseLeave={()=>setTooltip(null)}>
           <defs>
             <linearGradient id="pfg" x1="0" y1="0" x2="0" y2="1">
@@ -4120,20 +4085,20 @@ function PerfChart({
             fill={c} stroke={THEME.bgPage} strokeWidth="2"/>}
         </svg>
         {tooltip&&(
-          <div style={{
+          <div style={ {
             position:"absolute",
             left:`${(tooltip.x/W)*100}%`,top:0,
             transform:tooltip.x/W>0.72?"translateX(-100%) translateX(-8px)":tooltip.x/W<0.15?"translateX(8px)":"translateX(-50%)",
             background:THEME.bgCard,border:`1px solid ${c}55`,borderRadius:7,
             padding:"6px 11px",pointerEvents:"none",maxWidth:"200px",whiteSpace:"nowrap",zIndex:10,
           }}>
-            <div style={{fontSize:12,color:c,fontWeight:800,fontFamily:"'IBM Plex Mono',monospace"}}>
+            <div style={ {fontSize:12,color:c,fontWeight:800,fontFamily:"'IBM Plex Mono',monospace"}}>
               {((tooltip.price/base0-1)*100)>=0?"+":""}{((tooltip.price/base0-1)*100).toFixed(2)}%
             </div>
-            <div style={{fontSize:10,color:THEME.textSecondary,fontFamily:"'IBM Plex Mono',monospace",marginTop:1}}>
+            <div style={ {fontSize:10,color:THEME.textSecondary,fontFamily:"'IBM Plex Mono',monospace",marginTop:1}}>
               {fmtPrice(tooltip.price)} {currency}
             </div>
-            <div style={{fontSize:9,color:"#445",marginTop:2}}>{tooltip.date}</div>
+            <div style={ {fontSize:9,color:"#445",marginTop:2}}>{tooltip.date}</div>
           </div>
         )}
       </div>
@@ -4150,7 +4115,7 @@ function CollapsibleEduBlock({
   const [open, setOpen] = useState(false);
   if (overlays.length === 0) return null;
   return (
-    <div style={{
+    <div style={ {
       marginTop: 10,
       border: `1px solid ${THEME.borderMid}`,
       borderRadius: 8,
@@ -4158,7 +4123,7 @@ function CollapsibleEduBlock({
     }}>
       <button
         onClick={() => setOpen(o => !o)}
-        style={{
+        style={ {
           width: "100%",
           display: "flex",
           alignItems: "center",
@@ -4174,12 +4139,12 @@ function CollapsibleEduBlock({
         }}
       >
         <span>📖 Lexique des indicateurs</span>
-        <span style={{ fontSize: 10, color: THEME.textMuted }}>
+        <span style={ { fontSize: 10, color: THEME.textMuted }}>
           {open ? "▲ Fermer" : "▼ Afficher"}
         </span>
       </button>
       {open && (
-        <div style={{
+        <div style={ {
           padding: "14px 16px",
           background: THEME.bgPanel,
           display: "flex",
@@ -4188,7 +4153,7 @@ function CollapsibleEduBlock({
         }}>
           {overlays.map(ov => (
             <div key={ov.key}>
-              <div style={{
+              <div style={ {
                 fontSize: 12,
                 fontWeight: 800,
                 color: ov.color,
@@ -4198,7 +4163,7 @@ function CollapsibleEduBlock({
               }}>
                 {ov.label}
               </div>
-              <div style={{
+              <div style={ {
                 display: "flex",
                 flexDirection: "column",
                 gap: 8,
@@ -4207,20 +4172,20 @@ function CollapsibleEduBlock({
                 color: THEME.textSecondary,
               }}>
                 <div>
-                  <span style={{ color: THEME.textPrimary, fontWeight: 700 }}>C'est quoi ?{" "}</span>
+                  <span style={ { color: THEME.textPrimary, fontWeight: 700 }}>C'est quoi ?{" "}</span>
                   {ov.edu.concept}
                 </div>
                 <div>
-                  <span style={{ color: THEME.textPrimary, fontWeight: 700 }}>Comment le lire ?{" "}</span>
+                  <span style={ { color: THEME.textPrimary, fontWeight: 700 }}>Comment le lire ?{" "}</span>
                   {ov.edu.howToRead}
                 </div>
-                <div style={{
+                <div style={ {
                   background: THEME.bgCard,
                   borderLeft: `3px solid ${ov.color}`,
                   padding: "8px 10px",
                   borderRadius: 6,
                 }}>
-                  <span style={{ color: ov.color, fontWeight: 700 }}>Exemple concret :{" "}</span>
+                  <span style={ { color: ov.color, fontWeight: 700 }}>Exemple concret :{" "}</span>
                   {ov.edu.example}
                 </div>
               </div>
@@ -4291,15 +4256,15 @@ function ChartBlock({
     : chartData;
 
   return (
-    <div style={{background:THEME.bgPanel,border:`1px solid ${THEME.borderPanel}`,borderRadius:12,padding:"14px 18px",marginBottom:4}}>
-      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10,flexWrap:"wrap",gap:8}}>
-        <div style={{fontSize:10,color:THEME.textMuted,textTransform:"uppercase",letterSpacing:1.2}}>
+    <div style={ {background:THEME.bgPanel,border:`1px solid ${THEME.borderPanel}`,borderRadius:12,padding:"14px 18px",marginBottom:4}}>
+      <div style={ {display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10,flexWrap:"wrap",gap:8}}>
+        <div style={ {fontSize:10,color:THEME.textMuted,textTransform:"uppercase",letterSpacing:1.2}}>
           {chartMode==="perf" ? "Performance historique" : "Analyse technique"}
         </div>
-        <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+        <div style={ {display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
           {/* Bouton EUR — uniquement en mode Performance */}
           {chartMode==="perf" && eurRate!=null && eurRate!==1 && priceValue!=null && setShowEur && (
-            <button onClick={()=>setShowEur(!showEur)} style={{
+            <button onClick={()=>setShowEur(!showEur)} style={ {
               background: showEur ? THEME.accent+"33" : THEME.scoreAmber+"22",
               border:`1px solid ${showEur ? THEME.accent : THEME.scoreAmber}`,
               borderRadius:8,padding:"5px 14px",fontSize:13,fontWeight:800,
@@ -4311,9 +4276,9 @@ function ChartBlock({
           )}
           {/* Boutons UT — visibles dans les deux modes */}
           {periods && periods.length > 0 && (
-            <div style={{display:"flex",gap:3,flexWrap:"wrap"}}>
+            <div style={ {display:"flex",gap:3,flexWrap:"wrap"}}>
               {periods.map(p => (
-                <button key={p.key} onClick={()=>onPeriodChange(p.key)} style={{
+                <button key={p.key} onClick={()=>onPeriodChange(p.key)} style={ {
                   background: period===p.key ? THEME.accent+"22" : "transparent",
                   border:`1px solid ${period===p.key ? THEME.accent : THEME.borderMid}`,
                   color: period===p.key ? THEME.accent : THEME.textMuted,
@@ -4326,9 +4291,9 @@ function ChartBlock({
             </div>
           )}
           {/* Toggle Performance / Technique */}
-          <div style={{display:"flex",gap:4}}>
+          <div style={ {display:"flex",gap:4}}>
             {(["perf","tech"] as const).map(m => (
-              <button key={m} onClick={()=>setChartMode(m)} style={{
+              <button key={m} onClick={()=>setChartMode(m)} style={ {
                 background: chartMode===m ? THEME.accent+"22" : "transparent",
                 border:`1px solid ${chartMode===m ? THEME.accent : THEME.borderMid}`,
                 color: chartMode===m ? THEME.accent : THEME.textMuted,
@@ -4365,7 +4330,7 @@ function ChartBlock({
           <CollapsibleEduBlock overlays={OVERLAYS_EDU} />
         </>
       ) : (
-        <div style={{color:THEME.textMuted,fontSize:12,padding:"30px 0",textAlign:"center"}}>
+        <div style={ {color:THEME.textMuted,fontSize:12,padding:"30px 0",textAlign:"center"}}>
           {(loading || candleLoading) ? "Chargement des données OHLCV…" : "Données OHLCV insuffisantes pour le graphique technique."}
         </div>
       )}
@@ -4391,7 +4356,7 @@ function ScoreGauge({ score }: { score: number | null }) {
   const nx = cx + r * 0.72 * Math.cos(toRad(180 - nd));
   const ny = cy + r * 0.72 * Math.sin(toRad(180 - nd));
   return (
-    <svg width="182" height="92" viewBox="0 0 182 92" style={{ overflow: "visible" }}>
+    <svg width="182" height="92" viewBox="0 0 182 92" style={ { overflow: "visible" }}>
       <g transform={`translate(0, ${cy * 2}) scale(1, -1)`}>
         <path d={`M${px(0)},${py(0)} A${r},${r} 0 0 0 ${px(180)},${py(180)}`}
           stroke={THEME.borderPanel} strokeWidth="14" fill="none" strokeLinecap="butt"/>
@@ -4411,15 +4376,15 @@ function MiniGauge({ label, score, weight }: { label: string; score: number | nu
   const color = scoreColor(score);
   const pct = (score / 10) * 100;
   return (
-    <div style={{ flex:1, minWidth: 80 }}>
-      <div style={{ fontSize:9, color:"#445", textTransform:"uppercase", letterSpacing:1, marginBottom:4 }}>{label}</div>
-      <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-        <div style={{ flex:1, height:4, background:THEME.borderPanel, borderRadius:2, overflow:"hidden" }}>
-          <div style={{ width:`${pct}%`, height:"100%", background:color, borderRadius:2, transition:"width .5s" }}/>
+    <div style={ { flex:1, minWidth: 80 }}>
+      <div style={ { fontSize:9, color:"#445", textTransform:"uppercase", letterSpacing:1, marginBottom:4 }}>{label}</div>
+      <div style={ { display:"flex", alignItems:"center", gap:6 }}>
+        <div style={ { flex:1, height:4, background:THEME.borderPanel, borderRadius:2, overflow:"hidden" }}>
+          <div style={ { width:`${pct}%`, height:"100%", background:color, borderRadius:2, transition:"width .5s" }}/>
         </div>
-        <span style={{ fontSize:10, fontWeight:700, color, minWidth:24 }}>{score}</span>
+        <span style={ { fontSize:10, fontWeight:700, color, minWidth:24 }}>{score}</span>
       </div>
-      <div style={{ fontSize:8, color:"#556", marginTop:2 }}>poids {Math.round(weight*100)}%</div>
+      <div style={ { fontSize:8, color:"#556", marginTop:2 }}>poids {Math.round(weight*100)}%</div>
     </div>
   );
 }
@@ -4588,10 +4553,10 @@ function FundamentalsPanel({ metrics, scores, sections, currency }: {
   ];
 
   return (
-    <div style={{ marginTop: 10 }}>
+    <div style={ { marginTop: 10 }}>
 
       {/* Bloc profil */}
-      <div style={{
+      <div style={ {
         background: THEME.bgPanel,
         border: `1px solid ${ctx.color}33`,
         borderRadius: 12,
@@ -4599,12 +4564,12 @@ function FundamentalsPanel({ metrics, scores, sections, currency }: {
         marginBottom: 12,
       }}>
         {/* En-tête profil */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ fontSize: 12, fontWeight: 800, color: THEME.textSecondary, textTransform: "uppercase", letterSpacing: 2 }}>
+        <div style={ { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+          <div style={ { display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={ { fontSize: 12, fontWeight: 800, color: THEME.textSecondary, textTransform: "uppercase", letterSpacing: 2 }}>
               🏢 Profil d'entreprise
             </span>
-            <span style={{
+            <span style={ {
               fontSize: 11, fontWeight: 800,
               color: ctx.color, background: ctx.color + "22",
               borderRadius: 4, padding: "2px 8px",
@@ -4615,7 +4580,7 @@ function FundamentalsPanel({ metrics, scores, sections, currency }: {
         </div>
 
         {/* Texte contextuel */}
-        <div style={{
+        <div style={ {
           fontSize: 12, color: THEME.textSecondary, lineHeight: 1.7,
           marginBottom: 16, padding: "10px 12px",
           background: THEME.bgCard, borderRadius: 8,
@@ -4625,31 +4590,31 @@ function FundamentalsPanel({ metrics, scores, sections, currency }: {
         </div>
 
         {/* Barres de score par groupe */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={ { display: "flex", flexDirection: "column", gap: 10 }}>
           {groups.map(g => {
             if (g.score == null) return null;
             const color = scoreColor(g.score);
             const pct   = (g.score / 10) * 100;
             return (
               <div key={g.key}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
-                  <span style={{ fontSize: 11, color: THEME.textSecondary, minWidth: 90 }}>{g.label}</span>
-                  <div style={{ flex: 1, height: 8, background: THEME.borderPanel, borderRadius: 4, overflow: "hidden" }}>
-                    <div style={{
+                <div style={ { display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+                  <span style={ { fontSize: 11, color: THEME.textSecondary, minWidth: 90 }}>{g.label}</span>
+                  <div style={ { flex: 1, height: 8, background: THEME.borderPanel, borderRadius: 4, overflow: "hidden" }}>
+                    <div style={ {
                       width: `${pct}%`, height: "100%",
                       background: color, borderRadius: 4,
                       transition: "width .5s ease",
                     }}/>
                   </div>
-                  <span style={{ fontSize: 12, fontWeight: 800, color, minWidth: 36, textAlign: "right",
+                  <span style={ { fontSize: 12, fontWeight: 800, color, minWidth: 36, textAlign: "right",
                                   fontFamily: "'IBM Plex Mono',monospace" }}>
                     {g.score}/10
                   </span>
-                  <span style={{ fontSize: 9, color: THEME.textMuted, minWidth: 28 }}>{g.weight}</span>
+                  <span style={ { fontSize: 9, color: THEME.textMuted, minWidth: 28 }}>{g.weight}</span>
                   {g.edu && <EduTooltip edu={g.edu} id={`funda-group-${g.key}`}/>}
                 </div>
                 {g.note && (
-                  <div style={{
+                  <div style={ {
                     fontSize: 10, color: THEME.textMuted, fontStyle: "italic",
                     paddingLeft: 100, lineHeight: 1.5, marginBottom: 2,
                   }}>
@@ -4663,10 +4628,10 @@ function FundamentalsPanel({ metrics, scores, sections, currency }: {
       </div>
 
       {/* Toggle mode expert */}
-      <div style={{ display: "flex", justifyContent: "center", marginBottom: expertMode ? 16 : 0 }}>
+      <div style={ { display: "flex", justifyContent: "center", marginBottom: expertMode ? 16 : 0 }}>
         <button
           onClick={() => setExpertMode(v => !v)}
-          style={{
+          style={ {
             background: expertMode ? THEME.borderMid : "transparent",
             border: `1px solid ${THEME.borderMid}`,
             borderRadius: 8, padding: "6px 18px",
@@ -4681,7 +4646,7 @@ function FundamentalsPanel({ metrics, scores, sections, currency }: {
 
       {/* Mode expert : tableau compact par groupe */}
       {expertMode && sections.map((sec: any) => (
-        <div key={sec.label} style={{ marginTop: 16 }}>
+        <div key={sec.label} style={ { marginTop: 16 }}>
           {/* Header groupe */}
           {(() => {
             const groupScore =
@@ -4692,24 +4657,24 @@ function FundamentalsPanel({ metrics, scores, sections, currency }: {
               null;
             const gColor = groupScore != null ? scoreColor(groupScore) : THEME.textMuted;
             return (
-              <div style={{
+              <div style={ {
                 display: "flex", alignItems: "center",
                 justifyContent: "space-between",
                 paddingBottom: 8,
                 borderBottom: `2px solid ${gColor}33`,
                 marginBottom: 6,
               }}>
-                <div style={{
+                <div style={ {
                   fontSize: 13, fontWeight: 800,
                   color: THEME.textPrimary,
                   display: "flex", alignItems: "center", gap: 8,
                 }}>
-                  <span style={{ fontSize: 15 }}>{sec.icon}</span>
-                  <span style={{ textTransform: "uppercase", letterSpacing: 1.5 }}>
+                  <span style={ { fontSize: 15 }}>{sec.icon}</span>
+                  <span style={ { textTransform: "uppercase", letterSpacing: 1.5 }}>
                     {sec.label}
                   </span>
                   {groupScore != null && (
-                    <span style={{
+                    <span style={ {
                       fontSize: 14, fontWeight: 900,
                       color: gColor,
                       fontFamily: "'IBM Plex Mono',monospace",
@@ -4720,7 +4685,7 @@ function FundamentalsPanel({ metrics, scores, sections, currency }: {
                     </span>
                   )}
                 </div>
-                <span style={{
+                <span style={ {
                   fontSize: 9, color: THEME.textMuted,
                   fontStyle: "italic",
                 }}>{sec.note}</span>
@@ -4730,7 +4695,7 @@ function FundamentalsPanel({ metrics, scores, sections, currency }: {
 
           {/* Avertissement secteur financier */}
           {sec.label === "Santé Financière" && metrics.isFinancial && (
-            <div style={{
+            <div style={ {
               fontSize: 10, color: THEME.textSecondary,
               marginBottom: 6, padding: "5px 10px",
               background: THEME.bgCard, borderRadius: 6,
@@ -4741,7 +4706,7 @@ function FundamentalsPanel({ metrics, scores, sections, currency }: {
           )}
 
           {/* Lignes métriques compactes */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+          <div style={ { display: "flex", flexDirection: "column", gap: 3 }}>
             {sec.cards.map((card: any, i: number) => {
               const s = card.s as number | null | undefined;
               const barColor = s == null ? THEME.borderMid
@@ -4750,7 +4715,7 @@ function FundamentalsPanel({ metrics, scores, sections, currency }: {
                 : THEME.scoreRed;
               const barWidth = s != null ? `${(s / 10) * 100}%` : "0%";
               return (
-                <div key={i} style={{
+                <div key={i} style={ {
                   display: "flex", alignItems: "center",
                   gap: 10, padding: "7px 10px",
                   background: i % 2 === 0 ? THEME.bgCard : THEME.bgCardAlt,
@@ -4758,12 +4723,12 @@ function FundamentalsPanel({ metrics, scores, sections, currency }: {
                   borderLeft: `3px solid ${s != null ? barColor : THEME.borderSubtle}`,
                 }}>
                   {/* Barre score inline */}
-                  <div style={{
+                  <div style={ {
                     width: 48, height: 4,
                     background: THEME.borderPanel,
                     borderRadius: 2, flexShrink: 0, overflow: "hidden",
                   }}>
-                    <div style={{
+                    <div style={ {
                       width: barWidth, height: "100%",
                       background: barColor, borderRadius: 2,
                       transition: "width .4s ease",
@@ -4771,7 +4736,7 @@ function FundamentalsPanel({ metrics, scores, sections, currency }: {
                   </div>
 
                   {/* Label */}
-                  <span style={{
+                  <span style={ {
                     fontSize: 11, color: THEME.textSecondary,
                     flex: 1, minWidth: 0,
                   }}>
@@ -4779,7 +4744,7 @@ function FundamentalsPanel({ metrics, scores, sections, currency }: {
                   </span>
 
                   {/* Valeur */}
-                  <span style={{
+                  <span style={ {
                     fontSize: 13, fontWeight: 800,
                     color: s != null ? barColor : THEME.textPrimary,
                     fontFamily: "'IBM Plex Mono',monospace",
@@ -4791,7 +4756,7 @@ function FundamentalsPanel({ metrics, scores, sections, currency }: {
 
                   {/* Badge score */}
                   {s != null && (
-                    <span style={{
+                    <span style={ {
                       fontSize: 10, fontWeight: 800,
                       color: barColor,
                       background: barColor + "22",
@@ -4934,10 +4899,10 @@ function MarketContextPanel({
     <Panel
       icon={cc.emoji}
       title="Contexte de Marché"
-      badge={{ label: typeLabel, color: cc.badge }}
+      badge={ { label: typeLabel, color: cc.badge }}
       badge2={subtypeLabel ? { label: subtypeLabel, color: cc.badge } : undefined}
       badge3={maturityEntry ? { label: maturityEntry.label, color: maturityEntry.color } : undefined}
-      rightValue={{ label: "Confiance", value: `${context.confidence}%`, color: cc.badge }}
+      rightValue={ { label: "Confiance", value: `${context.confidence}%`, color: cc.badge }}
       confidence={context.confidence}
       borderColor={cc.border}
       bgColor={cc.bg}
@@ -4945,23 +4910,23 @@ function MarketContextPanel({
     >
       <>
           {/* Détails — ADX / Structure / Divergence avec tooltips */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
+          <div style={ { display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
             {context.adx != null && (
-              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: THEME.bgCard, borderRadius: 8, fontSize: 11 }}>
-                <span style={{ color: THEME.textSecondary, minWidth: 34 }}>ADX</span>
-                <strong style={{ color: "#b0bec5", fontFamily: "'IBM Plex Mono',monospace" }}>{context.adx.toFixed(1)}</strong>
-                <span style={{ color: THEME.textSecondary, flex: 1 }}>— {adxDesc}</span>
+              <div style={ { display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: THEME.bgCard, borderRadius: 8, fontSize: 11 }}>
+                <span style={ { color: THEME.textSecondary, minWidth: 34 }}>ADX</span>
+                <strong style={ { color: "#b0bec5", fontFamily: "'IBM Plex Mono',monospace" }}>{context.adx.toFixed(1)}</strong>
+                <span style={ { color: THEME.textSecondary, flex: 1 }}>— {adxDesc}</span>
                 <EduTooltip edu={eduADX} id="ctx-adx"/>
               </div>
             )}
-            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: THEME.bgCard, borderRadius: 8, fontSize: 11 }}>
-              <span style={{ color: THEME.textSecondary, minWidth: 34 }}>Struct.</span>
-              <strong style={{ color: "#b0bec5", flex: 1 }}>{structLabel}</strong>
+            <div style={ { display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: THEME.bgCard, borderRadius: 8, fontSize: 11 }}>
+              <span style={ { color: THEME.textSecondary, minWidth: 34 }}>Struct.</span>
+              <strong style={ { color: "#b0bec5", flex: 1 }}>{structLabel}</strong>
               <EduTooltip edu={eduStructure} id="ctx-struct"/>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: THEME.bgCard, borderRadius: 8, fontSize: 11 }}>
-              <span style={{ color: THEME.textSecondary, minWidth: 34 }}>Div.</span>
-              <span style={{
+            <div style={ { display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: THEME.bgCard, borderRadius: 8, fontSize: 11 }}>
+              <span style={ { color: THEME.textSecondary, minWidth: 34 }}>Div.</span>
+              <span style={ {
                 flex: 1,
                 color: context.divergence.type === "bullish" ? THEME.scoreGreen
                       : context.divergence.type === "bearish" ? THEME.scoreRed
@@ -4977,7 +4942,7 @@ function MarketContextPanel({
 
           {/* Confirmation fondamentale */}
           {context.fundamentalConfirm && (
-            <div style={{
+            <div style={ {
               fontSize: 11, fontWeight: 700, marginBottom: 8,
               color: context.fundamentalConfirm === "confirms" ? THEME.scoreGreen : context.fundamentalConfirm === "warns" ? THEME.scoreRed : THEME.textSecondary,
             }}>
@@ -5006,7 +4971,7 @@ function MarketContextPanel({
               ? `${ctxLabel} détecté. ${modLabel}`
               : `${ctxLabel} détecté. Aucun ajustement fondamental significatif.`;
             return (
-              <div style={{ fontSize:11, color:THEME.textSecondary, lineHeight:1.7, marginTop:4, padding:"8px 12px", background:THEME.bgCard, borderRadius:8, borderLeft:`3px solid ${cc.border}55` }}>
+              <div style={ { fontSize:11, color:THEME.textSecondary, lineHeight:1.7, marginTop:4, padding:"8px 12px", background:THEME.bgCard, borderRadius:8, borderLeft:`3px solid ${cc.border}55` }}>
                 {phrase}
               </div>
             );
@@ -5061,11 +5026,11 @@ function MacroContextPanel({ macro, zone }: { macro: MacroContext | null | undef
     howToRead: "En dessous de 20 : marché calme, faible anxiété. Entre 20 et 30 : vigilance, volatilité au-dessus de la normale. Au-dessus de 30 : stress élevé, souvent associé à des crises ou corrections importantes. Record historique : 89.53 en mars 2020 (Covid).",
   };
   const vixSignal = macro.vix == null ? null
-    : macro.vix > SCORING_THRESHOLDS.vix.stress
+    : macro.vix > 30
       ? { label: "Peur élevée", color: "#ef4444",
           detail: `VIX à ${macro.vix} — marché en stress, volatilité forte. Opportunité ou piège selon le contexte.`,
           edu: { ...vixEduBase, example: `VIX à ${macro.vix} — stress élevé. Les options sont chères, le marché anticipe de fortes variations.` } }
-    : macro.vix > SCORING_THRESHOLDS.vix.elevated
+    : macro.vix > 20
       ? { label: "Vigilance", color: "#f59e0b",
           detail: `VIX à ${macro.vix} — volatilité au-dessus de la normale, prudence sur les entrées.`,
           edu: { ...vixEduBase, example: `VIX à ${macro.vix} — volatilité au-dessus de la normale. Prudence sur le timing des entrées.` } }
@@ -5134,23 +5099,23 @@ function MacroContextPanel({ macro, zone }: { macro: MacroContext | null | undef
     <Panel
       icon="🌍"
       title="Contexte Macro"
-      badge2={{ label: `Yahoo Finance · ${ZONE_TICKERS[effectiveZone]}`, color: THEME.textMuted }}
+      badge2={ { label: `Yahoo Finance · ${ZONE_TICKERS[effectiveZone]}`, color: THEME.textMuted }}
       borderColor={panelColor}
       defaultOpen={true}
     >
-      <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+      <div style={ { display:"flex", flexDirection:"column", gap:6 }}>
         {signals.map((s, i) => s && (
-          <div key={i} style={{
+          <div key={i} style={ {
             display:"flex", alignItems:"flex-start", gap:10,
             padding:"8px 10px", background:THEME.bgCard,
             borderRadius:8, borderLeft:`3px solid ${s.color}`,
           }}>
-            <div style={{ flex:1 }}>
-              <div style={{ fontSize:12, fontWeight:700, color:s.color }}>
+            <div style={ { flex:1 }}>
+              <div style={ { fontSize:12, fontWeight:700, color:s.color }}>
                 {s.label}
               </div>
               {s.detail && (
-                <div style={{ fontSize:11, color:THEME.textSecondary, marginTop:2, lineHeight:1.5 }}>
+                <div style={ { fontSize:11, color:THEME.textSecondary, marginTop:2, lineHeight:1.5 }}>
                   {s.detail}
                 </div>
               )}
@@ -5158,7 +5123,7 @@ function MacroContextPanel({ macro, zone }: { macro: MacroContext | null | undef
             {s.edu && <EduTooltip edu={s.edu} id={`macro-${i}`}/>}
           </div>
         ))}
-        <div style={{ fontSize:9, color:THEME.textMuted, marginTop:4 }}>
+        <div style={ { fontSize:9, color:THEME.textMuted, marginTop:4 }}>
           Source : Yahoo Finance · Données journalières
         </div>
       </div>
@@ -5225,40 +5190,40 @@ function SentimentPanel({ metrics, macro }: { metrics: any; macro?: MacroContext
     <Panel
       icon="🧠"
       title="Sentiment"
-      badge={{ label: `Smart Money · ${avgScore}/10`, color: panelColor }}
+      badge={ { label: `Smart Money · ${avgScore}/10`, color: panelColor }}
       borderColor={panelColor}
       defaultOpen={true}
     >
-      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={ { display: "flex", flexDirection: "column", gap: 12 }}>
 
         {/* Deux jauges */}
-        <div style={{
+        <div style={ {
           display: "flex", flexDirection: "row",
           justifyContent: "space-evenly", alignItems: "center",
           flexWrap: "wrap", gap: 16,
         }}>
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+          <div style={ { display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
             <ScoreGauge score={instResult.score}/>
-            <div style={{ display: "flex", alignItems: "baseline", gap: 3 }}>
-              <span style={{ fontSize: 36, fontWeight: 900, lineHeight: 1, color: scoreColor(instResult.score), fontFamily: "'IBM Plex Mono',monospace" }}>
+            <div style={ { display: "flex", alignItems: "baseline", gap: 3 }}>
+              <span style={ { fontSize: 36, fontWeight: 900, lineHeight: 1, color: scoreColor(instResult.score), fontFamily: "'IBM Plex Mono',monospace" }}>
                 {instResult.score}
               </span>
-              <span style={{ fontSize: 13, color: THEME.textSecondary, fontFamily: "'IBM Plex Mono',monospace" }}>/10</span>
+              <span style={ { fontSize: 13, color: THEME.textSecondary, fontFamily: "'IBM Plex Mono',monospace" }}>/10</span>
             </div>
-            <div style={{ fontSize: 9, color: THEME.textMuted, textTransform: "uppercase", letterSpacing: 1.5, display: "flex", alignItems: "center", gap: 4 }}>
+            <div style={ { fontSize: 9, color: THEME.textMuted, textTransform: "uppercase", letterSpacing: 1.5, display: "flex", alignItems: "center", gap: 4 }}>
               Smart Money
               <EduTooltip edu={eduInst} id="sent-inst"/>
             </div>
           </div>
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+          <div style={ { display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
             <ScoreGauge score={pressResult.score}/>
-            <div style={{ display: "flex", alignItems: "baseline", gap: 3 }}>
-              <span style={{ fontSize: 36, fontWeight: 900, lineHeight: 1, color: scoreColor(pressResult.score), fontFamily: "'IBM Plex Mono',monospace" }}>
+            <div style={ { display: "flex", alignItems: "baseline", gap: 3 }}>
+              <span style={ { fontSize: 36, fontWeight: 900, lineHeight: 1, color: scoreColor(pressResult.score), fontFamily: "'IBM Plex Mono',monospace" }}>
                 {pressResult.score}
               </span>
-              <span style={{ fontSize: 13, color: THEME.textSecondary, fontFamily: "'IBM Plex Mono',monospace" }}>/10</span>
+              <span style={ { fontSize: 13, color: THEME.textSecondary, fontFamily: "'IBM Plex Mono',monospace" }}>/10</span>
             </div>
-            <div style={{ fontSize: 9, color: THEME.textMuted, textTransform: "uppercase", letterSpacing: 1.5, display: "flex", alignItems: "center", gap: 4 }}>
+            <div style={ { fontSize: 9, color: THEME.textMuted, textTransform: "uppercase", letterSpacing: 1.5, display: "flex", alignItems: "center", gap: 4 }}>
               Pression Marché
               <EduTooltip edu={eduPress} id="sent-press"/>
             </div>
@@ -5268,15 +5233,15 @@ function SentimentPanel({ metrics, macro }: { metrics: any; macro?: MacroContext
         {/* Signaux Smart Money */}
         {instResult.signals.length > 0 && (
           <div>
-            <div style={{ fontSize: 9, color: THEME.textMuted, textTransform: "uppercase", letterSpacing: 1.5, fontWeight: 800, marginBottom: 6 }}>
+            <div style={ { fontSize: 9, color: THEME.textMuted, textTransform: "uppercase", letterSpacing: 1.5, fontWeight: 800, marginBottom: 6 }}>
               Détention & Positions
             </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+            <div style={ { display: "flex", flexDirection: "column", gap: 5 }}>
               {instResult.signals.map((s, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "7px 10px", background: THEME.bgCard, borderRadius: 7, borderLeft: `3px solid ${s.color}` }}>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: s.color }}>{s.label}</div>
-                    <div style={{ fontSize: 10, color: THEME.textSecondary, marginTop: 2, lineHeight: 1.5 }}>{s.detail}</div>
+                <div key={i} style={ { display: "flex", alignItems: "flex-start", gap: 10, padding: "7px 10px", background: THEME.bgCard, borderRadius: 7, borderLeft: `3px solid ${s.color}` }}>
+                  <div style={ { flex: 1 }}>
+                    <div style={ { fontSize: 11, fontWeight: 700, color: s.color }}>{s.label}</div>
+                    <div style={ { fontSize: 10, color: THEME.textSecondary, marginTop: 2, lineHeight: 1.5 }}>{s.detail}</div>
                   </div>
                   <EduTooltip edu={s.edu} id={`sent-inst-${i}`}/>
                 </div>
@@ -5288,15 +5253,15 @@ function SentimentPanel({ metrics, macro }: { metrics: any; macro?: MacroContext
         {/* Signaux Pression Marché */}
         {pressResult.signals.length > 0 && (
           <div>
-            <div style={{ fontSize: 9, color: THEME.textMuted, textTransform: "uppercase", letterSpacing: 1.5, fontWeight: 800, marginBottom: 6 }}>
+            <div style={ { fontSize: 9, color: THEME.textMuted, textTransform: "uppercase", letterSpacing: 1.5, fontWeight: 800, marginBottom: 6 }}>
               Dynamique de Marché
             </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+            <div style={ { display: "flex", flexDirection: "column", gap: 5 }}>
               {pressResult.signals.map((s, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "7px 10px", background: THEME.bgCard, borderRadius: 7, borderLeft: `3px solid ${s.color}` }}>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: s.color }}>{s.label}</div>
-                    <div style={{ fontSize: 10, color: THEME.textSecondary, marginTop: 2, lineHeight: 1.5 }}>{s.detail}</div>
+                <div key={i} style={ { display: "flex", alignItems: "flex-start", gap: 10, padding: "7px 10px", background: THEME.bgCard, borderRadius: 7, borderLeft: `3px solid ${s.color}` }}>
+                  <div style={ { flex: 1 }}>
+                    <div style={ { fontSize: 11, fontWeight: 700, color: s.color }}>{s.label}</div>
+                    <div style={ { fontSize: 10, color: THEME.textSecondary, marginTop: 2, lineHeight: 1.5 }}>{s.detail}</div>
                   </div>
                   <EduTooltip edu={s.edu} id={`sent-press-${i}`}/>
                 </div>
@@ -5305,7 +5270,7 @@ function SentimentPanel({ metrics, macro }: { metrics: any; macro?: MacroContext
           </div>
         )}
 
-        <div style={{ fontSize: 9, color: THEME.textMuted }}>
+        <div style={ { fontSize: 9, color: THEME.textMuted }}>
           Source : Yahoo Finance · Données de détention trimestrielles
         </div>
       </div>
@@ -5361,7 +5326,7 @@ function computeCryptoEntryRecommendation(
   };
 
   // W4 — RSI extrême + sommet de cycle ou funding élevé
-  if (rsiValue != null && rsiValue > SCORING_THRESHOLDS.rsi.overboughtXX && (sinewave?.cycleTurn === "peak" || (fundingRate != null && fundingRate > 0.0003))) return {
+  if (rsiValue != null && rsiValue > 78 && (sinewave?.cycleTurn === "peak" || (fundingRate != null && fundingRate > 0.0003))) return {
     type: "wait", icon: "⛔",
     title: "Zone de surachat extrême — attendre le prochain cycle",
     reasons: [
@@ -5372,7 +5337,7 @@ function computeCryptoEntryRecommendation(
   };
 
   // W5 — Extreme Greed + Death Cross
-  if (fg != null && fg > SCORING_THRESHOLDS.fearGreed.greedXX && hasDeathCross) return {
+  if (fg != null && fg > 85 && hasDeathCross) return {
     type: "wait", icon: "⛔",
     title: "Euphorie sur tendance baissière — risque élevé",
     reasons: [
@@ -5392,7 +5357,7 @@ function computeCryptoEntryRecommendation(
   };
 
   // C2 — Essoufflement haussier + RSI suracheté
-  if (context.subtype === "essoufflement" && context.structure.type === "bullish" && rsiValue != null && rsiValue > SCORING_THRESHOLDS.rsi.neutral_hi) return {
+  if (context.subtype === "essoufflement" && context.structure.type === "bullish" && rsiValue != null && rsiValue > 65) return {
     type: "caution", icon: "⚠️",
     title: "Tendance haussière qui s'essouffle — attendre le creux",
     reasons: [
@@ -5403,7 +5368,7 @@ function computeCryptoEntryRecommendation(
   };
 
   // C3 — Extreme Greed
-  if (fg != null && fg > SCORING_THRESHOLDS.fearGreed.greedX) return {
+  if (fg != null && fg > 80) return {
     type: "caution", icon: "⚠️",
     title: "Euphorie de marché — position réduite recommandée",
     reasons: [
@@ -5414,7 +5379,7 @@ function computeCryptoEntryRecommendation(
   };
 
   // C4 — Structure baissière + survente (rebond tactique)
-  if (context.structure.type === "bearish" && rsiValue != null && rsiValue < SCORING_THRESHOLDS.rsi.oversold) return {
+  if (context.structure.type === "bearish" && rsiValue != null && rsiValue < 30) return {
     type: "caution", icon: "⚠️",
     title: "Survente sur tendance baissière — rebond tactique possible",
     reasons: [
@@ -5425,7 +5390,7 @@ function computeCryptoEntryRecommendation(
   };
 
   // C5 — Extreme Fear
-  if (fg != null && fg < SCORING_THRESHOLDS.fearGreed.fearX) return {
+  if (fg != null && fg < 20) return {
     type: "caution", icon: "⚠️",
     title: "Peur extrême — opportunité tactique à confirmer",
     reasons: [
@@ -5455,11 +5420,11 @@ function computeCryptoEntryRecommendation(
   };
 
   // F1 — Configuration optimale
-  if (context.type === "tendance" && context.structure.type === "bullish" && hasGoldenCross && !hasDeathCross && (rsiValue == null || rsiValue < SCORING_THRESHOLDS.rsi.overbought)) {
+  if (context.type === "tendance" && context.structure.type === "bullish" && hasGoldenCross && !hasDeathCross && (rsiValue == null || rsiValue < 70)) {
     const reasons: string[] = ["Golden Cross actif — tendance haussière de fond confirmée"];
     if (sinewave?.cycleTurn === "trough") reasons.push("Creux de cycle Sinewave — timing optimal");
     if (momentum14 > 5) reasons.push(`Momentum positif +${momentum14.toFixed(1)}% sur 14 jours`);
-    if (fg != null && fg > SCORING_THRESHOLDS.fearGreed.fifty && fg < SCORING_THRESHOLDS.fearGreed.greed) reasons.push(`Fear & Greed ${fg}/100 — sentiment haussier modéré`);
+    if (fg != null && fg > 50 && fg < 75) reasons.push(`Fear & Greed ${fg}/100 — sentiment haussier modéré`);
     if (fundingRate != null && fundingRate > 0 && fundingRate < 0.0002) reasons.push("Funding rate légèrement positif — longs dominants sans euphorie");
     return {
       type: "favorable", icon: "✅",
@@ -5470,7 +5435,7 @@ function computeCryptoEntryRecommendation(
   }
 
   // F2 — Creux de cycle sur structure haussière
-  if (sinewave?.cycleTurn === "trough" && context.structure.type === "bullish" && (rsiValue == null || rsiValue < SCORING_THRESHOLDS.rsi.mid)) return {
+  if (sinewave?.cycleTurn === "trough" && context.structure.type === "bullish" && (rsiValue == null || rsiValue < 55)) return {
     type: "favorable", icon: "✅",
     title: "Creux de cycle en tendance haussière — fenêtre d'entrée",
     reasons: ["Sinewave signale un retournement cyclique haussier", "Structure de prix haussière (HH+HL) intacte"],
@@ -5478,7 +5443,7 @@ function computeCryptoEntryRecommendation(
   };
 
   // F3 — Survente extrême sur structure haussière
-  if (rsiValue != null && rsiValue < SCORING_THRESHOLDS.rsi.oversoldX && context.structure.type === "bullish" && !hasDeathCross) return {
+  if (rsiValue != null && rsiValue < 25 && context.structure.type === "bullish" && !hasDeathCross) return {
     type: "favorable", icon: "✅",
     title: "Survente extrême sur structure haussière — opportunité d'accumulation",
     reasons: [
@@ -5489,7 +5454,7 @@ function computeCryptoEntryRecommendation(
   };
 
   // F4 — Extreme Fear + Golden Cross
-  if (fg != null && fg < SCORING_THRESHOLDS.fearGreed.fear && hasGoldenCross) return {
+  if (fg != null && fg < 25 && hasGoldenCross) return {
     type: "favorable", icon: "✅",
     title: "Peur extrême sur tendance haussière — configuration rare",
     reasons: [
@@ -5554,7 +5519,7 @@ function computeEntryRecommendation(
   };
 
   // W4 — Macro très défavorable
-  if (macro && !macro.error && macro.vix != null && macro.vix > SCORING_THRESHOLDS.vix.extreme
+  if (macro && !macro.error && macro.vix != null && macro.vix > 35
       && macro.spreadCurve != null && macro.spreadCurve < 0) return {
     type: "wait", icon: "⛔",
     title: "Attendre normalisation du contexte macro",
@@ -5584,7 +5549,7 @@ function computeEntryRecommendation(
       && context.structure.type === "bullish") {
     const gVal = metrics.gValorisation as number;
     const reasons: string[] = [`Valorisation tendue (score ${gVal.toFixed(1)}/10) — prix déjà élevé`];
-    if (rsiValue != null && rsiValue < SCORING_THRESHOLDS.rsi.caution_lo)
+    if (rsiValue != null && rsiValue < 40)
       reasons.push(`RSI en zone de survente (${rsiValue}) — rebond technique possible mais entrée risquée`);
     if (sinewave?.cycleTurn === "trough")
       reasons.push("Creux de cycle détecté — signal positif mais valorisation limite l'upside");
@@ -5596,7 +5561,7 @@ function computeEntryRecommendation(
       "Correction de −15% ou plus depuis le sommet récent",
       `P/E revient sous ${peTarget}`,
     ];
-    if (rsiValue != null && rsiValue < SCORING_THRESHOLDS.rsi.caution_lo)
+    if (rsiValue != null && rsiValue < 40)
       triggers.push("Confirmation du rebond avec volume supérieur à la moyenne");
     if (sinewave?.dominantPeriod != null && sinewave.dominantPeriod > 100)
       triggers.push("Entrée fractionnée progressive envisageable si horizon > 3 ans, indépendamment du timing court terme");
@@ -5611,13 +5576,13 @@ function computeEntryRecommendation(
     if (hasDeathCross) reasons.push("Death Cross actif — tendance de fond baissière");
     else if (context.subtype === "essoufflement" && context.structure.type === "bullish")
       reasons.push("Tendance haussière qui s'essouffle — risque de pullback");
-    else if (rsiValue != null && rsiValue > SCORING_THRESHOLDS.rsi.neutral_hi) reasons.push("RSI en zone de surachat — entrée prématurée");
+    else if (rsiValue != null && rsiValue > 65) reasons.push("RSI en zone de surachat — entrée prématurée");
     else if (momentum14 < -8) reasons.push("Momentum négatif à court terme");
     else reasons.push("Timing technique défavorable");
     const triggers: string[] = [];
     if (hasGoldenCross) triggers.push("Pullback vers l'EMA50");
     if (sinewave) triggers.push("Creux de cycle Sinewave");
-    if (rsiValue != null && rsiValue > SCORING_THRESHOLDS.rsi.neutral_hi) triggers.push("RSI redescend sous 45");
+    if (rsiValue != null && rsiValue > 65) triggers.push("RSI redescend sous 45");
     if (hasDeathCross) triggers.push("Golden Cross");
     return { type: "caution", icon: "⚠️", title: "Qualité solide — attendre un meilleur timing", reasons, triggers };
   }
@@ -5724,12 +5689,12 @@ function computeEntryRecommendation(
   };
   // C5 — Macro modérément défavorable (après F1/F2/F3)
   if (macro && !macro.error && finalScore != null && finalScore >= 5
-      && ((macro.vix != null && macro.vix > SCORING_THRESHOLDS.vix.caution) || (macro.rate10y != null && macro.rate10y > 4.5))) {
+      && ((macro.vix != null && macro.vix > 25) || (macro.rate10y != null && macro.rate10y > 4.5))) {
     const reasons: string[] = [];
-    if (macro.vix != null && macro.vix > SCORING_THRESHOLDS.vix.caution) reasons.push(`VIX à ${macro.vix} — volatilité élevée`);
+    if (macro.vix != null && macro.vix > 25) reasons.push(`VIX à ${macro.vix} — volatilité élevée`);
     if (macro.rate10y != null && macro.rate10y > 4.5) reasons.push(`Taux à ${macro.rate10y}% — pression sur les valorisations`);
     const triggers: string[] = [];
-    if (macro.vix != null && macro.vix > SCORING_THRESHOLDS.vix.caution) triggers.push("VIX redescend sous 20");
+    if (macro.vix != null && macro.vix > 25) triggers.push("VIX redescend sous 20");
     if (macro.rate10y != null && macro.rate10y > 4.5) triggers.push("Taux 10 ans repassent sous 4%");
     return {
       type: "caution", icon: "⚠️",
@@ -5870,23 +5835,23 @@ function EntryRecommendationPanel({ rec }: { rec: EntryRecommendation }) {
     <Panel
       icon="🎯"
       title="Recommandation d'entrée"
-      badge={{ label: badgeLabel, color: palette.color }}
+      badge={ { label: badgeLabel, color: palette.color }}
       borderColor={palette.border}
       defaultOpen={true}
     >
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ fontSize: 20 }}>{rec.icon}</span>
-          <span style={{ fontSize: 14, fontWeight: 800, color: palette.color }}>{rec.title}</span>
+      <div style={ { display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={ { display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={ { fontSize: 20 }}>{rec.icon}</span>
+          <span style={ { fontSize: 14, fontWeight: 800, color: palette.color }}>{rec.title}</span>
         </div>
         {rec.reasons.length > 0 && (
-          <div style={{ background: THEME.bgCard, borderRadius: 8, padding: "10px 12px" }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: "#6b7280",
+          <div style={ { background: THEME.bgCard, borderRadius: 8, padding: "10px 12px" }}>
+            <div style={ { fontSize: 10, fontWeight: 700, color: "#6b7280",
                           textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 6 }}>
               Pourquoi
             </div>
             {rec.reasons.map((r, i) => (
-              <div key={i} style={{ fontSize: 11, color: THEME.textSecondary, lineHeight: 1.6, display:"flex", alignItems:"flex-start", gap:6 }}>
+              <div key={i} style={ { fontSize: 11, color: THEME.textSecondary, lineHeight: 1.6, display:"flex", alignItems:"flex-start", gap:6 }}>
                 <span>•</span>
                 <span>{r}</span>
                 {ENTRY_EDU[r] && <EduTooltip edu={ENTRY_EDU[r]} id={`entry-reason-${i}`}/>}
@@ -5895,13 +5860,13 @@ function EntryRecommendationPanel({ rec }: { rec: EntryRecommendation }) {
           </div>
         )}
         {rec.triggers.length > 0 && (
-          <div style={{ background: THEME.bgCard, borderRadius: 8, padding: "10px 12px" }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: "#6b7280",
+          <div style={ { background: THEME.bgCard, borderRadius: 8, padding: "10px 12px" }}>
+            <div style={ { fontSize: 10, fontWeight: 700, color: "#6b7280",
                           textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 6 }}>
               Surveiller
             </div>
             {rec.triggers.map((t, i) => (
-              <div key={i} style={{ fontSize: 11, color: THEME.textSecondary, lineHeight: 1.6, display:"flex", alignItems:"flex-start", gap:6 }}>
+              <div key={i} style={ { fontSize: 11, color: THEME.textSecondary, lineHeight: 1.6, display:"flex", alignItems:"flex-start", gap:6 }}>
                 <span>👁</span>
                 <span>{t}</span>
                 {ENTRY_EDU[t] && <EduTooltip edu={ENTRY_EDU[t]} id={`entry-trigger-${i}`}/>}
@@ -5909,7 +5874,7 @@ function EntryRecommendationPanel({ rec }: { rec: EntryRecommendation }) {
             ))}
           </div>
         )}
-        <div style={{ fontSize: 9, color: THEME.textMuted, fontStyle: "italic" }}>
+        <div style={ { fontSize: 9, color: THEME.textMuted, fontStyle: "italic" }}>
           Ces recommandations sont algorithmiques et ne constituent pas un conseil en investissement.
         </div>
       </div>
@@ -5958,7 +5923,6 @@ function useChartLoader(
 
   useEffect(() => {
     if (!ticker) return;
-    let cancelled = false;
     setChartLoading(true);
     setChartDataMap({});
     setChartDataUpper(null);
@@ -6015,7 +5979,6 @@ function useChartLoader(
         key:   k,
         label: assetType === "crypto" ? UT_CRYPTO_CONFIG[k]?.label ?? k : STOCK_UT_CONFIG[k]?.label ?? k,
       }));
-      if (cancelled) return;
       setAvailableUTs(available);
 
       // ── 3. Charger toutes les UT disponibles en parallèle ──────────
@@ -6049,14 +6012,12 @@ function useChartLoader(
       const results = await Promise.all(candidates.map(k => fetchUT(k)));
       const newMap: Record<UTKey, ChartSeries | null> = {};
       candidates.forEach((k, i) => { newMap[k] = results[i]; });
-      if (cancelled) return;
       setChartDataMap(newMap);
       chartDataMapRef.current = newMap;
 
       // ── 4. Charger upper timeframe (1W) si 1D disponible ──────────
       if (candidates.includes("1D")) {
         const upper = await fetchUT("1W");
-        if (cancelled) return;
         setChartDataUpper(upper);
       }
 
@@ -6089,17 +6050,11 @@ function useChartLoader(
         }
       }
       if (!candidates.includes(best)) best = candidates[0] ?? "1D";
-      if (newMap[best] === null) {
-        const nonNull = candidates.find(k => newMap[k] !== null);
-        if (nonNull) best = nonNull;
-      }
-      if (cancelled) return;
       setDefaultUT(best);
       setUt(best);
       onDefaultUTReady?.(best);
       setChartLoading(false);
     })();
-    return () => { cancelled = true; };
   }, [ticker, assetType, genesisDate]); // eslint-disable-line
 
   const firstAvailableKey = Object.keys(chartDataMap).find(k => chartDataMap[k] != null);
@@ -6152,7 +6107,7 @@ function StockView({ metrics, ticker, macro, zone, eurRate, activeTab = "resume"
     onUTNotify?.(u);
   }, [_handleUTChange]); // eslint-disable-line
 
-  useEffect(() => { onUTChange?.(handleUTChange); }, [handleUTChange]); // eslint-disable-line
+  useEffect(() => { onUTChange?.(handleUTChange); }); // eslint-disable-line
 
   const [showEur,      setShowEur]      = useState(false);
   const [descFr, setDescFr] = useState<string>("");
@@ -6466,21 +6421,21 @@ function StockView({ metrics, ticker, macro, zone, eurRate, activeTab = "resume"
   })();
 
   return (
-    <div style={{ animation:"fadeIn .4s ease" }}>
+    <div style={ { animation:"fadeIn .4s ease" }}>
 
       {/* ── HEADER ACTIF — toujours visible ── */}
-      <div style={{ marginBottom:20 }}>
-        <div style={{ fontSize:11, color:THEME.textMuted,
+      <div style={ { marginBottom:20 }}>
+        <div style={ { fontSize:11, color:THEME.textMuted,
           textTransform:"uppercase", letterSpacing:1.5, marginBottom:4 }}>
           {[exchange, sector, industry].filter(Boolean).join(" · ")}
         </div>
-        <div style={{ fontSize:22, fontWeight:800, color:THEME.textPrimary,
+        <div style={ { fontSize:22, fontWeight:800, color:THEME.textPrimary,
           marginBottom:8, lineHeight:1.3 }}>
           {name}<TypeBadge type={quoteType}/>
         </div>
-        <div style={{ display:"flex", alignItems:"baseline",
+        <div style={ { display:"flex", alignItems:"baseline",
           gap:12, flexWrap:"wrap" }}>
-          <span style={{ fontSize:34, fontWeight:900, color:THEME.accent,
+          <span style={ { fontSize:34, fontWeight:900, color:THEME.accent,
             fontFamily:"'IBM Plex Mono',monospace" }}>
             {showEur && eurRate != null && eurRate !== 1 && metrics.price != null
               ? `${(metrics.price * eurRate).toLocaleString("fr-FR",
@@ -6488,7 +6443,7 @@ function StockView({ metrics, ticker, macro, zone, eurRate, activeTab = "resume"
               : `${currency} ${fmt(price)}`}
           </span>
           {change1d != null && (
-            <span style={{ fontSize:15, fontWeight:700,
+            <span style={ { fontSize:15, fontWeight:700,
               color: change1d >= 0 ? THEME.scoreGreen : THEME.scoreRed }}>
               {change1d >= 0 ? "▲" : "▼"} {Math.abs(change1d*100).toFixed(2)}%
             </span>
@@ -6500,10 +6455,10 @@ function StockView({ metrics, ticker, macro, zone, eurRate, activeTab = "resume"
           ONGLET RÉSUMÉ
       ══════════════════════════════════════ */}
       {activeTab === "resume" && (
-        <div style={{ display:"flex", gap:24, alignItems:"flex-start", flexWrap:"wrap" }}>
+        <div style={ { display:"flex", gap:24, alignItems:"flex-start", flexWrap:"wrap" }}>
 
           {/* Colonne gauche — graphique */}
-          <div style={{ flex:"1 1 55%", minWidth:320 }}>
+          <div style={ { flex:"1 1 55%", minWidth:320 }}>
             <ChartBlock
               chartData={chartData}
               currency={currency}
@@ -6521,57 +6476,57 @@ function StockView({ metrics, ticker, macro, zone, eurRate, activeTab = "resume"
           </div>
 
           {/* Colonne droite — scores + verdict + recommandation */}
-          <div style={{ flex:"1 1 35%", minWidth:280,
+          <div style={ { flex:"1 1 35%", minWidth:280,
             display:"flex", flexDirection:"column", gap:12,
             position:"sticky", top:"72px" }}>
 
             {/* Carte verdict */}
             {v ? (
-              <div style={{
+              <div style={ {
                 background: v.color + "0f",
                 border: `1px solid ${v.color}33`,
                 borderRadius:14, padding:"18px 20px",
               }}>
                 {/* Jauges */}
-                <div style={{ display:"flex", justifyContent:"space-evenly",
+                <div style={ { display:"flex", justifyContent:"space-evenly",
                   marginBottom:14, gap:12,
                   flexWrap:"nowrap",
                   overflowX:"auto" }}>
                   {metrics?.globalScore != null && (
-                    <div style={{ display:"flex", flexDirection:"column",
+                    <div style={ { display:"flex", flexDirection:"column",
                       alignItems:"center", gap:4,
                       minWidth:120, maxWidth:160, flex:"1 1 120px" }}>
                       <ScoreGauge score={metrics.globalScore}/>
-                      <div style={{ display:"flex", alignItems:"baseline", gap:3 }}>
-                        <span style={{ fontSize:36, fontWeight:900,
+                      <div style={ { display:"flex", alignItems:"baseline", gap:3 }}>
+                        <span style={ { fontSize:36, fontWeight:900,
                           color:scoreColor(metrics.globalScore),
                           fontFamily:"'IBM Plex Mono',monospace" }}>
                           {metrics.globalScore}
                         </span>
-                        <span style={{ fontSize:12, color:THEME.textSecondary,
+                        <span style={ { fontSize:12, color:THEME.textSecondary,
                           fontFamily:"'IBM Plex Mono',monospace" }}>/10</span>
                       </div>
-                      <div style={{ fontSize:9, color:THEME.textMuted,
+                      <div style={ { fontSize:9, color:THEME.textMuted,
                         textTransform:"uppercase", letterSpacing:1.5 }}>
                         Fondamentaux
                       </div>
                     </div>
                   )}
                   {finalScore != null && (
-                    <div style={{ display:"flex", flexDirection:"column",
+                    <div style={ { display:"flex", flexDirection:"column",
                       alignItems:"center", gap:4,
                       minWidth:120, maxWidth:160, flex:"1 1 120px" }}>
                       <ScoreGauge score={finalScore}/>
-                      <div style={{ display:"flex", alignItems:"baseline", gap:3 }}>
-                        <span style={{ fontSize:36, fontWeight:900,
+                      <div style={ { display:"flex", alignItems:"baseline", gap:3 }}>
+                        <span style={ { fontSize:36, fontWeight:900,
                           color:scoreColor(finalScore),
                           fontFamily:"'IBM Plex Mono',monospace" }}>
                           {finalScore}
                         </span>
-                        <span style={{ fontSize:12, color:THEME.textSecondary,
+                        <span style={ { fontSize:12, color:THEME.textSecondary,
                           fontFamily:"'IBM Plex Mono',monospace" }}>/10</span>
                       </div>
-                      <div style={{ fontSize:9, color:THEME.textMuted,
+                      <div style={ { fontSize:9, color:THEME.textMuted,
                         textTransform:"uppercase", letterSpacing:1.5 }}>
                         Timing Entrée
                       </div>
@@ -6579,16 +6534,16 @@ function StockView({ metrics, ticker, macro, zone, eurRate, activeTab = "resume"
                   )}
                 </div>
                 {/* Verdict */}
-                <div style={{ fontSize:18, fontWeight:900,
+                <div style={ { fontSize:18, fontWeight:900,
                   color:v.color, marginBottom:4 }}>
                   {v.emoji} {v.label}
                 </div>
-                <div style={{ fontSize:11, color:THEME.textSecondary,
+                <div style={ { fontSize:11, color:THEME.textSecondary,
                   lineHeight:1.4, marginBottom:12 }}>
                   {v.desc}
                 </div>
                 {/* Mini-jauges */}
-                <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+                <div style={ { display:"flex", gap:8, flexWrap:"wrap" }}>
                   <MiniGauge label="Valorisation" score={gValorisation} weight={0.40}/>
                   <MiniGauge label="Rentabilité"  score={gRentabilite}  weight={0.30}/>
                   <MiniGauge label="Santé"        score={gSante}        weight={0.20}/>
@@ -6596,17 +6551,17 @@ function StockView({ metrics, ticker, macro, zone, eurRate, activeTab = "resume"
                 </div>
               </div>
             ) : (
-              <div style={{
+              <div style={ {
                 background:THEME.bgHeader, border:`1px solid ${THEME.borderMid}`,
                 borderRadius:14, padding:"18px 20px",
               }}>
-                <div style={{ fontSize:18, fontWeight:900,
+                <div style={ { fontSize:18, fontWeight:900,
                   color:THEME.textSecondary, marginBottom:6 }}>
                   {["INDEX","FUTURE","BOND","MUTUALFUND"].indexOf((quoteType||"").toUpperCase()) !== -1
                     ? "Analyse technique uniquement"
                     : "Données insuffisantes"}
                 </div>
-                <div style={{ fontSize:11, color:THEME.textMuted, lineHeight:1.6 }}>
+                <div style={ { fontSize:11, color:THEME.textMuted, lineHeight:1.6 }}>
                   {quoteType === "INDEX"      ? "Les ratios PE / PB / ROE ne s'appliquent pas aux indices de marché." :
                    quoteType === "FUTURE"     ? "Les contrats à terme n'ont pas de fondamentaux d'entreprise." :
                    quoteType === "BOND"       ? "Les obligations se lisent par le taux et la maturité, pas par le PE." :
@@ -6637,7 +6592,7 @@ function StockView({ metrics, ticker, macro, zone, eurRate, activeTab = "resume"
           ONGLET TECHNIQUE
       ══════════════════════════════════════ */}
       {activeTab === "technique" && (
-        <div style={{ display:"flex", flexDirection:"column", gap:0 }}>
+        <div style={ { display:"flex", flexDirection:"column", gap:0 }}>
           {marketCtx && finalScoreResult && (
             <MarketContextPanel
               context={finalScoreResult.context}
@@ -6665,46 +6620,46 @@ function StockView({ metrics, ticker, macro, zone, eurRate, activeTab = "resume"
           ONGLET FONDAMENTAUX
       ══════════════════════════════════════ */}
       {activeTab === "fondamentaux" && (
-        <div style={{ display:"flex", flexDirection:"column", gap:0 }}>
+        <div style={ { display:"flex", flexDirection:"column", gap:0 }}>
           {descFr && (
-            <div style={{
+            <div style={ {
               background:THEME.bgPanel,
               border:`1px solid ${THEME.borderPanel}`,
               borderRadius:12, padding:"14px 18px", marginBottom:14,
             }}>
-              <div onClick={() => setDescOpen(o => !o)} style={{
+              <div onClick={() => setDescOpen(o => !o)} style={ {
                 display:"flex", alignItems:"center",
                 justifyContent:"space-between",
                 cursor:"pointer", marginBottom: descOpen ? 10 : 0,
               }}>
-                <span style={{ fontSize:12, fontWeight:800,
+                <span style={ { fontSize:12, fontWeight:800,
                   color:THEME.textSecondary,
                   textTransform:"uppercase", letterSpacing:2 }}>
                   📖 À propos
                 </span>
-                <span style={{ fontSize:10, color:THEME.textMuted }}>
+                <span style={ { fontSize:10, color:THEME.textMuted }}>
                   {descOpen ? "▲" : "▼"}
                 </span>
               </div>
               {descOpen ? (
-                <div style={{ fontSize:12, color:THEME.textSecondary,
+                <div style={ { fontSize:12, color:THEME.textSecondary,
                   lineHeight:1.8,
                   borderLeft:`3px solid ${THEME.accent}`, paddingLeft:12 }}>
                   {descFr}
                   <div onClick={() => setDescOpen(false)}
-                    style={{ marginTop:8, fontSize:10,
+                    style={ { marginTop:8, fontSize:10,
                       color:THEME.textMuted, cursor:"pointer" }}>
                     ▲ Réduire
                   </div>
                 </div>
               ) : (
                 <div onClick={() => setDescOpen(true)}
-                  style={{ fontSize:12, color:THEME.textSecondary,
+                  style={ { fontSize:12, color:THEME.textSecondary,
                     lineHeight:1.7, cursor:"pointer",
                     borderLeft:`3px solid ${THEME.accent}`, paddingLeft:12 }}>
                   {descFr.slice(0,320)}
                   {descFr.length > 320 && (
-                    <span style={{ color:THEME.accent, fontWeight:700 }}>
+                    <span style={ { color:THEME.accent, fontWeight:700 }}>
                       {" "}… Lire la suite
                     </span>
                   )}
@@ -6731,14 +6686,14 @@ function StockView({ metrics, ticker, macro, zone, eurRate, activeTab = "resume"
           ONGLET MACRO & NEWS
       ══════════════════════════════════════ */}
       {activeTab === "macro" && (
-        <div style={{ display:"flex", flexDirection:"column", gap:0 }}>
+        <div style={ { display:"flex", flexDirection:"column", gap:0 }}>
           <MacroContextPanel macro={macro} zone={zone}/>
           <NewsPanel ticker={ticker} quoteType={metrics?.quoteType}
             shortName={metrics?.shortName ?? metrics?.longName}/>
         </div>
       )}
 
-      <div style={{ fontSize:10, color:THEME.textMuted,
+      <div style={ { fontSize:10, color:THEME.textMuted,
         textAlign:"right", marginTop:16 }}>
         Source : Yahoo Finance via proxy · Données indicatives
       </div>
@@ -6967,11 +6922,11 @@ function ProjectionPanel({ closes, highs, lows, volumes, currency, chartInterval
     <Panel
       icon="🔭"
       title="Projection & Confluence"
-      badge={{ label: confluence.label, color: panelColor }}
+      badge={ { label: confluence.label, color: panelColor }}
       borderColor={panelColor}
       defaultOpen={true}
     >
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={ { display: "flex", flexDirection: "column", gap: 10 }}>
 
         {/* ── Encadré "Ce que ça signifie pour toi" ── */}
         {(() => {
@@ -7040,29 +6995,29 @@ function ProjectionPanel({ closes, highs, lows, volumes, currency, chartInterval
           if (!title) return null;
 
           return (
-            <div style={{
+            <div style={ {
               padding: "14px 16px",
               background: bg,
               borderRadius: 10,
               border: `1px solid ${border}55`,
               borderLeft: `4px solid ${border}`,
             }}>
-              <div style={{
+              <div style={ {
                 fontSize: 10, fontWeight: 800, color: border,
                 textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 8,
               }}>
                 {emoji} Ce que ça signifie pour toi
               </div>
-              <div style={{
+              <div style={ {
                 fontSize: 13, fontWeight: 700, color, marginBottom: 8, lineHeight: 1.4,
               }}>
                 {title}
               </div>
-              <div style={{ fontSize: 12, color: THEME.textSecondary, lineHeight: 1.8 }}>
+              <div style={ { fontSize: 12, color: THEME.textSecondary, lineHeight: 1.8 }}>
                 {body}
               </div>
               {squeeze?.isSqueeze && (
-                <div style={{
+                <div style={ {
                   marginTop: 10, padding: "8px 12px",
                   background: "#1a1000", borderRadius: 8,
                   borderLeft: "3px solid #f59e0b",
@@ -7072,7 +7027,7 @@ function ProjectionPanel({ closes, highs, lows, volumes, currency, chartInterval
                 </div>
               )}
               {breakout.hasTarget && (
-                <div style={{
+                <div style={ {
                   marginTop: 10, padding: "8px 12px",
                   background: breakout.direction === "up" ? "#0a1e0f" : "#1e0808",
                   borderRadius: 8,
@@ -7093,37 +7048,37 @@ function ProjectionPanel({ closes, highs, lows, volumes, currency, chartInterval
         })()}
 
         {/* Phase de marché */}
-        <div style={{
+        <div style={ {
           display: "flex", alignItems: "flex-start", gap: 10,
           padding: "10px 12px", background: THEME.bgCard,
           borderRadius: 8, borderLeft: `3px solid ${phase.color}`,
         }}>
-          <span style={{ fontSize: 16, flexShrink: 0 }}>{phase.emoji}</span>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 12, fontWeight: 800, color: phase.color, marginBottom: 3 }}>
+          <span style={ { fontSize: 16, flexShrink: 0 }}>{phase.emoji}</span>
+          <div style={ { flex: 1 }}>
+            <div style={ { fontSize: 12, fontWeight: 800, color: phase.color, marginBottom: 3 }}>
               Phase de marché estimée : {phase.label}
             </div>
-            <div style={{ fontSize: 11, color: THEME.textSecondary, lineHeight: 1.5 }}>
+            <div style={ { fontSize: 11, color: THEME.textSecondary, lineHeight: 1.5 }}>
               {phase.description}
             </div>
-            <div style={{ fontSize: 9, color: THEME.textMuted, marginTop: 3 }}>
+            <div style={ { fontSize: 9, color: THEME.textMuted, marginTop: 3 }}>
               Confiance : {phase.confidence}%
             </div>
           </div>
         </div>
 
         {/* Score de confluence */}
-        <div style={{
+        <div style={ {
           padding: "10px 12px", background: THEME.bgCard,
           borderRadius: 8, borderLeft: `3px solid ${panelColor}`,
         }}>
-          <div style={{ fontSize: 10, fontWeight: 800, color: panelColor,
+          <div style={ { fontSize: 10, fontWeight: 800, color: panelColor,
             textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 8 }}>
             Confluence — {confluence.score}/4 conditions
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <div style={ { display: "flex", flexDirection: "column", gap: 4 }}>
             {confluence.details.map((d, i) => (
-              <div key={i} style={{ fontSize: 11, color: THEME.textSecondary, lineHeight: 1.5 }}>
+              <div key={i} style={ { fontSize: 11, color: THEME.textSecondary, lineHeight: 1.5 }}>
                 {d}
               </div>
             ))}
@@ -7132,25 +7087,25 @@ function ProjectionPanel({ closes, highs, lows, volumes, currency, chartInterval
 
         {/* Objectif de breakout */}
         {breakout.hasTarget && (
-          <div style={{
+          <div style={ {
             padding: "10px 12px", background: THEME.bgCard,
             borderRadius: 8,
             borderLeft: `3px solid ${breakout.direction === "up" ? "#22c55e" : "#ef4444"}`,
           }}>
-            <div style={{ fontSize: 10, fontWeight: 800,
+            <div style={ { fontSize: 10, fontWeight: 800,
               color: breakout.direction === "up" ? "#22c55e" : "#ef4444",
               textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 4 }}>
               {breakout.direction === "up" ? "📈" : "📉"} Objectif potentiel indicatif
             </div>
-            <div style={{ fontSize: 13, fontWeight: 800, color: THEME.textPrimary,
+            <div style={ { fontSize: 13, fontWeight: 800, color: THEME.textPrimary,
               fontFamily: "'IBM Plex Mono',monospace", marginBottom: 4 }}>
               {breakout.targetPct != null && breakout.targetPct > 0 ? "+" : ""}
               {breakout.targetPct?.toFixed(1)}% · {currency} {breakout.targetPrice?.toFixed(2)}
             </div>
-            <div style={{ fontSize: 10, color: THEME.textMuted }}>
+            <div style={ { fontSize: 10, color: THEME.textMuted }}>
               {bougiesLabel(breakout.validBars)} · {breakout.barsElapsed} bougies écoulées depuis le breakout
             </div>
-            <div style={{ fontSize: 9, color: THEME.textMuted, marginTop: 4, fontStyle: "italic" }}>
+            <div style={ { fontSize: 9, color: THEME.textMuted, marginTop: 4, fontStyle: "italic" }}>
               ⚠️ Objectif indicatif uniquement — une target est invalidée après 30 bougies.
             </div>
           </div>
@@ -7158,18 +7113,18 @@ function ProjectionPanel({ closes, highs, lows, volumes, currency, chartInterval
 
         {/* Squeeze */}
         {squeeze?.isSqueeze && (
-          <div style={{
+          <div style={ {
             padding: "10px 12px", background: THEME.bgCard,
             borderRadius: 8, borderLeft: "3px solid #f59e0b",
           }}>
-            <div style={{ fontSize: 10, fontWeight: 800, color: "#f59e0b",
+            <div style={ { fontSize: 10, fontWeight: 800, color: "#f59e0b",
               textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 4 }}>
               ⚡ Compression de volatilité détectée
             </div>
-            <div style={{ fontSize: 11, color: THEME.textSecondary, lineHeight: 1.5 }}>
+            <div style={ { fontSize: 11, color: THEME.textSecondary, lineHeight: 1.5 }}>
               {squeeze.description}
             </div>
-            <div style={{ fontSize: 9, color: THEME.textMuted, marginTop: 3 }}>
+            <div style={ { fontSize: 9, color: THEME.textMuted, marginTop: 3 }}>
               Intensité : {squeeze.intensity === "high" ? "extrême" : squeeze.intensity === "medium" ? "forte" : "modérée"} · ATR ratio : {squeeze.atrRatio}
             </div>
           </div>
@@ -7178,27 +7133,27 @@ function ProjectionPanel({ closes, highs, lows, volumes, currency, chartInterval
 
         {/* Phase cyclique */}
         {cycle != null && (
-          <div style={{
+          <div style={ {
             padding: "10px 12px", background: THEME.bgCard,
             borderRadius: 8, borderLeft: "3px solid #a78bfa",
           }}>
-            <div style={{ fontSize: 10, fontWeight: 800, color: "#a78bfa",
+            <div style={ { fontSize: 10, fontWeight: 800, color: "#a78bfa",
               textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 4 }}>
               〰️ Phase cyclique estimée
             </div>
-            <div style={{ fontSize: 11, color: THEME.textSecondary, lineHeight: 1.5 }}>
+            <div style={ { fontSize: 11, color: THEME.textSecondary, lineHeight: 1.5 }}>
               {cycle.description}
             </div>
-            <div style={{ fontSize: 11, color: "#a78bfa", marginTop: 4, fontWeight: 600 }}>
+            <div style={ { fontSize: 11, color: "#a78bfa", marginTop: 4, fontWeight: 600 }}>
               {bougiesLabel(cycle.bougiesEstimated)}
             </div>
-            <div style={{ fontSize: 9, color: THEME.textMuted, marginTop: 3, fontStyle: "italic" }}>
+            <div style={ { fontSize: 9, color: THEME.textMuted, marginTop: 3, fontStyle: "italic" }}>
               Approximation via RSI — marge d'erreur ±30%. Ne pas utiliser seul comme signal d'entrée.
             </div>
           </div>
         )}
 
-        <div style={{ fontSize: 9, color: THEME.textMuted, fontStyle: "italic" }}>
+        <div style={ { fontSize: 9, color: THEME.textMuted, fontStyle: "italic" }}>
           Ces projections sont algorithmiques et indicatives. Elles ne constituent pas un conseil en investissement.
         </div>
 
@@ -7231,18 +7186,18 @@ function NewsPanel({ ticker, quoteType, shortName }: { ticker: string; quoteType
     <Panel
       icon="📰"
       title="Actualités"
-      badge2={{ label: `${sourceLabel} · ${news.length} article${news.length > 1 ? "s" : ""}`, color: THEME.textMuted }}
+      badge2={ { label: `${sourceLabel} · ${news.length} article${news.length > 1 ? "s" : ""}`, color: THEME.textMuted }}
       borderColor={THEME.borderPanel}
       defaultOpen={false}
     >
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={ { display: "flex", flexDirection: "column", gap: 8 }}>
         {news.map((n, i) => (
           <a
             key={i}
             href={n.url}
             target="_blank"
             rel="noopener noreferrer"
-            style={{
+            style={ {
               display: "flex", alignItems: "flex-start",
               gap: 10, padding: "10px 12px",
               background: THEME.bgCard,
@@ -7254,9 +7209,9 @@ function NewsPanel({ ticker, quoteType, shortName }: { ticker: string; quoteType
             onMouseEnter={e => (e.currentTarget.style.borderLeftColor = THEME.accent)}
             onMouseLeave={e => (e.currentTarget.style.borderLeftColor = THEME.borderMid)}
           >
-            <span style={{ fontSize: 14, flexShrink: 0, marginTop: 1 }}>📄</span>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{
+            <span style={ { fontSize: 14, flexShrink: 0, marginTop: 1 }}>📄</span>
+            <div style={ { flex: 1, minWidth: 0 }}>
+              <div style={ {
                 fontSize: 12, fontWeight: 700,
                 color: THEME.textPrimary, lineHeight: 1.5, marginBottom: 4,
                 overflow: "hidden", display: "-webkit-box",
@@ -7264,16 +7219,16 @@ function NewsPanel({ ticker, quoteType, shortName }: { ticker: string; quoteType
               }}>
                 {n.title}
               </div>
-              <div style={{ fontSize: 10, color: THEME.textMuted }}>
-                <span style={{ color: THEME.textSecondary, fontWeight: 600 }}>{n.source}</span>
+              <div style={ { fontSize: 10, color: THEME.textMuted }}>
+                <span style={ { color: THEME.textSecondary, fontWeight: 600 }}>{n.source}</span>
                 {" · "}
                 <span>{n.date}</span>
               </div>
             </div>
-            <span style={{ fontSize: 10, color: THEME.textMuted, flexShrink: 0, marginTop: 2 }}>↗</span>
+            <span style={ { fontSize: 10, color: THEME.textMuted, flexShrink: 0, marginTop: 2 }}>↗</span>
           </a>
         ))}
-        <div style={{ fontSize: 9, color: THEME.textMuted, marginTop: 4 }}>
+        <div style={ { fontSize: 9, color: THEME.textMuted, marginTop: 4 }}>
           Source : {sourceLabel} · Actualités en temps réel
         </div>
       </div>
@@ -7353,7 +7308,7 @@ function computeCryptoSentimentSynthesis(
 
   // ── MATRICE DE LECTURE CROISÉE ────────────────────────────
   // Priorité 1 : Peur extrême + longs piégés + funding négatif → capitulation
-  if (fg != null && fg <= SCORING_THRESHOLDS.fearGreed.extremeFear && ls != null && ls > 1.8 && fr != null && fr < -0.0001) {
+  if (fg != null && fg <= 15 && ls != null && ls > 1.8 && fr != null && fr < -0.0001) {
     return {
       emoji: "💥", color: "#ef4444", bg: "#1e0808", border: "#ef4444",
       badge: "Risque de cascade",
@@ -7363,7 +7318,7 @@ function computeCryptoSentimentSynthesis(
   }
 
   // Priorité 2 : Peur extrême + shorts dominants + funding négatif → rebond violent possible
-  if (fg != null && fg <= SCORING_THRESHOLDS.fearGreed.extremeFear && ls != null && ls < 0.7 && fr != null && fr < -0.0002) {
+  if (fg != null && fg <= 15 && ls != null && ls < 0.7 && fr != null && fr < -0.0002) {
     return {
       emoji: "🌀", color: "#22c55e", bg: "#0a1e0f", border: "#22c55e",
       badge: "Short squeeze potentiel",
@@ -7373,7 +7328,7 @@ function computeCryptoSentimentSynthesis(
   }
 
   // Priorité 3 : Euphorie + longs dominants + funding positif → retournement imminent
-  if (fg != null && fg >= SCORING_THRESHOLDS.fearGreed.greedX && ls != null && ls > 2.0 && fr != null && fr > 0.0003) {
+  if (fg != null && fg >= 80 && ls != null && ls > 2.0 && fr != null && fr > 0.0003) {
     return {
       emoji: "⚠️", color: "#ef4444", bg: "#1e0808", border: "#ef4444",
       badge: "Euphorie dangereuse",
@@ -7383,7 +7338,7 @@ function computeCryptoSentimentSynthesis(
   }
 
   // Priorité 4 : Greed élevé + longs dominants mais funding modéré → prudence
-  if (fg != null && fg >= SCORING_THRESHOLDS.fearGreed.greedMod && ls != null && ls > 1.6) {
+  if (fg != null && fg >= 70 && ls != null && ls > 1.6) {
     return {
       emoji: "🔶", color: "#f59e0b", bg: "#1a1000", border: "#f59e0b",
       badge: "Optimisme excessif",
@@ -7393,7 +7348,7 @@ function computeCryptoSentimentSynthesis(
   }
 
   // Priorité 5 : Fear modéré + shorts dominants + funding négatif → opportunité en construction
-  if (fg != null && fg <= SCORING_THRESHOLDS.fearGreed.fearMod && ls != null && ls < 0.85 && fr != null && fr < 0) {
+  if (fg != null && fg <= 30 && ls != null && ls < 0.85 && fr != null && fr < 0) {
     return {
       emoji: "🔍", color: "#60a5fa", bg: "#111d30", border: "#60a5fa",
       badge: "Zone d'accumulation",
@@ -7403,7 +7358,7 @@ function computeCryptoSentimentSynthesis(
   }
 
   // Priorité 6 : Neutralité — signaux contradictoires ou peu lisibles
-  if (fg != null && fg >= SCORING_THRESHOLDS.fearGreed.neutral_lo && fg <= SCORING_THRESHOLDS.fearGreed.neutral_hi && ls != null && ls >= 0.9 && ls <= 1.3) {
+  if (fg != null && fg >= 40 && fg <= 60 && ls != null && ls >= 0.9 && ls <= 1.3) {
     return {
       emoji: "⚖️", color: "#94a3b8", bg: THEME.bgCard, border: THEME.borderMid,
       badge: "Sentiment neutre",
@@ -7414,14 +7369,14 @@ function computeCryptoSentimentSynthesis(
 
   // Fallback : au moins Fear & Greed disponible
   if (fg != null) {
-    const fgColor = fg <= SCORING_THRESHOLDS.fearGreed.fear ? "#ef4444" : fg <= SCORING_THRESHOLDS.fearGreed.neutral_lo ? "#f97316" : fg <= SCORING_THRESHOLDS.fearGreed.neutral_hi ? "#94a3b8" : fg <= SCORING_THRESHOLDS.fearGreed.greed ? "#f59e0b" : "#22c55e";
-    const fgDesc  = fg <= SCORING_THRESHOLDS.fearGreed.fear ? "Peur extrême" : fg <= SCORING_THRESHOLDS.fearGreed.neutral_lo ? "Peur" : fg <= SCORING_THRESHOLDS.fearGreed.neutral_hi ? "Neutre" : fg <= SCORING_THRESHOLDS.fearGreed.greed ? "Greed" : "Extreme Greed";
+    const fgColor = fg <= 25 ? "#ef4444" : fg <= 45 ? "#f97316" : fg <= 55 ? "#94a3b8" : fg <= 75 ? "#f59e0b" : "#22c55e";
+    const fgDesc  = fg <= 25 ? "Peur extrême" : fg <= 45 ? "Peur" : fg <= 55 ? "Neutre" : fg <= 75 ? "Greed" : "Extreme Greed";
     return {
-      emoji: fg <= SCORING_THRESHOLDS.fearGreed.neutral_lo ? "😨" : fg <= SCORING_THRESHOLDS.fearGreed.neutral_hi ? "😐" : "😄",
+      emoji: fg <= 45 ? "😨" : fg <= 55 ? "😐" : "😄",
       color: fgColor, bg: THEME.bgCard, border: fgColor,
       badge: fgDesc,
       title: `Fear & Greed à ${fg}/100 — ${fgDesc}`,
-      body: `${ls != null ? `Ratio Long/Short : ${ls.toFixed(2)} (${lp?.toFixed(1) ?? "—"}% longs). ` : ""}${fr != null ? `Funding : ${fr > 0 ? "+" : ""}${(fr*100).toFixed(4)}%. ` : ""}${fg <= SCORING_THRESHOLDS.fearGreed.fear ? "Le marché est dans un état de peur prononcée — surveiller un signal technique de retournement pour envisager une entrée." : fg >= SCORING_THRESHOLDS.fearGreed.greed ? "L'optimisme est élevé — la marge de sécurité pour entrer est réduite." : "Sentiment intermédiaire — croiser avec l'analyse technique."}`,
+      body: `${ls != null ? `Ratio Long/Short : ${ls.toFixed(2)} (${lp?.toFixed(1) ?? "—"}% longs). ` : ""}${fr != null ? `Funding : ${fr > 0 ? "+" : ""}${(fr*100).toFixed(4)}%. ` : ""}${fg <= 25 ? "Le marché est dans un état de peur prononcée — surveiller un signal technique de retournement pour envisager une entrée." : fg >= 75 ? "L'optimisme est élevé — la marge de sécurité pour entrer est réduite." : "Sentiment intermédiaire — croiser avec l'analyse technique."}`,
     };
   }
 
@@ -7494,7 +7449,7 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
     onUTNotify?.(u);
   }, [_handleUTChange]); // eslint-disable-line
 
-  useEffect(() => { onUTChange?.(handleUTChange); }, [handleUTChange]); // eslint-disable-line
+  useEffect(() => { onUTChange?.(handleUTChange); }); // eslint-disable-line
 
   // allChartData = candleData (alias pour compatibilité avec les calculs techniques existants)
   const allChartData = candleData;
@@ -7622,24 +7577,24 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
     v == null ? "—" : `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
 
   return (
-    <div style={{ animation:"fadeIn .4s ease" }}>
+    <div style={ { animation:"fadeIn .4s ease" }}>
 
       {/* ── HEADER — toujours visible ── */}
-      <div style={{ display:"flex", alignItems:"flex-start", gap:16, marginBottom:16, flexWrap:"wrap" }}>
-        {data.image?.small && <img src={data.image.small} alt="" style={{ width:52, height:52, borderRadius:"50%", marginTop:4 }}/>}
-        <div style={{ flex:1 }}>
-          <div style={{ fontSize:22, fontWeight:800, color:THEME.textPrimary, marginBottom:6 }}>
+      <div style={ { display:"flex", alignItems:"flex-start", gap:16, marginBottom:16, flexWrap:"wrap" }}>
+        {data.image?.small && <img src={data.image.small} alt="" style={ { width:52, height:52, borderRadius:"50%", marginTop:4 }}/>}
+        <div style={ { flex:1 }}>
+          <div style={ { fontSize:22, fontWeight:800, color:THEME.textPrimary, marginBottom:6 }}>
             {data.name}<TypeBadge type="CRYPTOCURRENCY"/>
-            <span style={{ color:"#445", fontSize:13, fontWeight:400, marginLeft:8 }}>{data.symbol?.toUpperCase()}</span>
+            <span style={ { color:"#445", fontSize:13, fontWeight:400, marginLeft:8 }}>{data.symbol?.toUpperCase()}</span>
           </div>
-          <div style={{ display:"flex", alignItems:"baseline", gap:14, flexWrap:"wrap" }}>
-            <span style={{ fontSize:34, fontWeight:900, color:THEME.accent, fontFamily:"'IBM Plex Mono',monospace" }}>
+          <div style={ { display:"flex", alignItems:"baseline", gap:14, flexWrap:"wrap" }}>
+            <span style={ { fontSize:34, fontWeight:900, color:THEME.accent, fontFamily:"'IBM Plex Mono',monospace" }}>
               {showEur && priceEur != null ? `${fmt(priceEur)} €` : `$${fmt(price)}`}
             </span>
             {priceEur != null && (
               <button
                 onClick={() => setShowEur(v => !v)}
-                style={{
+                style={ {
                   fontSize:10, padding:"3px 9px", borderRadius:6,
                   border:`1px solid ${showEur ? THEME.accent : THEME.scoreAmber}`,
                   background: showEur ? THEME.accent : THEME.scoreAmber + "22",
@@ -7649,12 +7604,12 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
                 }}
               >{showEur ? "↩ USD" : "≈ EUR"}</button>
             )}
-            <span style={{ fontSize:14, fontWeight:700, color: up24 ? THEME.scoreGreen : THEME.scoreRed }}>
+            <span style={ { fontSize:14, fontWeight:700, color: up24 ? THEME.scoreGreen : THEME.scoreRed }}>
               {up24 ? "▲" : "▼"} {Math.abs(chg24h ?? 0).toFixed(2)}% 24h
             </span>
-            {chg7d  != null && <span style={{ fontSize:12, color:pctColor(chg7d)  }}>{chg7d  >= 0 ? "▲" : "▼"} {Math.abs(chg7d ).toFixed(2)}% 7j</span>}
-            {chg30d != null && <span style={{ fontSize:12, color:pctColor(chg30d) }}>{chg30d >= 0 ? "▲" : "▼"} {Math.abs(chg30d).toFixed(2)}% 30j</span>}
-            {chg1y  != null && <span style={{ fontSize:12, color:pctColor(chg1y)  }}>{chg1y  >= 0 ? "▲" : "▼"} {Math.abs(chg1y ).toFixed(2)}% 1an</span>}
+            {chg7d  != null && <span style={ { fontSize:12, color:pctColor(chg7d)  }}>{chg7d  >= 0 ? "▲" : "▼"} {Math.abs(chg7d ).toFixed(2)}% 7j</span>}
+            {chg30d != null && <span style={ { fontSize:12, color:pctColor(chg30d) }}>{chg30d >= 0 ? "▲" : "▼"} {Math.abs(chg30d).toFixed(2)}% 30j</span>}
+            {chg1y  != null && <span style={ { fontSize:12, color:pctColor(chg1y)  }}>{chg1y  >= 0 ? "▲" : "▼"} {Math.abs(chg1y ).toFixed(2)}% 1an</span>}
           </div>
         </div>
       </div>
@@ -7663,10 +7618,10 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
           ONGLET RÉSUMÉ
       ══════════════════════════════════════ */}
       {activeTab === "resume" && (
-        <div style={{ display:"flex", gap:24, alignItems:"flex-start", flexWrap:"wrap" }}>
+        <div style={ { display:"flex", gap:24, alignItems:"flex-start", flexWrap:"wrap" }}>
 
           {/* Colonne gauche — graphique */}
-          <div style={{ flex:"1 1 55%", minWidth:320 }}>
+          <div style={ { flex:"1 1 55%", minWidth:320 }}>
             <ChartBlock
               chartData={candleData ?? null}
               currency="USD"
@@ -7680,7 +7635,7 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
           </div>
 
           {/* Colonne droite — verdict + recommandation */}
-          <div style={{ flex:"1 1 35%", minWidth:280,
+          <div style={ { flex:"1 1 35%", minWidth:280,
             display:"flex", flexDirection:"column", gap:12,
             position:"sticky", top:"72px" }}>
             {allChartData && allChartData.closes.filter((v: number|null) => v != null).length > 20 && (() => {
@@ -7721,40 +7676,40 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
               if (!v) return null;
               return (
                 <>
-                  <div style={{
+                  <div style={ {
                     background: v.color+"0f",
                     border:`1px solid ${v.color}33`,
                     borderRadius:14, padding:"18px 20px",
                   }}>
-                    <div style={{ display:"flex", justifyContent:"center",
+                    <div style={ { display:"flex", justifyContent:"center",
                       marginBottom:14 }}>
-                      <div style={{ display:"flex", flexDirection:"column",
+                      <div style={ { display:"flex", flexDirection:"column",
                         alignItems:"center", gap:4 }}>
                         <ScoreGauge score={score}/>
-                        <div style={{ display:"flex", alignItems:"baseline", gap:3 }}>
-                          <span style={{ fontSize:36, fontWeight:900,
+                        <div style={ { display:"flex", alignItems:"baseline", gap:3 }}>
+                          <span style={ { fontSize:36, fontWeight:900,
                             color:scoreColor(score),
                             fontFamily:"'IBM Plex Mono',monospace" }}>
                             {score}
                           </span>
-                          <span style={{ fontSize:12, color:THEME.textSecondary,
+                          <span style={ { fontSize:12, color:THEME.textSecondary,
                             fontFamily:"'IBM Plex Mono',monospace" }}>/10</span>
                         </div>
-                        <div style={{ fontSize:9, color:THEME.textMuted,
+                        <div style={ { fontSize:9, color:THEME.textMuted,
                           textTransform:"uppercase", letterSpacing:1.5 }}>
                           Timing Technique
                         </div>
                       </div>
                     </div>
-                    <div style={{ fontSize:18, fontWeight:900,
+                    <div style={ { fontSize:18, fontWeight:900,
                       color:v.color, marginBottom:4 }}>
                       {v.emoji} {v.label}
                     </div>
-                    <div style={{ fontSize:11, color:THEME.textSecondary, lineHeight:1.4 }}>
+                    <div style={ { fontSize:11, color:THEME.textSecondary, lineHeight:1.4 }}>
                       {v.desc}
                     </div>
                     {upperBearish && (
-                      <div style={{ marginTop:10, padding:"8px 12px",
+                      <div style={ { marginTop:10, padding:"8px 12px",
                         background:"#1e0808",
                         border:`1px solid ${THEME.scoreRed}44`,
                         borderRadius:8, fontSize:10, color:THEME.scoreRed }}>
@@ -7804,9 +7759,9 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
           : finalScoreResult.score;
         const adjustedResult = { ...finalScoreResult, score: adjustedScore };
         return (
-          <div style={{ display:"flex", flexDirection:"column", gap:0 }}>
+          <div style={ { display:"flex", flexDirection:"column", gap:0 }}>
             {upperBearish && (
-              <div style={{ padding:"8px 14px", marginBottom:10,
+              <div style={ { padding:"8px 14px", marginBottom:10,
                 background:"#1e0808", border:`1px solid ${THEME.scoreRed}44`,
                 borderRadius:10, fontSize:11, color:THEME.scoreRed,
                 display:"flex", alignItems:"center", gap:8 }}>
@@ -7848,17 +7803,17 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
           ONGLET MARCHÉ
       ══════════════════════════════════════ */}
       {activeTab === "marche" && (
-        <div style={{ display:"flex", flexDirection:"column", gap:0 }}>
+        <div style={ { display:"flex", flexDirection:"column", gap:0 }}>
 
           {/* Description */}
           {descFr && (
-            <div style={{ background:THEME.bgPanel, border:`1px solid ${THEME.borderPanel}`,
+            <div style={ { background:THEME.bgPanel, border:`1px solid ${THEME.borderPanel}`,
               borderRadius:12, padding:"14px 18px", marginBottom:14 }}>
-              <div style={{ fontSize:12, fontWeight:800, color:THEME.textSecondary,
+              <div style={ { fontSize:12, fontWeight:800, color:THEME.textSecondary,
                 textTransform:"uppercase", letterSpacing:2, marginBottom:8 }}>
                 📖 À propos
               </div>
-              <div style={{ fontSize:12, color:THEME.textSecondary, lineHeight:1.8,
+              <div style={ { fontSize:12, color:THEME.textSecondary, lineHeight:1.8,
                 borderLeft:`3px solid ${THEME.accent}`, paddingLeft:12 }}>
                 {descFr.slice(0,600)}{descFr.length > 600 ? "…" : ""}
               </div>
@@ -7866,95 +7821,95 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
           )}
 
           {/* Grille métriques */}
-          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))", gap:10, marginBottom:14 }}>
+          <div style={ { display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))", gap:10, marginBottom:14 }}>
             {rank != null && (
-              <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
-                <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Rang CoinGecko</div>
-                <div style={{ fontSize:14, fontWeight:700, color:THEME.accent, fontFamily:"'IBM Plex Mono',monospace" }}>#{rank}</div>
-                {topPct != null && <div style={{ fontSize:9, color:THEME.textMuted, marginTop:2 }}>Top {topPct.toFixed(1)}%</div>}
+              <div style={ { background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
+                <div style={ { fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Rang CoinGecko</div>
+                <div style={ { fontSize:14, fontWeight:700, color:THEME.accent, fontFamily:"'IBM Plex Mono',monospace" }}>#{rank}</div>
+                {topPct != null && <div style={ { fontSize:9, color:THEME.textMuted, marginTop:2 }}>Top {topPct.toFixed(1)}%</div>}
               </div>
             )}
-            <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
-              <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Market Cap</div>
-              <div style={{ fontSize:14, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>${fmt(mktCap)}</div>
-              {btcDomRatio != null && <div style={{ fontSize:9, color:THEME.textMuted, marginTop:2 }}>{(btcDomRatio * 100).toFixed(3)}% du marché crypto total</div>}
+            <div style={ { background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
+              <div style={ { fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Market Cap</div>
+              <div style={ { fontSize:14, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>${fmt(mktCap)}</div>
+              {btcDomRatio != null && <div style={ { fontSize:9, color:THEME.textMuted, marginTop:2 }}>{(btcDomRatio * 100).toFixed(3)}% du marché crypto total</div>}
             </div>
-            <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
-              <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Volume 24h</div>
-              <div style={{ fontSize:14, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>${fmt(vol24h)}</div>
+            <div style={ { background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
+              <div style={ { fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Volume 24h</div>
+              <div style={ { fontSize:14, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>${fmt(vol24h)}</div>
               {volMktRatio != null && (
-                <div style={{ fontSize:9, color: volMktRatio > 0.05 ? THEME.scoreGreen : THEME.scoreAmber, marginTop:2 }}>
+                <div style={ { fontSize:9, color: volMktRatio > 0.05 ? THEME.scoreGreen : THEME.scoreAmber, marginTop:2 }}>
                   {(volMktRatio * 100).toFixed(1)}% de la capitalisation · {volMktRatio > 0.05 ? "Liquidité forte" : "Liquidité modérée"}
                 </div>
               )}
             </div>
-            <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
-              <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Offre circulante</div>
-              <div style={{ fontSize:14, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>{fmt(supply, 0)}</div>
+            <div style={ { background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
+              <div style={ { fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Offre circulante</div>
+              <div style={ { fontSize:14, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>{fmt(supply, 0)}</div>
               {maxSup != null && supply != null && (
-                <div style={{ fontSize:9, color:THEME.textMuted, marginTop:2 }}>{((supply / maxSup) * 100).toFixed(1)}% émis</div>
+                <div style={ { fontSize:9, color:THEME.textMuted, marginTop:2 }}>{((supply / maxSup) * 100).toFixed(1)}% émis</div>
               )}
             </div>
-            <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
-              <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Offre max</div>
-              <div style={{ fontSize:14, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>{maxSup ? fmt(maxSup, 0) : "∞"}</div>
+            <div style={ { background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
+              <div style={ { fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Offre max</div>
+              <div style={ { fontSize:14, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>{maxSup ? fmt(maxSup, 0) : "∞"}</div>
             </div>
-            <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
-              <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>ATH</div>
-              <div style={{ fontSize:14, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>{ath ? "$" + fmt(ath) : "—"}</div>
+            <div style={ { background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
+              <div style={ { fontSize:10, color:THEME.textMuted, marginBottom:3 }}>ATH</div>
+              <div style={ { fontSize:14, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>{ath ? "$" + fmt(ath) : "—"}</div>
             </div>
             {athPct != null && (
-              <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
-                <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Depuis ATH</div>
-                <div style={{ fontSize:14, fontWeight:700, fontFamily:"'IBM Plex Mono',monospace",
+              <div style={ { background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
+                <div style={ { fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Depuis ATH</div>
+                <div style={ { fontSize:14, fontWeight:700, fontFamily:"'IBM Plex Mono',monospace",
                   color: athPct > -5 ? THEME.scoreRed : athPct > -20 ? THEME.scoreAmber : THEME.scoreGreen
                 }}>{athPct.toFixed(1)}%</div>
-                <div style={{ fontSize:9, color:THEME.textMuted, marginTop:2 }}>
+                <div style={ { fontSize:9, color:THEME.textMuted, marginTop:2 }}>
                   {athPct > -5 ? "Proche ATH — attention" : athPct > -20 ? "Repli modéré" : "Décote significative"}
                 </div>
               </div>
             )}
             {chg1y != null && (
-              <div style={{ background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
-                <div style={{ fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Perf 1 an</div>
-                <div style={{ fontSize:14, fontWeight:700, color:pctColor(chg1y), fontFamily:"'IBM Plex Mono',monospace" }}>{pctLabel(chg1y)}</div>
+              <div style={ { background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"11px 14px" }}>
+                <div style={ { fontSize:10, color:THEME.textMuted, marginBottom:3 }}>Perf 1 an</div>
+                <div style={ { fontSize:14, fontWeight:700, color:pctColor(chg1y), fontFamily:"'IBM Plex Mono',monospace" }}>{pctLabel(chg1y)}</div>
               </div>
             )}
           </div>
 
           {/* Bandeau dominance marché global */}
           {cgGlobal != null && cgGlobal.totalMktCap > 0 && (
-            <div style={{ marginBottom:14, padding:"8px 14px", background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, display:"flex", flexWrap:"wrap", gap:8, alignItems:"center", fontSize:10, color:THEME.textMuted }}>
-              <span style={{ fontWeight:700, color:THEME.textSecondary }}>Marché global ·</span>
-              <span>BTC <span style={{ color:THEME.scoreAmber, fontWeight:700 }}>{cgGlobal.btc.toFixed(1)}%</span></span>
+            <div style={ { marginBottom:14, padding:"8px 14px", background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, display:"flex", flexWrap:"wrap", gap:8, alignItems:"center", fontSize:10, color:THEME.textMuted }}>
+              <span style={ { fontWeight:700, color:THEME.textSecondary }}>Marché global ·</span>
+              <span>BTC <span style={ { color:THEME.scoreAmber, fontWeight:700 }}>{cgGlobal.btc.toFixed(1)}%</span></span>
               <span>·</span>
-              <span>ETH <span style={{ color:THEME.textSecondary, fontWeight:700 }}>{cgGlobal.eth.toFixed(1)}%</span></span>
+              <span>ETH <span style={ { color:THEME.textSecondary, fontWeight:700 }}>{cgGlobal.eth.toFixed(1)}%</span></span>
               <span>·</span>
-              <span>Alts <span style={{ color:THEME.textSecondary, fontWeight:700 }}>{(100 - cgGlobal.btc - cgGlobal.eth).toFixed(1)}%</span></span>
+              <span>Alts <span style={ { color:THEME.textSecondary, fontWeight:700 }}>{(100 - cgGlobal.btc - cgGlobal.eth).toFixed(1)}%</span></span>
               <span>·</span>
-              <span>Cap totale <span style={{ color:THEME.textSecondary, fontWeight:700 }}>{fmtTvl(cgGlobal.totalMktCap)}</span></span>
+              <span>Cap totale <span style={ { color:THEME.textSecondary, fontWeight:700 }}>{fmtTvl(cgGlobal.totalMktCap)}</span></span>
             </div>
           )}
 
           {/* Position dans le marché */}
           {topPct != null && (
-            <div style={{ marginBottom:14, background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"12px 16px" }}>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8, flexWrap:"wrap", gap:6 }}>
-                <div style={{ fontSize:10, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5 }}>Position dans le marché</div>
-                <div style={{ fontSize:10, color:THEME.textSecondary }}>
+            <div style={ { marginBottom:14, background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"12px 16px" }}>
+              <div style={ { display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8, flexWrap:"wrap", gap:6 }}>
+                <div style={ { fontSize:10, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5 }}>Position dans le marché</div>
+                <div style={ { fontSize:10, color:THEME.textSecondary }}>
                   {rank != null && `Rang #${rank} · `}Top {topPct.toFixed(1)}% parmi ~{(cgGlobal?.active_cryptocurrencies ?? 15000).toLocaleString("fr-FR")} cryptos
                   {btcDomRatio != null && ` · ${(btcDomRatio * 100).toFixed(3)}% de la capitalisation totale`}
                 </div>
               </div>
-              <div style={{ height:6, borderRadius:3, background:"#1e2a3a", overflow:"hidden" }}>
-                <div style={{
+              <div style={ { height:6, borderRadius:3, background:"#1e2a3a", overflow:"hidden" }}>
+                <div style={ {
                   height:"100%", borderRadius:3,
                   width:`${Math.min(100, 101 - topPct)}%`,
                   background: topPct < 0.1 ? THEME.scoreGreen : topPct < 1 ? THEME.scoreAmber : THEME.scoreRed,
                   transition:"width .4s ease",
                 }}/>
               </div>
-              <div style={{ display:"flex", justifyContent:"space-between", marginTop:4, fontSize:8, color:THEME.textMuted }}>
+              <div style={ { display:"flex", justifyContent:"space-between", marginTop:4, fontSize:8, color:THEME.textMuted }}>
                 <span>Top 1 (Bitcoin)</span><span>Top 100</span><span>Top 1 000</span><span>Top {(cgGlobal?.active_cryptocurrencies ?? 15000).toLocaleString("fr-FR")}</span>
               </div>
             </div>
@@ -7962,14 +7917,14 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
 
           {/* Votes communauté */}
           {sentUp != null && sentDown != null && (
-            <div style={{ marginBottom:14, background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"12px 16px" }}>
-              <div style={{ fontSize:10, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:8 }}>Sentiment communauté (votes CoinGecko)</div>
-              <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-                <span style={{ fontSize:11, color:THEME.scoreGreen, fontWeight:700 }}>👍 {sentUp.toFixed(1)}%</span>
-                <div style={{ flex:1, height:8, borderRadius:4, background:THEME.scoreRed, overflow:"hidden" }}>
-                  <div style={{ height:"100%", width:`${sentUp}%`, background:THEME.scoreGreen, borderRadius:4, transition:"width .4s ease" }}/>
+            <div style={ { marginBottom:14, background:THEME.bgCardAlt, border:`1px solid ${THEME.borderMid}`, borderRadius:10, padding:"12px 16px" }}>
+              <div style={ { fontSize:10, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:8 }}>Sentiment communauté (votes CoinGecko)</div>
+              <div style={ { display:"flex", alignItems:"center", gap:10 }}>
+                <span style={ { fontSize:11, color:THEME.scoreGreen, fontWeight:700 }}>👍 {sentUp.toFixed(1)}%</span>
+                <div style={ { flex:1, height:8, borderRadius:4, background:THEME.scoreRed, overflow:"hidden" }}>
+                  <div style={ { height:"100%", width:`${sentUp}%`, background:THEME.scoreGreen, borderRadius:4, transition:"width .4s ease" }}/>
                 </div>
-                <span style={{ fontSize:11, color:THEME.scoreRed, fontWeight:700 }}>👎 {sentDown.toFixed(1)}%</span>
+                <span style={ { fontSize:11, color:THEME.scoreRed, fontWeight:700 }}>👎 {sentDown.toFixed(1)}%</span>
               </div>
             </div>
           )}
@@ -7977,34 +7932,34 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
           {/* Analyse technique rapide */}
           {(rangePos != null || range24Pos != null) && (
             <Panel icon="📐" title="Analyse technique rapide" borderColor={THEME.borderPanel} defaultOpen={true}>
-              <div style={{ display:"flex", flexDirection:"column", gap:18 }}>
+              <div style={ { display:"flex", flexDirection:"column", gap:18 }}>
                 {rangePos != null && ath != null && atlUsd != null && (
                   <div>
-                    <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6, fontSize:10, flexWrap:"wrap", gap:4 }}>
-                      <span style={{ color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1 }}>Position dans le range historique (ATL → ATH)</span>
-                      <span style={{ fontWeight:700, color: rangePos < 20 ? THEME.scoreGreen : rangePos > 80 ? THEME.scoreRed : THEME.scoreAmber }}>
+                    <div style={ { display:"flex", justifyContent:"space-between", marginBottom:6, fontSize:10, flexWrap:"wrap", gap:4 }}>
+                      <span style={ { color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1 }}>Position dans le range historique (ATL → ATH)</span>
+                      <span style={ { fontWeight:700, color: rangePos < 20 ? THEME.scoreGreen : rangePos > 80 ? THEME.scoreRed : THEME.scoreAmber }}>
                         {rangePos < 20 ? "Proche des plus bas" : rangePos > 80 ? "Proche des plus hauts" : "Milieu de range"} · {rangePos.toFixed(0)}%
                       </span>
                     </div>
-                    <div style={{ height:8, borderRadius:4, background:"#1e2a3a", overflow:"hidden" }}>
-                      <div style={{ height:"100%", borderRadius:4, transition:"width .4s ease", width:`${rangePos}%`,
+                    <div style={ { height:8, borderRadius:4, background:"#1e2a3a", overflow:"hidden" }}>
+                      <div style={ { height:"100%", borderRadius:4, transition:"width .4s ease", width:`${rangePos}%`,
                         background: rangePos < 20 ? THEME.scoreGreen : rangePos > 80 ? THEME.scoreRed : THEME.scoreAmber }}/>
                     </div>
-                    <div style={{ display:"flex", justifyContent:"space-between", marginTop:4, fontSize:9, color:THEME.textMuted }}>
+                    <div style={ { display:"flex", justifyContent:"space-between", marginTop:4, fontSize:9, color:THEME.textMuted }}>
                       <span>ATL ${fmt(atlUsd)}</span><span>ATH ${fmt(ath)}</span>
                     </div>
                   </div>
                 )}
                 {range24Pos != null && high24 != null && low24 != null && (
                   <div>
-                    <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6, fontSize:10, flexWrap:"wrap", gap:4 }}>
-                      <span style={{ color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1 }}>Position dans le range 24h</span>
-                      <span style={{ fontWeight:700, color:THEME.textSecondary }}>{range24Pos.toFixed(0)}% du range</span>
+                    <div style={ { display:"flex", justifyContent:"space-between", marginBottom:6, fontSize:10, flexWrap:"wrap", gap:4 }}>
+                      <span style={ { color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1 }}>Position dans le range 24h</span>
+                      <span style={ { fontWeight:700, color:THEME.textSecondary }}>{range24Pos.toFixed(0)}% du range</span>
                     </div>
-                    <div style={{ height:8, borderRadius:4, background:"#1e2a3a", overflow:"hidden" }}>
-                      <div style={{ height:"100%", borderRadius:4, width:`${range24Pos}%`, background:THEME.accent, transition:"width .4s ease" }}/>
+                    <div style={ { height:8, borderRadius:4, background:"#1e2a3a", overflow:"hidden" }}>
+                      <div style={ { height:"100%", borderRadius:4, width:`${range24Pos}%`, background:THEME.accent, transition:"width .4s ease" }}/>
                     </div>
-                    <div style={{ display:"flex", justifyContent:"space-between", marginTop:4, fontSize:9, color:THEME.textMuted }}>
+                    <div style={ { display:"flex", justifyContent:"space-between", marginTop:4, fontSize:9, color:THEME.textMuted }}>
                       <span>Bas 24h ${fmt(low24)}</span><span>Haut 24h ${fmt(high24)}</span>
                     </div>
                   </div>
@@ -8016,101 +7971,101 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
           {/* Sentiment Fear & Greed + Funding + Long/Short + OI */}
           {(fearGreed != null || funding != null) && (
             <Panel icon="🌡️" title="Sentiment de marché" borderColor={THEME.borderPanel} defaultOpen={true}>
-              <div style={{ display:"flex", flexWrap:"wrap", gap:24, alignItems:"flex-start" }}>
+              <div style={ { display:"flex", flexWrap:"wrap", gap:24, alignItems:"flex-start" }}>
                 {(() => {
                   const synth = computeCryptoSentimentSynthesis(fearGreed, longShort, funding, openInterest);
                   if (!synth) return null;
                   return (
-                    <div style={{ width:"100%", padding:"14px 16px", background:synth.bg,
+                    <div style={ { width:"100%", padding:"14px 16px", background:synth.bg,
                       borderRadius:10, border:`1px solid ${synth.border}55`,
                       borderLeft:`4px solid ${synth.border}`, marginBottom:4 }}>
-                      <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:8 }}>
-                        <span style={{ fontSize:18 }}>{synth.emoji}</span>
+                      <div style={ { display:"flex", alignItems:"center", gap:10, marginBottom:8 }}>
+                        <span style={ { fontSize:18 }}>{synth.emoji}</span>
                         <div>
-                          <span style={{ fontSize:10, fontWeight:800, color:synth.color,
+                          <span style={ { fontSize:10, fontWeight:800, color:synth.color,
                             background:synth.color+"22", borderRadius:4, padding:"2px 8px",
                             textTransform:"uppercase", letterSpacing:1.2, marginRight:8 }}>{synth.badge}</span>
                         </div>
-                        <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginLeft:"auto" }}>
+                        <div style={ { fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginLeft:"auto" }}>
                           Lecture croisée
                         </div>
                       </div>
-                      <div style={{ fontSize:13, fontWeight:700, color:synth.color, lineHeight:1.4, marginBottom:8 }}>
+                      <div style={ { fontSize:13, fontWeight:700, color:synth.color, lineHeight:1.4, marginBottom:8 }}>
                         {synth.title}
                       </div>
-                      <div style={{ fontSize:12, color:THEME.textSecondary, lineHeight:1.8 }}>
+                      <div style={ { fontSize:12, color:THEME.textSecondary, lineHeight:1.8 }}>
                         {synth.body}
                       </div>
                     </div>
                   );
                 })()}
                 {fearGreed != null && (
-                  <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4, minWidth:130 }}>
+                  <div style={ { display:"flex", flexDirection:"column", alignItems:"center", gap:4, minWidth:130 }}>
                     <FearGreedGauge value={fearGreed.value}/>
-                    <div style={{ fontSize:12, fontWeight:700, color:
-                      fearGreed.value < SCORING_THRESHOLDS.fearGreed.fearMod ? THEME.scoreRed : fearGreed.value < SCORING_THRESHOLDS.fearGreed.fifty ? "#f97316" :
-                      fearGreed.value < SCORING_THRESHOLDS.fearGreed.greedMod ? THEME.scoreAmber : THEME.scoreGreen
+                    <div style={ { fontSize:12, fontWeight:700, color:
+                      fearGreed.value < 30 ? THEME.scoreRed : fearGreed.value < 50 ? "#f97316" :
+                      fearGreed.value < 70 ? THEME.scoreAmber : THEME.scoreGreen
                     }}>{fearGreed.label}</div>
-                    <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5 }}>Fear & Greed Index</div>
-                    <div style={{ fontSize:9, color:THEME.textMuted, maxWidth:160, textAlign:"center", lineHeight:1.5, marginTop:4 }}>
+                    <div style={ { fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5 }}>Fear & Greed Index</div>
+                    <div style={ { fontSize:9, color:THEME.textMuted, maxWidth:160, textAlign:"center", lineHeight:1.5, marginTop:4 }}>
                       Mesure l'émotion dominante du marché crypto. Extrême Fear = opportunité potentielle. Extrême Greed = prudence.
                     </div>
                   </div>
                 )}
                 {funding != null && (
-                  <div style={{ flex:1, minWidth:180 }}>
-                    <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:10 }}>Funding Rate (perpétuels)</div>
-                    <div style={{ display:"flex", alignItems:"baseline", gap:8, marginBottom:4 }}>
-                      <span style={{ fontSize:28, fontWeight:900, fontFamily:"'IBM Plex Mono',monospace",
+                  <div style={ { flex:1, minWidth:180 }}>
+                    <div style={ { fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:10 }}>Funding Rate (perpétuels)</div>
+                    <div style={ { display:"flex", alignItems:"baseline", gap:8, marginBottom:4 }}>
+                      <span style={ { fontSize:28, fontWeight:900, fontFamily:"'IBM Plex Mono',monospace",
                         color: funding.rate > 0 ? THEME.scoreGreen : funding.rate < 0 ? THEME.scoreRed : THEME.textSecondary }}>
                         {funding.rate > 0 ? "+" : ""}{(funding.rate * 100).toFixed(4)}%
                       </span>
-                      <span style={{ fontSize:10, color:THEME.textMuted }}>/ 8h</span>
+                      <span style={ { fontSize:10, color:THEME.textMuted }}>/ 8h</span>
                     </div>
-                    <div style={{ fontSize:10, color:THEME.textSecondary, marginBottom:8 }}>
-                      ≈ <span style={{ fontWeight:700, color: funding.rate > 0 ? THEME.scoreGreen : THEME.scoreRed }}>
+                    <div style={ { fontSize:10, color:THEME.textSecondary, marginBottom:8 }}>
+                      ≈ <span style={ { fontWeight:700, color: funding.rate > 0 ? THEME.scoreGreen : THEME.scoreRed }}>
                         {funding.rate > 0 ? "+" : ""}{(funding.rate * 3 * 365 * 100).toFixed(1)}% /an
                       </span> annualisé
                     </div>
-                    <div style={{ fontSize:10, fontWeight:600, marginBottom:8,
+                    <div style={ { fontSize:10, fontWeight:600, marginBottom:8,
                       color: funding.rate > 0 ? THEME.scoreGreen : funding.rate < 0 ? THEME.scoreRed : THEME.textSecondary }}>
                       {funding.rate > 0.0002  ? "Marché très optimiste — longs dominants"  :
                        funding.rate > 0       ? "Légère dominance haussière"                :
                        funding.rate < -0.0002 ? "Marché très pessimiste — shorts dominants" :
                                                 "Légère dominance baissière"}
                     </div>
-                    <div style={{ fontSize:9, color:THEME.textMuted, lineHeight:1.6 }}>
+                    <div style={ { fontSize:9, color:THEME.textMuted, lineHeight:1.6 }}>
                       Le funding rate est le coût payé entre acheteurs et vendeurs de contrats perpétuels.
                       Positif = les longs paient les shorts (marché optimiste).
                       Négatif = les shorts paient les longs (marché pessimiste).
                     </div>
                     {funding.markPrice > 0 && (
-                      <div style={{ marginTop:8, fontSize:10, color:THEME.textMuted }}>
-                        Mark price : <span style={{ color:THEME.textSecondary, fontFamily:"'IBM Plex Mono',monospace" }}>${fmt(funding.markPrice)}</span>
+                      <div style={ { marginTop:8, fontSize:10, color:THEME.textMuted }}>
+                        Mark price : <span style={ { color:THEME.textSecondary, fontFamily:"'IBM Plex Mono',monospace" }}>${fmt(funding.markPrice)}</span>
                       </div>
                     )}
                   </div>
                 )}
                 {longShort != null && (
-                  <div style={{ width:"100%", paddingTop:12, borderTop:`1px solid ${THEME.borderPanel}` }}>
-                    <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:6 }}>Ratio Long/Short (comptes Binance Futures)</div>
-                    <div style={{ display:"flex", alignItems:"baseline", gap:8, marginBottom:6 }}>
-                      <span style={{ fontSize:28, fontWeight:900, fontFamily:"'IBM Plex Mono',monospace",
+                  <div style={ { width:"100%", paddingTop:12, borderTop:`1px solid ${THEME.borderPanel}` }}>
+                    <div style={ { fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:6 }}>Ratio Long/Short (comptes Binance Futures)</div>
+                    <div style={ { display:"flex", alignItems:"baseline", gap:8, marginBottom:6 }}>
+                      <span style={ { fontSize:28, fontWeight:900, fontFamily:"'IBM Plex Mono',monospace",
                         color: longShort.ratio > 1.5 ? THEME.scoreRed : longShort.ratio < 0.7 ? THEME.scoreGreen : THEME.scoreAmber }}>
                         {longShort.ratio.toFixed(2)}
                       </span>
-                      <span style={{ fontSize:11, color:THEME.textMuted }}>longs / shorts</span>
+                      <span style={ { fontSize:11, color:THEME.textMuted }}>longs / shorts</span>
                     </div>
-                    <div style={{ height:8, borderRadius:4, background:"#1e2a3a", overflow:"hidden", marginBottom:6 }}>
-                      <div style={{ height:"100%", borderRadius:4, width:`${longShort.longPct}%`,
+                    <div style={ { height:8, borderRadius:4, background:"#1e2a3a", overflow:"hidden", marginBottom:6 }}>
+                      <div style={ { height:"100%", borderRadius:4, width:`${longShort.longPct}%`,
                         background:`linear-gradient(90deg, ${THEME.scoreGreen}, ${THEME.scoreRed})`,
                         transition:"width .4s ease" }}/>
                     </div>
-                    <div style={{ display:"flex", justifyContent:"space-between", fontSize:10, fontWeight:700, marginBottom:6 }}>
-                      <span style={{ color:THEME.scoreGreen }}>Longs {longShort.longPct.toFixed(1)}%</span>
-                      <span style={{ color:THEME.scoreRed }}>Shorts {longShort.shortPct.toFixed(1)}%</span>
+                    <div style={ { display:"flex", justifyContent:"space-between", fontSize:10, fontWeight:700, marginBottom:6 }}>
+                      <span style={ { color:THEME.scoreGreen }}>Longs {longShort.longPct.toFixed(1)}%</span>
+                      <span style={ { color:THEME.scoreRed }}>Shorts {longShort.shortPct.toFixed(1)}%</span>
                     </div>
-                    <div style={{ fontSize:10, fontWeight:600, color:
+                    <div style={ { fontSize:10, fontWeight:600, color:
                       longShort.ratio > 2    ? THEME.scoreRed   :
                       longShort.ratio > 1.5  ? "#f97316"        :
                       longShort.ratio < 0.67 ? THEME.scoreGreen :
@@ -8122,21 +8077,21 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
                        longShort.ratio < 0.8  ? "Légère dominance baissière"                                              :
                        "Ratio équilibré — pas de signal dominant"}
                     </div>
-                    <div style={{ fontSize:9, color:THEME.textMuted, marginTop:6, lineHeight:1.6 }}>
+                    <div style={ { fontSize:9, color:THEME.textMuted, marginTop:6, lineHeight:1.6 }}>
                       Mesure la proportion de comptes en position longue vs courte sur les contrats perpétuels Binance.
                       Un ratio très élevé (longs {">"} shorts) peut précéder une liquidation en cascade si le prix baisse.
                     </div>
                   </div>
                 )}
                 {openInterest != null && (
-                  <div style={{ width:"100%", paddingTop:12, borderTop:`1px solid ${THEME.borderPanel}` }}>
-                    <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:6 }}>Open Interest (Binance Futures)</div>
-                    <div style={{ display:"flex", alignItems:"baseline", gap:8, marginBottom:4 }}>
-                      <span style={{ fontSize:22, fontWeight:900, fontFamily:"'IBM Plex Mono',monospace", color:THEME.textPrimary }}>
+                  <div style={ { width:"100%", paddingTop:12, borderTop:`1px solid ${THEME.borderPanel}` }}>
+                    <div style={ { fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:6 }}>Open Interest (Binance Futures)</div>
+                    <div style={ { display:"flex", alignItems:"baseline", gap:8, marginBottom:4 }}>
+                      <span style={ { fontSize:22, fontWeight:900, fontFamily:"'IBM Plex Mono',monospace", color:THEME.textPrimary }}>
                         {fmtTvl(openInterest)}
                       </span>
                     </div>
-                    <div style={{ fontSize:9, color:THEME.textMuted, lineHeight:1.6 }}>
+                    <div style={ { fontSize:9, color:THEME.textMuted, lineHeight:1.6 }}>
                       L'Open Interest représente la valeur totale des contrats à terme ouverts sur le marché.
                       Une hausse = nouveaux capitaux qui entrent. Une baisse = positions qui se ferment.
                     </div>
@@ -8149,21 +8104,21 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
           {/* Staking ETH */}
           {isEth && staking != null && (
             <Panel icon="🔒" title="Staking Ethereum" borderColor={THEME.scoreGreen} defaultOpen={true}
-              badge={{ label:`APR ${staking.apr.toFixed(2)}%`, color:THEME.scoreGreen }}>
-              <div style={{ display:"flex", flexWrap:"wrap", gap:20 }}>
+              badge={ { label:`APR ${staking.apr.toFixed(2)}%`, color:THEME.scoreGreen }}>
+              <div style={ { display:"flex", flexWrap:"wrap", gap:20 }}>
                 <div>
-                  <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:6 }}>APR stETH (Lido)</div>
-                  <div style={{ fontSize:32, fontWeight:900, color:THEME.scoreGreen, fontFamily:"'IBM Plex Mono',monospace" }}>
+                  <div style={ { fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:6 }}>APR stETH (Lido)</div>
+                  <div style={ { fontSize:32, fontWeight:900, color:THEME.scoreGreen, fontFamily:"'IBM Plex Mono',monospace" }}>
                     {staking.apr.toFixed(2)}%
                   </div>
-                  <div style={{ fontSize:10, color:THEME.textMuted, marginTop:4 }}>Taux de rendement annuel en temps réel</div>
+                  <div style={ { fontSize:10, color:THEME.textMuted, marginTop:4 }}>Taux de rendement annuel en temps réel</div>
                 </div>
-                <div style={{ flex:1, minWidth:180 }}>
-                  <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:6 }}>File d'attente validateurs</div>
-                  <div style={{ fontSize:20, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>
+                <div style={ { flex:1, minWidth:180 }}>
+                  <div style={ { fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:6 }}>File d'attente validateurs</div>
+                  <div style={ { fontSize:20, fontWeight:700, color:THEME.textPrimary, fontFamily:"'IBM Plex Mono',monospace" }}>
                     {staking.queue != null ? staking.queue.toLocaleString() : "Aucune congestion"}
                   </div>
-                  <div style={{ fontSize:10, color:THEME.textMuted, marginTop:4 }}>
+                  <div style={ { fontSize:10, color:THEME.textMuted, marginTop:4 }}>
                     {staking.queue != null && staking.queue > 0
                       ? `${staking.queue.toLocaleString()} validateurs en attente d'activation`
                       : "Pas de congestion — activation immédiate"}
@@ -8176,11 +8131,11 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
           {/* TVL DeFi */}
           {tvl != null && (
             <Panel icon="🏦" title="DeFi — Total Value Locked" borderColor={THEME.scoreAmber} defaultOpen={true}
-              badge={{ label:fmtTvl(tvl), color:THEME.scoreAmber }}>
+              badge={ { label:fmtTvl(tvl), color:THEME.scoreAmber }}>
               <div>
-                <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:6 }}>TVL actuel (DefiLlama)</div>
-                <div style={{ fontSize:32, fontWeight:900, color:THEME.scoreAmber, fontFamily:"'IBM Plex Mono',monospace" }}>{fmtTvl(tvl)}</div>
-                <div style={{ fontSize:10, color:THEME.textMuted, marginTop:6, lineHeight:1.6 }}>
+                <div style={ { fontSize:9, color:THEME.textMuted, textTransform:"uppercase", letterSpacing:1.5, marginBottom:6 }}>TVL actuel (DefiLlama)</div>
+                <div style={ { fontSize:32, fontWeight:900, color:THEME.scoreAmber, fontFamily:"'IBM Plex Mono',monospace" }}>{fmtTvl(tvl)}</div>
+                <div style={ { fontSize:10, color:THEME.textMuted, marginTop:6, lineHeight:1.6 }}>
                   Total Value Locked = valeur totale des actifs déposés dans le protocole.
                   Un TVL élevé reflète la confiance des utilisateurs et la profondeur de liquidité.
                 </div>
@@ -8212,10 +8167,10 @@ type ResultType =
 function LogPanel({ log }: { log: string[] }) {
   const [open, setOpen] = useState(false);
   return (
-    <div style={{ marginBottom:14 }}>
+    <div style={ { marginBottom:14 }}>
       <button
         onClick={() => setOpen(o => !o)}
-        style={{
+        style={ {
           background:"transparent",
           border:`1px solid ${THEME.borderSubtle}`,
           borderRadius:6, padding:"4px 12px",
@@ -8224,15 +8179,15 @@ function LogPanel({ log }: { log: string[] }) {
           alignItems:"center", gap:6,
         }}
       >
-        <span style={{ fontSize:8 }}>{open ? "▲" : "▼"}</span>
+        <span style={ { fontSize:8 }}>{open ? "▲" : "▼"}</span>
         Journal ({log.length} étapes)
       </button>
       {open && (
-        <div style={{ marginTop:6, background:THEME.bgHeader,
+        <div style={ { marginTop:6, background:THEME.bgHeader,
           border:`1px solid ${THEME.borderSubtle}`,
           borderRadius:8, padding:"8px 14px" }}>
           {log.map((l,i) => (
-            <div key={i} style={{ fontSize:11, color:THEME.textSecondary,
+            <div key={i} style={ { fontSize:11, color:THEME.textSecondary,
               fontFamily:"'IBM Plex Mono',monospace" }}>{l}</div>
           ))}
         </div>
@@ -8267,7 +8222,7 @@ function ForexView({ currency, rate, allRates, ticker: forexTicker, activeTab = 
     onGlobalUTChange?.(u);
   }, [_handleUTChange]); // eslint-disable-line
 
-  useEffect(() => { onForexUTRef?.(handleUTChange); }, [handleUTChange]); // eslint-disable-line
+  useEffect(() => { onForexUTRef?.(handleUTChange); }); // eslint-disable-line
 
   const closes  = chartData?.closes  ?? [];
   const highs   = chartData?.highs   ?? [];
@@ -8306,21 +8261,21 @@ function ForexView({ currency, rate, allRates, ticker: forexTicker, activeTab = 
 
   return (
     <>
-    <div style={{ animation:"fadeIn .4s ease" }}>
+    <div style={ { animation:"fadeIn .4s ease" }}>
 
       {/* ── HEADER — toujours visible ── */}
-      <div style={{ marginBottom:16 }}>
-        <div style={{ fontSize:11, color:"#445", textTransform:"uppercase", letterSpacing:1.5, marginBottom:4 }}>
+      <div style={ { marginBottom:16 }}>
+        <div style={ { fontSize:11, color:"#445", textTransform:"uppercase", letterSpacing:1.5, marginBottom:4 }}>
           Banque Centrale Européenne · Officiel
         </div>
-        <div style={{ fontSize:22, fontWeight:800, color:THEME.textPrimary, marginBottom:8 }}>
+        <div style={ { fontSize:22, fontWeight:800, color:THEME.textPrimary, marginBottom:8 }}>
           EUR / {currency}<TypeBadge type="CURRENCY"/>
         </div>
-        <div style={{ display:"flex", alignItems:"baseline", gap:12, flexWrap:"wrap" }}>
-          <span style={{ fontSize:38, fontWeight:900, color:THEME.accent, fontFamily:"'IBM Plex Mono',monospace" }}>
+        <div style={ { display:"flex", alignItems:"baseline", gap:12, flexWrap:"wrap" }}>
+          <span style={ { fontSize:38, fontWeight:900, color:THEME.accent, fontFamily:"'IBM Plex Mono',monospace" }}>
             {parseFloat(String(rate)).toFixed(4)}
           </span>
-          <span style={{ fontSize:13, color:"#556" }}>1 EUR = {rate} {currency}</span>
+          <span style={ { fontSize:13, color:"#556" }}>1 EUR = {rate} {currency}</span>
         </div>
       </div>
 
@@ -8328,10 +8283,10 @@ function ForexView({ currency, rate, allRates, ticker: forexTicker, activeTab = 
           ONGLET RÉSUMÉ
       ══════════════════════════════════════ */}
       {activeTab === "resume" && (
-        <div style={{ display:"flex", gap:24, alignItems:"flex-start", flexWrap:"wrap" }}>
+        <div style={ { display:"flex", gap:24, alignItems:"flex-start", flexWrap:"wrap" }}>
 
           {/* Colonne gauche — graphique */}
-          <div style={{ flex:"1 1 55%", minWidth:320 }}>
+          <div style={ { flex:"1 1 55%", minWidth:320 }}>
             <ChartBlock
               chartData={chartData}
               currency={currency}
@@ -8344,37 +8299,37 @@ function ForexView({ currency, rate, allRates, ticker: forexTicker, activeTab = 
           </div>
 
           {/* Colonne droite — verdict + recommandation */}
-          <div style={{ flex:"1 1 35%", minWidth:280,
+          <div style={ { flex:"1 1 35%", minWidth:280,
             display:"flex", flexDirection:"column", gap:12,
             position:"sticky", top:"72px" }}>
             {v && finalScore != null && (
-              <div style={{ background:v.color+"0f",
+              <div style={ { background:v.color+"0f",
                 border:`1px solid ${v.color}33`,
                 borderRadius:14, padding:"18px 20px" }}>
-                <div style={{ display:"flex", justifyContent:"center", marginBottom:14 }}>
-                  <div style={{ display:"flex", flexDirection:"column",
+                <div style={ { display:"flex", justifyContent:"center", marginBottom:14 }}>
+                  <div style={ { display:"flex", flexDirection:"column",
                     alignItems:"center", gap:4 }}>
                     <ScoreGauge score={finalScore}/>
-                    <div style={{ display:"flex", alignItems:"baseline", gap:3 }}>
-                      <span style={{ fontSize:36, fontWeight:900,
+                    <div style={ { display:"flex", alignItems:"baseline", gap:3 }}>
+                      <span style={ { fontSize:36, fontWeight:900,
                         color:scoreColor(finalScore),
                         fontFamily:"'IBM Plex Mono',monospace" }}>
                         {finalScore}
                       </span>
-                      <span style={{ fontSize:12, color:THEME.textSecondary,
+                      <span style={ { fontSize:12, color:THEME.textSecondary,
                         fontFamily:"'IBM Plex Mono',monospace" }}>/10</span>
                     </div>
-                    <div style={{ fontSize:9, color:THEME.textMuted,
+                    <div style={ { fontSize:9, color:THEME.textMuted,
                       textTransform:"uppercase", letterSpacing:1.5 }}>
                       Timing Technique
                     </div>
                   </div>
                 </div>
-                <div style={{ fontSize:18, fontWeight:900,
+                <div style={ { fontSize:18, fontWeight:900,
                   color:v.color, marginBottom:4 }}>
                   {v.emoji} {v.label}
                 </div>
-                <div style={{ fontSize:11, color:THEME.textSecondary, lineHeight:1.4 }}>
+                <div style={ { fontSize:11, color:THEME.textSecondary, lineHeight:1.4 }}>
                   {v.desc}
                 </div>
               </div>
@@ -8388,7 +8343,7 @@ function ForexView({ currency, rate, allRates, ticker: forexTicker, activeTab = 
           ONGLET TECHNIQUE
       ══════════════════════════════════════ */}
       {activeTab === "technique" && (
-        <div style={{ display:"flex", flexDirection:"column", gap:0 }}>
+        <div style={ { display:"flex", flexDirection:"column", gap:0 }}>
           {marketCtx && finalScoreResult && (
             <MarketContextPanel
               context={finalScoreResult.context}
@@ -8419,27 +8374,27 @@ function ForexView({ currency, rate, allRates, ticker: forexTicker, activeTab = 
       ══════════════════════════════════════ */}
       {activeTab === "marche" && (
         <div>
-          <div style={{ fontSize:10, color:THEME.textMuted,
+          <div style={ { fontSize:10, color:THEME.textMuted,
             textTransform:"uppercase", letterSpacing:1.5, marginBottom:8 }}>
             Taux de change ECB · Toutes devises
           </div>
-          <div style={{ display:"grid",
+          <div style={ { display:"grid",
             gridTemplateColumns:"repeat(auto-fill,minmax(120px,1fr))", gap:7 }}>
             {Object.entries(allRates).sort().map(([cur, r]) => (
-              <div key={cur} style={{
+              <div key={cur} style={ {
                 background:THEME.bgCardAlt,
                 border:`1px solid ${cur === currency ? THEME.accent : THEME.borderMid}`,
                 borderRadius:8, padding:"8px 12px",
               }}>
-                <div style={{ fontSize:9, color:"#445" }}>EUR / {cur}</div>
-                <div style={{ fontSize:13, fontWeight:700,
+                <div style={ { fontSize:9, color:"#445" }}>EUR / {cur}</div>
+                <div style={ { fontSize:13, fontWeight:700,
                   fontFamily:"'IBM Plex Mono',monospace" }}>
                   {parseFloat(String(r)).toFixed(4)}
                 </div>
               </div>
             ))}
           </div>
-          <div style={{ marginTop:8, fontSize:10, color:"#333", textAlign:"right" }}>
+          <div style={ { marginTop:8, fontSize:10, color:"#333", textAlign:"right" }}>
             Source : Banque Centrale Européenne · Temps réel
           </div>
         </div>
@@ -8495,9 +8450,18 @@ export default function App() {
     const assetType = detectAssetType(raw, mode);
     const isForexPattern = assetType === "forex";
 
+    const KNOWN_CRYPTO_SYMBOLS_LOCAL = new Set([
+      "BTC","ETH","SOL","BNB","XRP","ADA","DOGE","AVAX","DOT","MATIC",
+      "LINK","UNI","ATOM","LTC","BCH","XLM","ALGO","VET","ICP","FIL",
+      "HBAR","ETC","MANA","SAND","AXS","THETA","XTZ","EOS","AAVE","MKR",
+      "COMP","SNX","CRV","YFI","SUSHI","1INCH","GRT","ENJ","CHZ","BAT",
+      "ZEC","DASH","XMR","NEO","WAVES","QTUM","ONT","ZIL","ICX","IOTA",
+      "OP","ARB","APT","SUI","SEI","TIA","INJ","PYTH","JUP","WIF",
+    ]);
+
     const looksLikeCrypto =
       assetType === "crypto" ||
-      KNOWN_CRYPTO_SYMBOLS.has(upper) ||
+      KNOWN_CRYPTO_SYMBOLS_LOCAL.has(upper) ||
       (/^[A-Z0-9]{2,10}-USD$/i.test(raw) && !isForexPattern);
 
     if (looksLikeCrypto || forceType?.toUpperCase() === "CRYPTOCURRENCY") {
@@ -8705,7 +8669,7 @@ export default function App() {
   }, []);
 
   return (
-    <div style={{ minHeight:"100vh", background:THEME.bgPage, fontFamily:"'IBM Plex Sans','Segoe UI',sans-serif", color:THEME.textPrimary, overflowX:"hidden", maxWidth:"100vw" }}>
+    <div style={ { minHeight:"100vh", background:THEME.bgPage, fontFamily:"'IBM Plex Sans','Segoe UI',sans-serif", color:THEME.textPrimary, overflowX:"hidden", maxWidth:"100vw" }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;700&family=IBM+Plex+Sans:wght@400;600;700;800&display=swap');
         @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:none} }
@@ -8748,7 +8712,7 @@ export default function App() {
       `}</style>
 
       {/* HEADER — fixe, hauteur 56px */}
-      <div style={{
+      <div style={ {
         borderBottom:`1px solid ${THEME.borderSubtle}`,
         background:THEME.bgHeader,
         padding:"0 24px",
@@ -8761,12 +8725,12 @@ export default function App() {
         zIndex:50,
       }}>
         {/* Logo */}
-        <div style={{ fontSize:16, fontWeight:800, color:THEME.textPrimary, flexShrink:0 }}>
+        <div style={ { fontSize:16, fontWeight:800, color:THEME.textPrimary, flexShrink:0 }}>
           Screener
         </div>
 
         {/* Recherche centrale */}
-        <div ref={searchRef} style={{ flex:1, maxWidth:560, margin:"0 32px", position:"relative" }}>
+        <div ref={searchRef} style={ { flex:1, maxWidth:560, margin:"0 32px", position:"relative" }}>
           <input
             value={query}
             onChange={e => handleQueryChange(e.target.value)}
@@ -8776,7 +8740,7 @@ export default function App() {
             }}
             onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
             placeholder="Rechercher un actif… AAPL, BTC, EUR/USD"
-            style={{
+            style={ {
               width:"100%",
               background:THEME.bgPanel,
               border:`1px solid ${THEME.borderMid}`,
@@ -8790,7 +8754,7 @@ export default function App() {
           />
           {/* Dropdown suggestions */}
           {showSuggestions && suggestions.length > 0 && (
-            <div style={{
+            <div style={ {
               position:"absolute", top:"calc(100% + 6px)", left:0, right:0,
               background:THEME.bgPanel, border:`1px solid ${THEME.borderMid}`,
               borderRadius:10, overflow:"hidden",
@@ -8802,7 +8766,7 @@ export default function App() {
                   <div
                     key={i}
                     onMouseDown={() => selectSuggestion(s)}
-                    style={{
+                    style={ {
                       display:"flex", alignItems:"center", gap:10,
                       padding:"9px 16px", cursor:"pointer",
                       borderBottom: i < suggestions.length - 1
@@ -8812,15 +8776,15 @@ export default function App() {
                     onMouseEnter={e => (e.currentTarget.style.background = THEME.borderSubtle)}
                     onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
                   >
-                    <span style={{ fontFamily:"'IBM Plex Mono',monospace", fontWeight:800,
+                    <span style={ { fontFamily:"'IBM Plex Mono',monospace", fontWeight:800,
                       color:THEME.textPrimary, fontSize:13, minWidth:70, flexShrink:0 }}>
                       {s.symbol}
                     </span>
-                    <span style={{ flex:1, fontSize:12, color:THEME.textSecondary,
+                    <span style={ { flex:1, fontSize:12, color:THEME.textSecondary,
                       overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
                       {s.name}
                     </span>
-                    <span style={{ fontSize:9, fontWeight:800, color:b.color,
+                    <span style={ { fontSize:9, fontWeight:800, color:b.color,
                       background:b.bg, borderRadius:4, padding:"2px 6px",
                       letterSpacing:1, textTransform:"uppercase", flexShrink:0 }}>
                       {b.label}
@@ -8835,7 +8799,7 @@ export default function App() {
         {/* Bouton analyser */}
         <button onClick={() => { setShowSuggestions(false); doAnalyze(); }}
           disabled={loading}
-          style={{
+          style={ {
             background: loading ? THEME.borderSubtle : THEME.accent,
             color: loading ? "#445" : "#000",
             border:"none", borderRadius:8, padding:"9px 20px",
@@ -8855,12 +8819,12 @@ export default function App() {
 
           {/* Actif analysé */}
           {result && (
-            <div style={{ padding:"16px 16px 12px", borderBottom:`1px solid ${THEME.borderSubtle}` }}>
-              <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase",
+            <div style={ { padding:"16px 16px 12px", borderBottom:`1px solid ${THEME.borderSubtle}` }}>
+              <div style={ { fontSize:9, color:THEME.textMuted, textTransform:"uppercase",
                 letterSpacing:1.5, marginBottom:4 }}>
                 Actif analysé
               </div>
-              <div style={{ fontSize:13, fontWeight:800, color:THEME.textPrimary,
+              <div style={ { fontSize:13, fontWeight:800, color:THEME.textPrimary,
                 lineHeight:1.3, marginBottom:4 }}>
                 {result.type === "stock"  && (result.metrics?.name || result.ticker)}
                 {result.type === "crypto" && result.data?.name}
@@ -8875,15 +8839,15 @@ export default function App() {
 
           {/* Badge UT */}
           {result && (
-            <div style={{ padding:"8px 16px", borderBottom:`1px solid ${THEME.borderSubtle}` }}>
-              <div style={{ fontSize:9, color:THEME.textMuted, textTransform:"uppercase",
+            <div style={ { padding:"8px 16px", borderBottom:`1px solid ${THEME.borderSubtle}` }}>
+              <div style={ { fontSize:9, color:THEME.textMuted, textTransform:"uppercase",
                 letterSpacing:1.5, marginBottom:6 }}>
                 Unité de temps
               </div>
-              <div style={{ position:"relative" }} onMouseDown={e => e.stopPropagation()}>
+              <div style={ { position:"relative" }} onMouseDown={e => e.stopPropagation()}>
                 <button
                   onClick={() => setUtOpen(o => !o)}
-                  style={{
+                  style={ {
                     width:"100%",
                     background: THEME.bgCard,
                     border:`1px solid ${THEME.accent}`,
@@ -8894,12 +8858,12 @@ export default function App() {
                     justifyContent:"space-between", gap:6,
                   }}
                 >
-                  <span style={{ fontSize:9, color:THEME.textMuted }}>UT</span>
+                  <span style={ { fontSize:9, color:THEME.textMuted }}>UT</span>
                   <span>{globalUT}</span>
-                  <span style={{ fontSize:9 }}>▼</span>
+                  <span style={ { fontSize:9 }}>▼</span>
                 </button>
                 {utOpen && (
-                  <div style={{
+                  <div style={ {
                     position:"absolute", top:"calc(100% + 4px)", left:0, right:0,
                     background:THEME.bgPanel,
                     border:`1px solid ${THEME.borderMid}`,
@@ -8920,7 +8884,7 @@ export default function App() {
                           if (result.type === "forex")  forexUTRef.current?.(ut);
                           if (result.type === "crypto") cryptoUTRef.current?.(ut);
                         }}
-                        style={{
+                        style={ {
                           padding:"8px 14px", cursor:"pointer",
                           fontSize:12, fontWeight: ut === globalUT ? 800 : 600,
                           color: ut === globalUT ? THEME.accent : THEME.textSecondary,
@@ -8940,7 +8904,7 @@ export default function App() {
           )}
 
           {/* Items navigation */}
-          <div style={{ padding:"8px 0", flex:1 }}>
+          <div style={ { padding:"8px 0", flex:1 }}>
             {(result?.type === "stock" ? [
               { icon:"📊", label:"Résumé",        tab:"resume"        as const },
               { icon:"📈", label:"Technique",     tab:"technique"     as const },
@@ -8962,7 +8926,7 @@ export default function App() {
                 <div
                   key={item.tab}
                   onClick={() => result && setActiveTab(item.tab)}
-                  style={{
+                  style={ {
                     display:"flex", alignItems:"center", gap:10,
                     padding:"11px 16px",
                     color: isActive ? THEME.accent : THEME.textMuted,
@@ -8976,7 +8940,7 @@ export default function App() {
                     transition:"all .15s",
                   }}
                 >
-                  <span style={{ fontSize:15 }}>{item.icon}</span>
+                  <span style={ { fontSize:15 }}>{item.icon}</span>
                   <span>{item.label}</span>
                 </div>
               );
@@ -8984,12 +8948,12 @@ export default function App() {
           </div>
 
           {/* Jeu — futur */}
-          <div style={{ padding:"12px 16px", borderTop:`1px solid ${THEME.borderSubtle}` }}>
-            <div style={{ display:"flex", alignItems:"center", gap:8,
+          <div style={ { padding:"12px 16px", borderTop:`1px solid ${THEME.borderSubtle}` }}>
+            <div style={ { display:"flex", alignItems:"center", gap:8,
               color:THEME.textMuted, fontSize:12, opacity:0.5 }}>
               <span>🎮</span>
               <span>Jeu</span>
-              <span style={{ fontSize:9, background:THEME.borderMid,
+              <span style={ { fontSize:9, background:THEME.borderMid,
                 color:THEME.textMuted, borderRadius:4, padding:"1px 6px",
                 marginLeft:"auto" }}>Bientôt</span>
             </div>
@@ -9004,8 +8968,8 @@ export default function App() {
 
           {/* Erreur */}
           {error && (
-            <div style={{ marginBottom:14 }}>
-              <div style={{ background:"#1e0a0a", border:"1px solid #5a1a1a",
+            <div style={ { marginBottom:14 }}>
+              <div style={ { background:"#1e0a0a", border:"1px solid #5a1a1a",
                 borderRadius:8, padding:"12px 16px",
                 color:THEME.scoreRed, fontSize:13 }}>
                 ⚠️ {error}
@@ -9015,8 +8979,8 @@ export default function App() {
 
           {/* Loading */}
           {loading && (
-            <div style={{ display:"flex", justifyContent:"center", padding:60 }}>
-              <div style={{ width:34, height:34,
+            <div style={ { display:"flex", justifyContent:"center", padding:60 }}>
+              <div style={ { width:34, height:34,
                 border:`3px solid ${THEME.borderSubtle}`,
                 borderTopColor:THEME.accent,
                 borderRadius:"50%",
@@ -9026,22 +8990,22 @@ export default function App() {
 
           {/* Écran d'accueil — aucun résultat */}
           {!result && !loading && (
-            <div style={{ display:"flex", flexDirection:"column",
+            <div style={ { display:"flex", flexDirection:"column",
               alignItems:"center", justifyContent:"center",
               minHeight:"60vh", gap:16, textAlign:"center" }}>
-              <div style={{ fontSize:48 }}>📊</div>
-              <div style={{ fontSize:20, fontWeight:800, color:THEME.textPrimary }}>
+              <div style={ { fontSize:48 }}>📊</div>
+              <div style={ { fontSize:20, fontWeight:800, color:THEME.textPrimary }}>
                 Recherchez un actif pour commencer
               </div>
-              <div style={{ fontSize:13, color:THEME.textMuted, maxWidth:400 }}>
+              <div style={ { fontSize:13, color:THEME.textMuted, maxWidth:400 }}>
                 Actions · ETF · Indices · Crypto · Forex
               </div>
-              <div style={{ display:"flex", gap:8, flexWrap:"wrap",
+              <div style={ { display:"flex", gap:8, flexWrap:"wrap",
                 justifyContent:"center", marginTop:8 }}>
                 {["AAPL","BTC","EUR/USD","^GSPC","MC.PA"].map(t => (
                   <button key={t} onMouseDown={() => {
                     setQuery(t); doAnalyze(t);
-                  }} style={{
+                  }} style={ {
                     background:THEME.bgPanel,
                     border:`1px solid ${THEME.borderMid}`,
                     borderRadius:6, padding:"6px 14px",
@@ -9065,26 +9029,26 @@ export default function App() {
           )}
 
           {/* Disclaimer */}
-          <div style={{ borderTop:`1px solid ${THEME.borderSubtle}`, marginTop:40, paddingTop:20 }}>
-            <div style={{
+          <div style={ { borderTop:`1px solid ${THEME.borderSubtle}`, marginTop:40, paddingTop:20 }}>
+            <div style={ {
               background:THEME.bgPanel, border:`1px solid ${THEME.borderPanel}`,
               borderRadius:10, padding:"16px 20px", display:"flex", gap:14, alignItems:"flex-start",
             }}>
-              <span style={{ fontSize:18, flexShrink:0 }}>⚖️</span>
+              <span style={ { fontSize:18, flexShrink:0 }}>⚖️</span>
               <div>
-                <div style={{ fontSize:11, fontWeight:800, color:THEME.textSecondary,
+                <div style={ { fontSize:11, fontWeight:800, color:THEME.textSecondary,
                   textTransform:"uppercase", letterSpacing:1.2, marginBottom:6 }}>
                   Avertissement — Pas de conseil en investissement
                 </div>
-                <div style={{ fontSize:11, color:THEME.textSecondary, lineHeight:1.8 }}>
+                <div style={ { fontSize:11, color:THEME.textSecondary, lineHeight:1.8 }}>
                   Les informations, analyses et signaux présentés sur ce screener sont fournis à titre{" "}
-                  <strong style={{ color:THEME.textPrimary }}>purement informatif et éducatif</strong>.
+                  <strong style={ { color:THEME.textPrimary }}>purement informatif et éducatif</strong>.
                   Ils ne constituent en aucun cas un conseil en investissement, une recommandation d'achat ou de vente, ni une incitation à investir.
                   Tout investissement comporte un{" "}
-                  <strong style={{ color:THEME.textPrimary }}>risque de perte partielle ou totale du capital</strong>.
+                  <strong style={ { color:THEME.textPrimary }}>risque de perte partielle ou totale du capital</strong>.
                   Les performances passées ne préjugent pas des performances futures.
                   L'auteur de cet outil{" "}
-                  <strong style={{ color:THEME.textPrimary }}>décline toute responsabilité</strong>{" "}
+                  <strong style={ { color:THEME.textPrimary }}>décline toute responsabilité</strong>{" "}
                   quant aux décisions prises sur la base de ces données et aux pertes éventuelles qui pourraient en résulter.
                   Consultez un conseiller financier agréé avant toute décision d'investissement.
                 </div>
