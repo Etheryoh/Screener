@@ -396,6 +396,25 @@ async function cgOHLCV(id: string): Promise<{
   } catch { return null; }
 }
 
+async function cgOHLCVFull(id: string): Promise<{
+  closes: (number|null)[]; opens: (number|null)[]; highs: (number|null)[];
+  lows: (number|null)[]; volumes: (number|null)[]; timestamps: number[];
+} | null> {
+  try {
+    const path = `coins/${id}/ohlc?vs_currency=usd&days=90`;
+    const data = await getJson(`${PROXY}?type=cg&path=${encodeURIComponent(path)}`);
+    if (!Array.isArray(data) || data.length === 0) return null;
+    return {
+      opens:      data.map((k: number[]) => k[1] ?? null),
+      highs:      data.map((k: number[]) => k[2] ?? null),
+      lows:       data.map((k: number[]) => k[3] ?? null),
+      closes:     data.map((k: number[]) => k[4] ?? null),
+      volumes:    data.map(() => null),
+      timestamps: data.map((k: number[]) => k[0] > 1e12 ? Math.floor(k[0] / 1000) : k[0]),
+    };
+  } catch { return null; }
+}
+
 // ── Adapter ECB ───────────────────────────────────────────────
 async function ecbRates(): Promise<Record<string, number>> {
   try {
@@ -5965,6 +5984,7 @@ function useChartLoader(
   assetType:     "stock" | "forex" | "crypto",
   genesisDate?:  string | null,
   onDefaultUTReady?: (ut: string) => void,
+  cgId?:         string,
 ) {
   type UTKey = string;
   const [ut,             setUt]             = useState<UTKey>("1D");
@@ -6030,13 +6050,6 @@ function useChartLoader(
         if (candidates.length === 0) candidates = ["1D"];
       }
 
-      const available = candidates.map(k => ({
-        key:   k,
-        label: assetType === "crypto" ? UT_CRYPTO_CONFIG[k]?.label ?? k : STOCK_UT_CONFIG[k]?.label ?? k,
-      }));
-      if (cancelled) return;
-      setAvailableUTs(available);
-
       // ── 3. Charger toutes les UT disponibles en parallèle ──────────
       const fetchUT = async (utKey: UTKey): Promise<ChartSeries | null> => {
         try {
@@ -6044,7 +6057,11 @@ function useChartLoader(
             const cfg = UT_CRYPTO_CONFIG[utKey];
             if (!cfg) return null;
             const sym = ticker.toUpperCase().replace(/-USD$|-USDT$/i, "");
-            return await binanceOHLCV(sym, cfg.interval, cfg.limit);
+            const binanceResult = await binanceOHLCV(sym, cfg.interval, cfg.limit);
+            if (binanceResult) return binanceResult;
+            // Fallback CoinGecko OHLC — uniquement pour 1D, si Binance ne connaît pas la paire
+            if (utKey === "1D" && cgId) return await cgOHLCVFull(cgId);
+            return null;
           } else {
             const cfg = STOCK_UT_CONFIG[utKey];
             if (!cfg) return null;
@@ -6069,6 +6086,15 @@ function useChartLoader(
       const newMap: Record<UTKey, ChartSeries | null> = {};
       candidates.forEach((k, i) => { newMap[k] = results[i]; });
       if (cancelled) return;
+
+      // availableUTs fondé sur les données réellement reçues — pas sur l'estimation totalDays
+      const available = candidates
+        .filter(k => newMap[k] != null)
+        .map(k => ({
+          key:   k,
+          label: assetType === "crypto" ? UT_CRYPTO_CONFIG[k]?.label ?? k : STOCK_UT_CONFIG[k]?.label ?? k,
+        }));
+      setAvailableUTs(available);
       setChartDataMap(newMap);
       chartDataMapRef.current = newMap;
 
@@ -7506,6 +7532,7 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
     "crypto",
     data.genesis_date,
     (best) => { onUTNotify?.(best); },
+    cgId,
   );
 
   const handleUTChange = useCallback((u: string) => {
@@ -7640,6 +7667,57 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
   const pctLabel = (v: number | undefined) =>
     v == null ? "—" : `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
 
+  // ── Calculs techniques communs — partagés par onglets Résumé et Technique ──
+  const cryptoInterval: "1d"|"1wk"|"1mo" =
+    ut === "1W" ? "1wk" : ut === "1M" ? "1mo" : "1d";
+  const _rawData = candleData ?? allChartData;
+  const cryptoData = _rawData && _rawData.closes.filter((v: number|null) => v != null).length > 20
+    ? (() => {
+        const last  = _rawData.closes.length;
+        const start = Math.max(0, last - UT_DISPLAY);
+        return {
+          closes:     _rawData.closes.slice(start),
+          opens:      _rawData.opens.slice(start),
+          highs:      _rawData.highs.slice(start),
+          lows:       _rawData.lows.slice(start),
+          volumes:    _rawData.volumes.slice(start),
+          timestamps: _rawData.timestamps.slice(start),
+        };
+      })()
+    : null;
+  const cryptoUpperCtx = (cryptoData && cryptoInterval === "1d" && allChartDataWeekly)
+    ? classifyMarketContext(allChartDataWeekly.closes, allChartDataWeekly.highs, allChartDataWeekly.lows, allChartDataWeekly.volumes)
+    : null;
+  const cryptoMarketCtx = cryptoData
+    ? classifyMarketContext(cryptoData.closes, cryptoData.highs, cryptoData.lows, cryptoData.volumes)
+    : null;
+  const cryptoTechComputed = cryptoData
+    ? computeTechSignals(cryptoData.closes, cryptoData.volumes, cryptoData.highs, cryptoData.lows, cryptoInterval)
+    : null;
+  const cryptoUpperBearish = cryptoUpperCtx != null &&
+    (cryptoUpperCtx.structure.type === "bearish" || cryptoUpperCtx.type === "chaos" ||
+     (cryptoUpperCtx.subtype === "essoufflement" && cryptoUpperCtx.structure.type === "bullish"));
+  const cryptoConfluence = cryptoData
+    ? calcConfluenceScore(cryptoData.closes, cryptoData.highs, cryptoData.lows, cryptoData.volumes)
+    : null;
+  const cryptoFinalScoreRaw = (cryptoMarketCtx && cryptoTechComputed)
+    ? computeFinalScore(null, cryptoMarketCtx, cryptoTechComputed.signals, cryptoData!.closes, cryptoConfluence?.score ?? null)
+    : null;
+  const cryptoAdjustedScore = cryptoFinalScoreRaw
+    ? (cryptoUpperBearish && cryptoFinalScoreRaw.score > 5
+        ? parseFloat(Math.max(1, cryptoFinalScoreRaw.score - 1.5).toFixed(1))
+        : cryptoFinalScoreRaw.score)
+    : null;
+  const cryptoEntryRec = (cryptoMarketCtx && cryptoTechComputed)
+    ? computeCryptoEntryRecommendation(
+        cryptoUpperBearish ? { ...cryptoMarketCtx, fundamentalConfirm: "warns" } : cryptoMarketCtx,
+        cryptoTechComputed.signals,
+        cryptoTechComputed.sinewave,
+        fearGreed,
+        funding,
+      )
+    : null;
+
   return (
     <div style={{ animation:"fadeIn .4s ease" }}>
 
@@ -7702,41 +7780,9 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
           <div style={{ flex:"1 1 35%", minWidth:280,
             display:"flex", flexDirection:"column", gap:12,
             position:"sticky", top:"72px" }}>
-            {allChartData && allChartData.closes.filter((v: number|null) => v != null).length > 20 && (() => {
-              const cryptoInterval: "1d"|"1wk"|"1mo" =
-                ut === "1W" ? "1wk" : ut === "1M" ? "1mo" : "1d";
-              const rawData = candleData ?? allChartData;
-              const last = rawData.closes.length;
-              const start = Math.max(0, last - UT_DISPLAY);
-              const cryptoData = {
-                closes:     rawData.closes.slice(start),
-                opens:      rawData.opens.slice(start),
-                highs:      rawData.highs.slice(start),
-                lows:       rawData.lows.slice(start),
-                volumes:    rawData.volumes.slice(start),
-                timestamps: rawData.timestamps.slice(start),
-              };
-              const upperCtx = cryptoInterval === "1d" && allChartDataWeekly
-                ? classifyMarketContext(allChartDataWeekly.closes, allChartDataWeekly.highs, allChartDataWeekly.lows, allChartDataWeekly.volumes)
-                : null;
-              const _marketCtx    = classifyMarketContext(cryptoData.closes, cryptoData.highs, cryptoData.lows, cryptoData.volumes);
-              const _techComputed = computeTechSignals(cryptoData.closes, cryptoData.volumes, cryptoData.highs, cryptoData.lows, cryptoInterval);
-              const upperBearish  = upperCtx != null &&
-                (upperCtx.structure.type === "bearish" || upperCtx.type === "chaos" ||
-                 (upperCtx.subtype === "essoufflement" && upperCtx.structure.type === "bullish"));
-              const _confluenceResult = calcConfluenceScore(cryptoData.closes, cryptoData.highs, cryptoData.lows, cryptoData.volumes);
-              const _finalScoreRaw = computeFinalScore(null, _marketCtx, _techComputed.signals, cryptoData.closes, _confluenceResult?.score ?? null);
-              const score = upperBearish && _finalScoreRaw.score > 5
-                ? parseFloat(Math.max(1, _finalScoreRaw.score - 1.5).toFixed(1))
-                : _finalScoreRaw.score;
+            {cryptoMarketCtx && cryptoAdjustedScore != null && cryptoEntryRec != null && (() => {
+              const score = cryptoAdjustedScore;
               const v = getVerdict(score);
-              const cryptoEntryRec = computeCryptoEntryRecommendation(
-                upperBearish ? { ..._marketCtx, fundamentalConfirm: "warns" } : _marketCtx,
-                _techComputed.signals,
-                _techComputed.sinewave,
-                fearGreed,
-                funding,
-              );
               if (!v) return null;
               return (
                 <>
@@ -7772,7 +7818,7 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
                     <div style={{ fontSize:11, color:THEME.textSecondary, lineHeight:1.4 }}>
                       {v.desc}
                     </div>
-                    {upperBearish && (
+                    {cryptoUpperBearish && (
                       <div style={{ marginTop:10, padding:"8px 12px",
                         background:"#1e0808",
                         border:`1px solid ${THEME.scoreRed}44`,
@@ -7793,38 +7839,12 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
           ONGLET TECHNIQUE
       ══════════════════════════════════════ */}
       {activeTab === "technique" && (() => {
-        if (!allChartData || allChartData.closes.filter((v: number|null) => v != null).length <= 20)
+        if (!cryptoMarketCtx || !cryptoTechComputed || !cryptoFinalScoreRaw || cryptoAdjustedScore == null)
           return null;
-        const cryptoInterval: "1d"|"1wk"|"1mo" =
-          ut === "1W" ? "1wk" : ut === "1M" ? "1mo" : "1d";
-        const rawData = candleData ?? allChartData;
-        const last = rawData.closes.length;
-        const start = Math.max(0, last - UT_DISPLAY);
-        const cryptoData = {
-          closes:     rawData.closes.slice(start),
-          opens:      rawData.opens.slice(start),
-          highs:      rawData.highs.slice(start),
-          lows:       rawData.lows.slice(start),
-          volumes:    rawData.volumes.slice(start),
-          timestamps: rawData.timestamps.slice(start),
-        };
-        const upperCtx = cryptoInterval === "1d" && allChartDataWeekly
-          ? classifyMarketContext(allChartDataWeekly.closes, allChartDataWeekly.highs, allChartDataWeekly.lows, allChartDataWeekly.volumes)
-          : null;
-        const marketCtx    = classifyMarketContext(cryptoData.closes, cryptoData.highs, cryptoData.lows, cryptoData.volumes);
-        const techComputed = computeTechSignals(cryptoData.closes, cryptoData.volumes, cryptoData.highs, cryptoData.lows, cryptoInterval);
-        const upperBearish = upperCtx != null &&
-          (upperCtx.structure.type === "bearish" || upperCtx.type === "chaos" ||
-           (upperCtx.subtype === "essoufflement" && upperCtx.structure.type === "bullish"));
-        const confluenceResult = calcConfluenceScore(cryptoData.closes, cryptoData.highs, cryptoData.lows, cryptoData.volumes);
-        const finalScoreResult = computeFinalScore(null, marketCtx, techComputed.signals, cryptoData.closes, confluenceResult?.score ?? null);
-        const adjustedScore = upperBearish && finalScoreResult.score > 5
-          ? parseFloat(Math.max(1, finalScoreResult.score - 1.5).toFixed(1))
-          : finalScoreResult.score;
-        const adjustedResult = { ...finalScoreResult, score: adjustedScore };
+        const adjustedResult = { ...cryptoFinalScoreRaw, score: cryptoAdjustedScore };
         return (
           <div style={{ display:"flex", flexDirection:"column", gap:0 }}>
-            {upperBearish && (
+            {cryptoUpperBearish && (
               <div style={{ padding:"8px 14px", marginBottom:10,
                 background:"#1e0808", border:`1px solid ${THEME.scoreRed}44`,
                 borderRadius:10, fontSize:11, color:THEME.scoreRed,
@@ -7834,8 +7854,8 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
               </div>
             )}
             <MarketContextPanel context={adjustedResult.context} modifiers={adjustedResult.modifiers}/>
-            <TechnicalPanel precomputed={techComputed} context={adjustedResult.context}/>
-            {!chartLoading && allChartData.closes.filter((v: number|null) => v != null).length >= 50 && (() => {
+            <TechnicalPanel precomputed={cryptoTechComputed} context={adjustedResult.context}/>
+            {!chartLoading && allChartData && allChartData.closes.filter((v: number|null) => v != null).length >= 50 && (() => {
               const rawDataProj = candleData ?? allChartData;
               const lastP = rawDataProj.closes.length;
               const startP = Math.max(0, lastP - UT_DISPLAY);
@@ -7845,7 +7865,6 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
                 lows:    rawDataProj.lows.slice(startP),
                 volumes: rawDataProj.volumes.slice(startP),
               } : rawDataProj;
-              const marketCtxProj = classifyMarketContext(slicedProj.closes, slicedProj.highs, slicedProj.lows, slicedProj.volumes);
               return (
                 <ProjectionPanel
                   closes={slicedProj.closes}
@@ -7855,7 +7874,7 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
                   currency="USD"
                   chartInterval={cryptoInterval}
                   period={ut}
-                  marketContext={marketCtxProj}
+                  marketContext={cryptoMarketCtx}
                 />
               );
             })()}
@@ -8581,7 +8600,8 @@ export default function App() {
           upper === "BTC" || upper === "ETH" || upper === "SOL"
           || (d.symbol?.toUpperCase() === upper && (d.market_cap_rank ?? 9999) <= 500)
         );
-        if (!yfData?.meta?.regularMarketPrice || isCryptoETF) {
+        const yfIsCrypto = yfQuoteType === "CRYPTOCURRENCY";
+        if (!yfData?.meta?.regularMarketPrice || isCryptoETF || yfIsCrypto) {
           addLog(`✅ CoinGecko : ${cgId}`);
           setResult({ type:"crypto", data:d });
           setLoading(false); return;
