@@ -1305,12 +1305,12 @@ function calcSinewave(closes: (number|null)[]): SinewaveResult | null {
     }
     if (p > 1.5*Per[i-1]) p = 1.5*Per[i-1];
     if (p < 0.67*Per[i-1]) p = 0.67*Per[i-1];
-    if (p < 6) p = 6; if (p > 50) p = 50;
+    if (p < 6) p = 6; if (p > 100) p = 100;
     Per[i] = p;
     Smp[i] = 0.33*p + 0.67*Smp[i-1];
     Ph[i]  = I1[i] !== 0 ? (180/Math.PI) * Math.atan(Q1[i]/I1[i]) : Ph[i-1];
-    Sn[i]  = Math.sin(Ph[i] * Math.PI / 180);
-    LSn[i] = Math.sin((Ph[i] + 45) * Math.PI / 180);
+    Sn[i]  = Math.sin(Ph[i] * Math.PI / 180) * 100;
+    LSn[i] = Math.sin((Ph[i] + 45) * Math.PI / 180) * 100;
   }
 
   const L = N - 1;
@@ -1326,9 +1326,26 @@ function calcSinewave(closes: (number|null)[]): SinewaveResult | null {
   const phAdv = Math.abs(Ph[L] - Ph[Math.max(10, L-5)]);
   const mode: "trending" | "cycling" = phAdv > 30 ? "trending" : "cycling";
 
-  const momentum14 = N >= 15
-    ? parseFloat((((c[N-1] - c[N-15]) / c[N-15]) * 100).toFixed(1))
-    : 0;
+  // Momentum PRO : ROC(14) normalisé min/max glissant 100 périodes, lissé EMA(5), ±100
+  // Cyclique même en tendance prolongée — approximation du PRO Momentum (X=14, Y=5)
+  let momentum14 = 0;
+  if (N >= 15) {
+    const roc14: number[] = [];
+    for (let j = 14; j < N; j++) {
+      roc14.push(c[j - 14] !== 0 ? ((c[j] - c[j - 14]) / c[j - 14]) * 100 : 0);
+    }
+    const WIN = Math.max(20, Math.min(100, Math.floor(roc14.length / 2)));
+    const normed: number[] = roc14.map((v, i) => {
+      const slice = roc14.slice(Math.max(0, i - WIN + 1), i + 1).slice().sort((a, b) => a - b);
+      const lo = slice[Math.floor(slice.length * 0.05)];
+      const hi = slice[Math.floor(slice.length * 0.95)];
+      return (hi == null || lo == null || hi === lo) ? 0 : Math.max(-100, Math.min(100, ((v - lo) / (hi - lo)) * 200 - 100));
+    });
+    const k5 = 2 / 6;
+    let ema = normed[0];
+    for (let j = 1; j < normed.length; j++) ema = normed[j] * k5 + ema * (1 - k5);
+    momentum14 = parseFloat(Math.max(-100, Math.min(100, ema)).toFixed(1));
+  }
 
   const optimalUT =
     dp <= 10  ? { label:"Journalier",             horizon:"Court terme · Swing 1-2 sem.",           note:`Cycle dominant ~${dp}j — le journalier est l'UT optimale pour piloter les entrées/sorties.` } :
@@ -1777,7 +1794,7 @@ function calcConfluenceScore(
 
   // SINEWAVE OK : phase cyclique favorable
   const sinewaveOk = sw != null &&
-    (sw.cycleTurn === "trough" || sw.sine < -0.3);
+    (sw.cycleTurn === "trough" || sw.sine < -30);
 
   const score = [priceOk, contextOk, momentumOk, sinewaveOk]
     .filter(Boolean).length;
@@ -2463,7 +2480,7 @@ function computeTechSignals(
         strength:"bear", edu: { ...swEdu,
           example:`Croisement Sine/LeadSine en zone haute — sommet de cycle probable. Réduire les positions longues ou serrer les stops.` } });
     } else {
-      const pos = sw.sine > 0.5 ? "phase haute" : sw.sine < -0.5 ? "phase basse" : sw.sine > 0 ? "montée" : "descente";
+      const pos = sw.sine > 50 ? "phase haute" : sw.sine < -50 ? "phase basse" : sw.sine > 0 ? "montée" : "descente";
       signals.push({ emoji:"〰️", color:"#8b949e",
         plain:`Cycle ${sw.mode === "trending" ? "en tendance" : "oscillant"} — actuellement en ${pos}`,
         label:`Sinewave — période ~${sw.dominantPeriod}j`,
@@ -2472,27 +2489,27 @@ function computeTechSignals(
           example:`Période dominante ~${sw.dominantPeriod}j. Sine à ${sw.sine} — pas de retournement imminent, le cycle poursuit sa course.` } });
     }
 
-    if (sw.momentum14 > 5) {
+    if (sw.momentum14 > 10) {
       signals.push({ emoji:"⬆️", color:"#22c55e",
-        plain:`Élan haussier solide — +${sw.momentum14.toFixed(1)}% sur 14 séances`,
-        label:`Momentum ROC +${sw.momentum14.toFixed(1)}%`,
+        plain:`Élan haussier solide — momentum à +${sw.momentum14.toFixed(1)}`,
+        label:`Momentum +${sw.momentum14.toFixed(1)}`,
         detail:"Rate of Change 14 jours · Tendance court terme haussière",
         strength:"bull", edu: { ...momEdu,
-          example:`+${sw.momentum14.toFixed(1)}% sur 14 séances — pression acheteuse soutenue. Signal positif pour les positions longues.` } });
-    } else if (sw.momentum14 < -5) {
+          example:`Momentum à +${sw.momentum14.toFixed(1)} — pression acheteuse soutenue. Signal positif pour les positions longues.` } });
+    } else if (sw.momentum14 < -10) {
       signals.push({ emoji:"⬇️", color:"#ef4444",
-        plain:`Élan baissier — ${sw.momentum14.toFixed(1)}% sur 14 séances`,
-        label:`Momentum ROC ${sw.momentum14.toFixed(1)}%`,
+        plain:`Élan baissier — momentum à ${sw.momentum14.toFixed(1)}`,
+        label:`Momentum ${sw.momentum14.toFixed(1)}`,
         detail:"Rate of Change 14 jours · Tendance court terme baissière",
         strength:"bear", edu: { ...momEdu,
-          example:`${sw.momentum14.toFixed(1)}% sur 14 séances — pression vendeuse persistante. Éviter les achats impulsifs tant que le momentum reste négatif.` } });
+          example:`Momentum à ${sw.momentum14.toFixed(1)} — pression vendeuse persistante. Éviter les achats impulsifs tant que le momentum reste négatif.` } });
     } else {
       signals.push({ emoji:"↔️", color:"#8b949e",
-        plain:`Momentum neutre — ${sw.momentum14 >= 0 ? "+" : ""}${sw.momentum14.toFixed(1)}% sur 14 séances`,
-        label:`Momentum ROC ${sw.momentum14 >= 0 ? "+" : ""}${sw.momentum14.toFixed(1)}%`,
+        plain:`Momentum neutre — ${sw.momentum14 >= 0 ? "+" : ""}${sw.momentum14.toFixed(1)}`,
+        label:`Momentum ${sw.momentum14 >= 0 ? "+" : ""}${sw.momentum14.toFixed(1)}`,
         detail:"Rate of Change 14 jours · Absence d'élan directionnel",
         strength:"neutral", edu: { ...momEdu,
-          example:`ROC de ${sw.momentum14.toFixed(1)}% — le titre évolue sans élan marqué. Le momentum changera probablement avant que le prix ne montre une vraie direction.` } });
+          example:`Momentum à ${sw.momentum14.toFixed(1)} — le titre évolue sans élan marqué. Le momentum changera probablement avant que le prix ne montre une vraie direction.` } });
     }
   }
 
@@ -2713,7 +2730,7 @@ function computeSituationalContext(
       (netMargin != null && netMargin < 0) ||
       (debtEq != null && debtEq > 2.0)
     ) &&
-    (sw == null || sw.sine > 0.3 || sw.cycleTurn === "peak");
+    (sw == null || sw.sine > 30 || sw.cycleTurn === "peak");
 
   if (isDecorrelation) {
     signals.push({
@@ -2800,7 +2817,7 @@ function computeSituationalContext(
     if (sw.cycleTurn === "trough" && globalScore != null && globalScore >= 5.5) {
       // Ne pas afficher "Timing favorable" si la tendance de fond est baissière
       // (Death Cross actif) — contradiction avec EntryRecommendationPanel
-      const isBearishTrend = sw.sine > 0.2 && sw.momentum14 < -5;
+      const isBearishTrend = sw.sine > 20 && sw.momentum14 < -10;
       if (!isBearishTrend) {
         signals.push({ emoji:"🎯", color:"#22c55e",
           label:"Timing favorable — creux de cycle",
@@ -2815,15 +2832,15 @@ function computeSituationalContext(
         label:"Timing défavorable — sommet de cycle",
         detail:`Valorisation tendue (score ${gValorisation.toFixed(1)}/5) + cycle en retournement baissier → attendre le prochain creux pour entrer en position.` });
     }
-    if (sw.momentum14 < -10 && gSante != null && gSante >= 5) {
+    if (sw.momentum14 < -20 && gSante != null && gSante >= 5) {
       signals.push({ emoji:"🔍", color:"#60a5fa",
         label:"Correction sur fondamentaux solides",
-        detail:`Momentum de ${sw.momentum14.toFixed(1)}% malgré une santé financière saine — correction potentiellement temporaire à surveiller.` });
+        detail:`Momentum à ${sw.momentum14.toFixed(1)} malgré une santé financière saine — correction potentiellement temporaire à surveiller.` });
     }
-    if (sw.mode === "trending" && sw.momentum14 > 8 && globalScore != null && globalScore >= 6) {
+    if (sw.mode === "trending" && sw.momentum14 > 15 && globalScore != null && globalScore >= 6) {
       signals.push({ emoji:"🚀", color:"#22c55e",
         label:"Tendance forte + fondamentaux",
-        detail:`Titre en tendance avec un momentum de +${sw.momentum14.toFixed(1)}% et un score fondamental de ${globalScore.toFixed(1)}/10 — contexte porteur.` });
+        detail:`Titre en tendance avec un momentum de +${sw.momentum14.toFixed(1)} et un score fondamental de ${globalScore.toFixed(1)}/10 — contexte porteur.` });
     }
   }
 
@@ -3519,11 +3536,33 @@ function CandleChart({
   (() => {
     const c = closes.filter((v): v is number => v != null);
     if (c.length < 50) return;
-    const last120 = display.map(d => d.c);
-    // ROC-14 momentum sur les 120 dernières bougies
-    for (let i = 14; i < last120.length; i++) {
-      const roc = ((last120[i] - last120[i - 14]) / last120[i - 14]) * 100;
-      momSeriesDisplay[i] = parseFloat(roc.toFixed(2));
+    // Momentum PRO : ROC(14) normalisé min/max glissant 100 périodes, lissé EMA(5), ±100
+    // Calculé sur closes complet pour warm-up correct, extrait sur display via origIdx
+    const cValid = closes.map((v, i) => ({ v, i })).filter(x => x.v != null) as { v: number; i: number }[];
+    const M = cValid.length;
+    if (M >= 15) {
+      const roc14: number[] = [];
+      for (let j = 14; j < M; j++) {
+        roc14.push(cValid[j - 14].v !== 0 ? ((cValid[j].v - cValid[j - 14].v) / cValid[j - 14].v) * 100 : 0);
+      }
+      const WIN = Math.max(20, Math.min(100, Math.floor(roc14.length / 2)));
+      const normed: number[] = roc14.map((v, i) => {
+        const slice = roc14.slice(Math.max(0, i - WIN + 1), i + 1).slice().sort((a, b) => a - b);
+        const lo = slice[Math.floor(slice.length * 0.05)];
+        const hi = slice[Math.floor(slice.length * 0.95)];
+        return (hi == null || lo == null || hi === lo) ? 0 : Math.max(-100, Math.min(100, ((v - lo) / (hi - lo)) * 200 - 100));
+      });
+      const k5 = 2 / 6;
+      let emaVal = normed[0];
+      const momSmoothed: (number|null)[] = new Array(closes.length).fill(null);
+      for (let j = 0; j < normed.length; j++) {
+        emaVal = j === 0 ? normed[0] : normed[j] * k5 + emaVal * (1 - k5);
+        momSmoothed[cValid[j + 14].i] = parseFloat(Math.max(-100, Math.min(100, emaVal)).toFixed(2));
+      }
+      display.forEach((d, dispI) => {
+        const v = momSmoothed[d.origIdx];
+        if (v != null) momSeriesDisplay[dispI] = v;
+      });
     }
     // Sinewave sur toutes les closes valides, puis extraire les 120 dernières
     const N2 = c.length;
@@ -3549,11 +3588,11 @@ function CandleChart({
       let p  = Per[i-1];
       if (Im[i]!==0&&Re[i]!==0){const ang=Math.atan(Im[i]/Re[i]);if(ang!==0)p=2*Math.PI/Math.abs(ang);}
       if(p>1.5*Per[i-1])p=1.5*Per[i-1];if(p<0.67*Per[i-1])p=0.67*Per[i-1];
-      if(p<6)p=6;if(p>50)p=50;
+      if(p<6)p=6;if(p>100)p=100;
       Per[i]=p; Smp[i]=0.33*p+0.67*Smp[i-1];
       Ph[i] = I1[i]!==0?(180/Math.PI)*Math.atan(Q1[i]/I1[i]):Ph[i-1];
-      Sn[i] = Math.sin(Ph[i]*Math.PI/180);
-      LSn[i]= Math.sin((Ph[i]+45)*Math.PI/180);
+      Sn[i] = Math.sin(Ph[i]*Math.PI/180) * 100;
+      LSn[i]= Math.sin((Ph[i]+45)*Math.PI/180) * 100;
     }
     const validOrigIdxs   = candles.map(d => d.origIdx);
     const displayOrigIdxs = display.map(d => d.origIdx);
@@ -3602,10 +3641,10 @@ function CandleChart({
   // Y oscillateur
   const oscTop  = PAD_T + HPRICE + SEP + HVOL + SEP;
   const oscBot  = oscTop + HOSC;
-  const toSineY  = (v: number) => oscTop + HOSC/2 - (v * HOSC/2);
+  const toSineY  = (v: number) => oscTop + HOSC/2 - (v / 100) * (HOSC/2);
   const toMomY   = (v: number) => {
-    const clamped = Math.max(-30, Math.min(30, v));
-    return oscTop + HOSC/2 - (clamped / 30) * (HOSC/2);
+    const clamped = Math.max(-100, Math.min(100, v));
+    return oscTop + HOSC/2 - (clamped / 100) * (HOSC/2);
   };
 
   // Y volume
@@ -3885,19 +3924,26 @@ function CandleChart({
           <text x={PAD_L-5} y={oscTop + HOSC/2 + 4} textAnchor="end"
             fontSize="8" fill="#556">0</text>
           <text x={PAD_L-5} y={oscTop + 8} textAnchor="end"
-            fontSize="8" fill="#60a5fa">+30</text>
+            fontSize="8" fill="#60a5fa">+100</text>
           <text x={PAD_L-5} y={oscBot - 2} textAnchor="end"
-            fontSize="8" fill="#ef4444">-30</text>
+            fontSize="8" fill="#ef4444">-100</text>
 
           {/* ── OSC : GRILLE 0 ── */}
           <line x1={PAD_L} y1={oscTop + HOSC/2} x2={W-PAD_R} y2={oscTop + HOSC/2}
             stroke={THEME.borderSubtle} strokeWidth="0.5"/>
 
-          {/* ── OSC : ZONES SEUIL MOMENTUM (±5) ── */}
-          {[5, -5].map((v, i) => (
+          {/* ── OSC : BORNES SINEWAVE ±80 ── */}
+          {[80, -80].map((v, i) => (
+            <line key={i}
+              x1={PAD_L} y1={toSineY(v)} x2={W-PAD_R} y2={toSineY(v)}
+              stroke="#ef4444" strokeWidth="0.5" strokeOpacity="0.35" strokeDasharray="3,3"/>
+          ))}
+
+          {/* ── OSC : BORNES MOMENTUM ±50 ── */}
+          {[50, -50].map((v, i) => (
             <line key={i}
               x1={PAD_L} y1={toMomY(v)} x2={W-PAD_R} y2={toMomY(v)}
-              stroke="#60a5fa" strokeWidth="0.5" strokeOpacity="0.4" strokeDasharray="3,3"/>
+              stroke="#60a5fa" strokeWidth="0.5" strokeOpacity="0.3" strokeDasharray="3,3"/>
           ))}
 
           {/* ── OSC : MOMENTUM ROC-14 (bleu) ── */}
@@ -3922,7 +3968,7 @@ function CandleChart({
 
           {/* ── OSC : LABELS LÉGENDE ── */}
           <circle cx={PAD_L+6} cy={oscBot+10} r="3" fill="#60a5fa"/>
-          <text x={PAD_L+13}  y={oscBot+14} fontSize="9" fill="#60a5fa" fontWeight="700">Momentum ROC</text>
+          <text x={PAD_L+13}  y={oscBot+14} fontSize="9" fill="#60a5fa" fontWeight="700">Momentum</text>
           <text x={PAD_L+105} y={oscBot+14} fontSize="9" fill="#ef4444" fontWeight="700">· Sinewave</text>
           <text x={PAD_L+171} y={oscBot+14} fontSize="9" fill="#ef4444" fontWeight="700" opacity="0.6">· LeadSine</text>
 
@@ -5496,7 +5542,7 @@ function computeCryptoEntryRecommendation(
   if (context.type === "tendance" && context.structure.type === "bullish" && hasGoldenCross && !hasDeathCross && (rsiValue == null || rsiValue < SCORING_THRESHOLDS.rsi.overbought)) {
     const reasons: string[] = ["Golden Cross actif — tendance haussière de fond confirmée"];
     if (sinewave?.cycleTurn === "trough") reasons.push("Creux de cycle Sinewave — timing optimal");
-    if (momentum14 > 5) reasons.push(`Momentum positif +${momentum14.toFixed(1)}% sur 14 jours`);
+    if (momentum14 > 10) reasons.push(`Momentum positif +${momentum14.toFixed(1)}`);
     if (fg != null && fg > SCORING_THRESHOLDS.fearGreed.fifty && fg < SCORING_THRESHOLDS.fearGreed.greed) reasons.push(`Fear & Greed ${fg}/100 — sentiment haussier modéré`);
     if (fundingRate != null && fundingRate > 0 && fundingRate < SCORING_THRESHOLDS.macro.funding_mod) reasons.push("Funding rate légèrement positif — longs dominants sans euphorie");
     return {
@@ -5650,7 +5696,7 @@ function computeEntryRecommendation(
     else if (context.subtype === "essoufflement" && context.structure.type === "bullish")
       reasons.push("Tendance haussière qui s'essouffle — risque de pullback");
     else if (rsiValue != null && rsiValue > SCORING_THRESHOLDS.rsi.neutral_hi) reasons.push("RSI en zone de surachat — entrée prématurée");
-    else if (momentum14 < -8) reasons.push("Momentum négatif à court terme");
+    else if (momentum14 < -15) reasons.push("Momentum négatif à court terme");
     else reasons.push("Timing technique défavorable");
     const triggers: string[] = [];
     if (hasGoldenCross) triggers.push("Pullback vers l'EMA50");
@@ -5719,7 +5765,7 @@ function computeEntryRecommendation(
     const reasons: string[] = [];
     if (hasGoldenCross) reasons.push("Golden Cross actif — tendance haussière confirmée");
     if (sinewave?.cycleTurn === "trough") reasons.push("Creux de cycle détecté — timing optimal");
-    if (momentum14 > 5) reasons.push(`Momentum positif +${momentum14.toFixed(1)}% sur 14 séances`);
+    if (momentum14 > 10) reasons.push(`Momentum positif +${momentum14.toFixed(1)}`);
     reasons.push(`Fondamentaux solides (${fundamentalScore}/10)`);
     return {
       type: "favorable", icon: "✅",
