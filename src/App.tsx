@@ -5398,14 +5398,20 @@ function SentimentPanel({ metrics, macro }: { metrics: any; macro?: MacroContext
 }
 
 // ── RECOMMANDATION D'ENTRÉE CRYPTO ────────────────────────────────────
-function computeCryptoEntryRecommendation(
-  context     : MarketContext,
-  techSignals : TechSignal[],
-  sinewave    : SinewaveResult | null,
-  fearGreed   : { value: number; label: string } | null,
-  funding     : { rate: number; markPrice: number } | null,
+function computeEntryRecommendation(
+  context          : MarketContext | null,
+  techSignals      : TechSignal[],
+  sinewave         : SinewaveResult | null,
+  finalScore       : number | null,
+  // Optionnels — disponibles selon le type d'actif
+  fearGreed        ?: { value: number; label: string } | null,
+  funding          ?: { rate: number; markPrice: number } | null,
+  macro            ?: MacroContext | null,
+  metrics          ?: any | null,
+  fundamentalScore ?: number | null,
 ): EntryRecommendation {
   const NONE: EntryRecommendation = { type: "none", icon: "", title: "", reasons: [], triggers: [] };
+  if (!context) return NONE;
 
   const hasSignalLabel = (lbl: string) => techSignals.some(s => s.label === lbl || s.label.startsWith(lbl));
   const hasDeathCross  = hasSignalLabel("Death Cross");
@@ -5415,289 +5421,255 @@ function computeCryptoEntryRecommendation(
   const momentum14     = sinewave?.momentum14 ?? 0;
   const fg             = fearGreed?.value ?? null;
   const fundingRate    = funding?.rate ?? null;
+  const fs             = fundamentalScore ?? null;
 
-  // W1 — Chaos
-  if (context.type === "chaos") return {
-    type: "wait", icon: "⛔",
-    title: "Attendre la stabilisation — volatilité extrême",
-    reasons: ["Contexte chaotique — ATR 3× la normale, aucune direction claire", "Les cryptos en chaos peuvent perdre 30-50% rapidement"],
-    triggers: ["ADX se stabilise sous 20", "Volatilité ATR revient à la normale", "Structure HH/HL commence à se former"],
-  };
+  // ── BLOQUANTES (wait) ─────────────────────────────────────────────────────
 
-  // W2 — Death Cross + baissier + funding positif (longs piégés)
-  if (hasDeathCross && context.structure.type === "bearish" && fundingRate != null && fundingRate > SCORING_THRESHOLDS.macro.funding_low) return {
-    type: "wait", icon: "⛔",
-    title: "Tendance baissière confirmée — longs encore dominants",
-    reasons: [
-      "Death Cross actif (EMA50 < EMA200) — tendance de fond baissière",
-      "Structure LL+LH confirmée",
-      `Funding rate positif (${(fundingRate * 100).toFixed(4)}%) — les longs n'ont pas encore capitulé`,
-    ],
-    triggers: ["Funding rate devient négatif (capitulation des longs)", "RSI descend sous 25", "Golden Cross + structure HH+HL"],
-  };
-
-  // W3 — Death Cross + baissier (sans données funding)
-  if (hasDeathCross && context.structure.type === "bearish") return {
-    type: "wait", icon: "⛔",
-    title: "Attendre un retournement haussier confirmé",
-    reasons: ["Death Cross actif — tendance baissière de fond", "Structure de prix LL+LH — chaque rebond est vendu"],
-    triggers: ["Golden Cross (EMA50 repasse au-dessus EMA200)", "RSI < 25 + creux de cycle Sinewave", "Structure HH+HL sur 3 pivots confirmés"],
-  };
-
-  // W4 — RSI extrême + sommet de cycle ou funding élevé
-  if (rsiValue != null && rsiValue > SCORING_THRESHOLDS.rsi.overboughtXX && (sinewave?.cycleTurn === "peak" || (fundingRate != null && fundingRate > SCORING_THRESHOLDS.macro.funding_high))) return {
-    type: "wait", icon: "⛔",
-    title: "Zone de surachat extrême — attendre le prochain cycle",
-    reasons: [
-      `RSI à ${rsiValue} — surachat extrême en crypto`,
-      sinewave?.cycleTurn === "peak" ? "Sommet de cycle Sinewave détecté" : `Funding rate élevé (${(fundingRate! * 100).toFixed(4)}%) — euphorie des longs`,
-    ],
-    triggers: ["RSI redescend sous 50", "Creux de cycle Sinewave", "Funding rate revient sous 0.01%"],
-  };
-
-  // W5 — Extreme Greed + Death Cross
-  if (fg != null && fg > SCORING_THRESHOLDS.fearGreed.greedXX && hasDeathCross) return {
-    type: "wait", icon: "⛔",
-    title: "Euphorie sur tendance baissière — risque élevé",
-    reasons: [
-      `Fear & Greed à ${fg}/100 — Extreme Greed`,
-      "Death Cross actif — la structure de fond contredit le sentiment",
-      "Configuration historiquement précurseur de corrections sévères",
-    ],
-    triggers: ["Fear & Greed redescend sous 60", "Golden Cross", "Structure haussière confirmée"],
-  };
-
-  // C1 — Death Cross seul
-  if (hasDeathCross) return {
-    type: "caution", icon: "⚠️",
-    title: "Death Cross actif — prudence sur la tendance de fond",
-    reasons: ["EMA50 sous EMA200 — momentum baissier moyen terme"],
-    triggers: ["Golden Cross", "RSI < 30 + creux Sinewave pour entrée tactique uniquement"],
-  };
-
-  // C2 — Essoufflement haussier + RSI suracheté
-  if (context.subtype === "essoufflement" && context.structure.type === "bullish" && rsiValue != null && rsiValue > SCORING_THRESHOLDS.rsi.neutral_hi) return {
-    type: "caution", icon: "⚠️",
-    title: "Tendance haussière qui s'essouffle — attendre le creux",
-    reasons: [
-      `RSI à ${rsiValue} — surachat sur tendance essoufflée`,
-      "Momentum en déclin — les corrections crypto peuvent être -20 à -40%",
-    ],
-    triggers: ["RSI redescend sous 45", "Creux de cycle Sinewave", "MACD recroise à la hausse sa ligne de signal"],
-  };
-
-  // C3 — Extreme Greed
-  if (fg != null && fg > SCORING_THRESHOLDS.fearGreed.greedX) return {
-    type: "caution", icon: "⚠️",
-    title: "Euphorie de marché — position réduite recommandée",
-    reasons: [
-      `Fear & Greed à ${fg}/100 — Extreme Greed`,
-      "Les entrées en Extreme Greed offrent historiquement de mauvais rendements ajustés au risque",
-    ],
-    triggers: ["Fear & Greed redescend sous 60", "Creux de cycle Sinewave + RSI < 50"],
-  };
-
-  // C4 — Structure baissière + survente (rebond tactique)
-  if (context.structure.type === "bearish" && rsiValue != null && rsiValue < SCORING_THRESHOLDS.rsi.oversold) return {
-    type: "caution", icon: "⚠️",
-    title: "Survente sur tendance baissière — rebond tactique possible",
-    reasons: [
-      `RSI à ${rsiValue} — survente extrême`,
-      "Structure baissière de fond — tout rebond reste tactique et de courte durée",
-    ],
-    triggers: ["Stabilisation sur 2-3 chandelles + volume supérieur à la moyenne", "Creux de cycle Sinewave confirmé"],
-  };
-
-  // C5 — Extreme Fear
-  if (fg != null && fg < SCORING_THRESHOLDS.fearGreed.fearX) return {
-    type: "caution", icon: "⚠️",
-    title: "Peur extrême — opportunité tactique à confirmer",
-    reasons: [
-      `Fear & Greed à ${fg}/100 — Extreme Fear`,
-      "Les marchés crypto en peur extrême précèdent souvent des rebonds significatifs",
-    ],
-    triggers: ["Creux de cycle Sinewave + RSI < 30", "Première chandelle haussière avec volume fort", "Structure HH+HL qui commence à se former"],
-  };
-
-  // C6 — Funding négatif persistant sur structure non baissière
-  if (fundingRate != null && fundingRate < SCORING_THRESHOLDS.macro.funding_negX && context.structure.type !== "bearish") return {
-    type: "caution", icon: "⚠️",
-    title: "Shorts dominants — compression possible",
-    reasons: [
-      `Funding rate négatif (${(fundingRate * 100).toFixed(4)}%) — les shorts paient les longs`,
-      "Configuration précurseur de short squeeze en crypto",
-    ],
-    triggers: ["Breakout au-dessus d'une résistance avec volume", "RSI dépasse 55 + momentum positif"],
-  };
-
-  // C7 — Range
-  if (context.type === "range") return {
-    type: "caution", icon: "⚠️",
-    title: "Marché en range — entrée sur support ou attendre le breakout",
-    reasons: ["Pas de tendance directionnelle (ADX bas)", "La crypto oscille entre support et résistance"],
-    triggers: ["Breakout haussier avec volume 2× la moyenne", "ADX passe au-dessus de 25", "Golden Cross"],
-  };
-
-  // F1 — Configuration optimale
-  if (context.type === "tendance" && context.structure.type === "bullish" && hasGoldenCross && !hasDeathCross && (rsiValue == null || rsiValue < SCORING_THRESHOLDS.rsi.overbought)) {
-    const reasons: string[] = ["Golden Cross actif — tendance haussière de fond confirmée"];
-    if (sinewave?.cycleTurn === "trough") reasons.push("Creux de cycle Sinewave — timing optimal");
-    if (momentum14 > 10) reasons.push(`Momentum positif +${momentum14.toFixed(1)}`);
-    if (fg != null && fg > SCORING_THRESHOLDS.fearGreed.fifty && fg < SCORING_THRESHOLDS.fearGreed.greed) reasons.push(`Fear & Greed ${fg}/100 — sentiment haussier modéré`);
-    if (fundingRate != null && fundingRate > 0 && fundingRate < SCORING_THRESHOLDS.macro.funding_mod) reasons.push("Funding rate légèrement positif — longs dominants sans euphorie");
+  // W1 — Chaos : aucune direction identifiable, ne pas trader
+  if (context.type === "chaos") {
+    const upperWarn = context.fundamentalConfirm === "warns";
+    const fsNote = fs != null && fs >= 6
+      ? `Fondamentaux solides (${fs}/10) — la qualité intrinsèque est préservée, mais le chaos rend tout timing d'entrée non fiable`
+      : fs != null && fs < 4
+      ? `Fondamentaux fragiles (${fs}/10) — chaos + qualité faible, risque de perte permanente de capital`
+      : null;
+    const reasons: string[] = [
+      "Contexte chaotique — aucune direction claire, volatilité anormale détectée",
+      "En chaos, les signaux techniques classiques (RSI, croisements) génèrent des faux positifs en série",
+    ];
+    if (upperWarn) reasons.push("L'UT supérieure (1W) est également défavorable — pas de filet de sécurité structurel");
+    if (fsNote) reasons.push(fsNote);
     return {
-      type: "favorable", icon: "✅",
-      title: "Configuration favorable — entrée progressive possible",
+      type: "wait", icon: "⛔",
+      title: "Attendre la stabilisation — volatilité extrême",
       reasons,
-      triggers: ["Surveiller RSI > 75 pour commencer à alléger", "Fear & Greed > 80 : réduire la position", "Stop suggéré : sous le dernier plus bas de structure (HL)"],
+      triggers: [
+        "ADX se stabilise sous 20 avec une structure HH/HL ou LL/LH qui commence à se former",
+        "ATR revient sous sa moyenne des 20 dernières séances",
+        fs != null && fs >= 6
+          ? "Les fondamentaux solides permettront une entrée dès que la structure se clarifie"
+          : "Éviter toute entrée tant que le chaos persiste",
+      ],
     };
   }
 
-  // F2 — Creux de cycle sur structure haussière
-  if (sinewave?.cycleTurn === "trough" && context.structure.type === "bullish" && (rsiValue == null || rsiValue < SCORING_THRESHOLDS.rsi.mid)) return {
-    type: "favorable", icon: "✅",
-    title: "Creux de cycle en tendance haussière — fenêtre d'entrée",
-    reasons: ["Sinewave signale un retournement cyclique haussier", "Structure de prix haussière (HH+HL) intacte"],
-    triggers: ["Confirmer avec une chandelle haussière + volume", "Stop suggéré : sous le dernier HL", "RSI > 70 : commencer à alléger"],
-  };
-
-  // F3 — Survente extrême sur structure haussière
-  if (rsiValue != null && rsiValue < SCORING_THRESHOLDS.rsi.oversoldX && context.structure.type === "bullish" && !hasDeathCross) return {
-    type: "favorable", icon: "✅",
-    title: "Survente extrême sur structure haussière — opportunité d'accumulation",
-    reasons: [
-      `RSI à ${rsiValue} — survente extrême en contexte haussier`,
-      "Structure de fond haussière maintenue — la baisse semble exagérée",
-    ],
-    triggers: ["Confirmation sur 1-2 chandelles de rebond avec volume", "Ne pas renforcer si la structure HL est cassée"],
-  };
-
-  // F4 — Extreme Fear + Golden Cross
-  if (fg != null && fg < SCORING_THRESHOLDS.fearGreed.fear && hasGoldenCross) return {
-    type: "favorable", icon: "✅",
-    title: "Peur extrême sur tendance haussière — configuration rare",
-    reasons: [
-      `Fear & Greed à ${fg}/100 — Extreme Fear`,
-      "Golden Cross actif — la tendance de fond reste haussière",
-      "La divergence sentiment/tendance est historiquement favorable",
-    ],
-    triggers: ["Creux de cycle Sinewave confirmé", "Volume en augmentation sur chandelles haussières"],
-  };
-
-  return NONE;
-}
-
-function computeEntryRecommendation(
-  metrics        : any,
-  context        : MarketContext | null,
-  techSignals    : TechSignal[],
-  sinewave       : SinewaveResult | null,
-  macro          : MacroContext | null | undefined,
-  finalScore     : number | null,
-  fundamentalScore: number | null,
-): EntryRecommendation {
-  const NONE: EntryRecommendation = { type: "none", icon: "", title: "", reasons: [], triggers: [] };
-  if (!context) return NONE;
-
-  // Helpers pour extraire signaux techniques
-  const hasSignalLabel = (lbl: string) => techSignals.some(s => s.label === lbl || s.label.startsWith(lbl));
-  const hasDeathCross  = hasSignalLabel("Death Cross");
-  const hasGoldenCross = hasSignalLabel("Golden Cross");
-  const rsiSignal      = techSignals.find(s => s.label.startsWith("RSI"));
-  const rsiValue       = rsiSignal ? parseFloat(rsiSignal.label.split(" ")[1]) : null;
-  const momentum14     = sinewave?.momentum14 ?? 0;
-
-  // ── BLOQUANTES (wait) ──────────────────────────────────────────
-  // W1 — Chaos
-  if (context.type === "chaos") return {
+  // W2 — Death Cross + structure baissière + funding positif (longs non capitulés)
+  if (hasDeathCross && context.structure.type === "bearish"
+      && fundingRate != null && fundingRate > SCORING_THRESHOLDS.macro.funding_low) return {
     type: "wait", icon: "⛔",
-    title: "Attendre la stabilisation du marché",
-    reasons: ["Contexte chaotique — volatilité extrême sans direction claire"],
-    triggers: ["ADX redescend sous 20 avec structure définie", "VIX redescend sous 25"],
-  };
-
-  // W2 — Death Cross + baissier
-  if (hasDeathCross && context.structure.type === "bearish") return {
-    type: "wait", icon: "⛔",
-    title: "Attendre un signal de retournement haussier",
-    reasons: ["Death Cross actif — EMA50 sous EMA200", "Structure baissière confirmée (LL+LH)"],
+    title: "Tendance baissière confirmée — positions longues encore dominantes",
+    reasons: [
+      "Death Cross actif (EMA50 < EMA200) — tendance de fond baissière",
+      "Structure LL+LH confirmée — chaque rebond est vendu",
+      `Funding rate positif (${(fundingRate * 100).toFixed(4)}%) — les longs n'ont pas encore capitulé`,
+    ],
     triggers: [
-      "Croisement Golden Cross (EMA50 repasse au-dessus de EMA200)",
-      "RSI descend sous 30 (zone de survente extrême)",
-      "Creux de cycle Sinewave détecté",
+      "Funding rate devient négatif (capitulation des positions longues)",
+      "RSI descend sous 25 — survente extrême",
+      "Golden Cross + structure HH+HL sur 3 pivots confirmés",
     ],
   };
 
-  // W3 — Essoufflement baissier sans soutien fondamental
-  if (context.subtype === "essoufflement" && context.structure.type === "bearish"
-      && (fundamentalScore == null || fundamentalScore < 5)) return {
-    type: "wait", icon: "⛔",
-    title: "Attendre épuisement complet de la baisse",
-    reasons: ["Tendance baissière qui s'essouffle mais fondamentaux insuffisants pour un rebond durable"],
-    triggers: ["Creux de cycle Sinewave", "RSI < 30", "Score fondamental ≥ 5"],
-  };
+  // W3 — Death Cross + structure baissière (sans données funding)
+  if (hasDeathCross && context.structure.type === "bearish") {
+    const maturityNote = context.maturity === "divergence"
+      ? "Divergence entre prix et momentum — signal précurseur d'un retournement, mais prématuré"
+      : context.maturity === "mature"
+      ? "Tendance baissière mature — momentum déclinant, le creux approche mais n'est pas confirmé"
+      : null;
+    const upperWarn = context.fundamentalConfirm === "warns";
+    const reasons: string[] = [
+      "Death Cross actif — EMA50 sous EMA200, momentum baissier de fond",
+      "Structure de prix LL+LH — statistiquement, chaque rebond est vendu",
+    ];
+    if (maturityNote) reasons.push(maturityNote);
+    if (upperWarn) reasons.push("L'UT supérieure (1W) confirme la tendance baissière — pas de contre-tendance visible");
+    return {
+      type: "wait", icon: "⛔",
+      title: "Attendre un retournement haussier confirmé",
+      reasons,
+      triggers: [
+        "Golden Cross (EMA50 repasse au-dessus de EMA200) — condition minimale",
+        "RSI descend sous 25 + creux de cycle Sinewave (entrée tactique à taille réduite uniquement)",
+        "Structure HH+HL confirmée sur 3 pivots consécutifs — signal de retournement durable",
+      ],
+    };
+  }
 
-  // W4 — Macro très défavorable
-  if (macro && !macro.error && macro.vix != null && macro.vix > SCORING_THRESHOLDS.vix.extreme
+  // W4 — RSI extrême + sommet de cycle ou funding élevé
+  if (rsiValue != null && rsiValue > SCORING_THRESHOLDS.rsi.overboughtXX
+      && (sinewave?.cycleTurn === "peak"
+          || (fundingRate != null && fundingRate > SCORING_THRESHOLDS.macro.funding_high))) {
+    const cycleNote = sinewave?.dominantPeriod != null
+      ? `Cycle dominant ~${sinewave.dominantPeriod}j — le prochain creux est attendu dans les prochaines séances`
+      : null;
+    const maturityNote = context.maturity === "mature" || context.maturity === "divergence"
+      ? "Phase avancée de tendance — surachat + sommet de cycle sur tendance mature est une configuration à haut risque de retournement"
+      : null;
+    const reasons: string[] = [
+      `RSI à ${rsiValue} — surachat extrême, zone statistiquement défavorable pour une entrée`,
+      sinewave?.cycleTurn === "peak"
+        ? "Sommet de cycle Sinewave détecté — probabilité de retournement cyclique élevée"
+        : `Funding rate élevé (${(fundingRate! * 100).toFixed(4)}%) — euphorie des positions longues, capitulation probable`,
+    ];
+    if (cycleNote) reasons.push(cycleNote);
+    if (maturityNote) reasons.push(maturityNote);
+    return {
+      type: "wait", icon: "⛔",
+      title: "Zone de surachat extrême — attendre le prochain cycle",
+      reasons,
+      triggers: [
+        "RSI redescend sous 50",
+        cycleNote ? `Creux de cycle Sinewave confirmé (~${sinewave!.dominantPeriod}j)` : "Creux de cycle Sinewave confirmé",
+        fundingRate != null ? "Funding rate revient sous 0.01%" : "Structure de prix revient vers l'EMA50",
+      ],
+    };
+  }
+
+  // W5 — Extreme Greed + Death Cross [crypto]
+  if (fg != null && fg > SCORING_THRESHOLDS.fearGreed.greedXX && hasDeathCross) {
+    const cycleNote = sinewave?.cycleTurn === "peak"
+      ? "Sommet de cycle Sinewave simultané — triple confluence baissière (sentiment + structure + cycle)"
+      : null;
+    return {
+      type: "wait", icon: "⛔",
+      title: "Euphorie de marché sur tendance baissière — risque maximal",
+      reasons: [
+        `Fear & Greed à ${fg}/100 — Extreme Greed, le marché price un scénario parfait`,
+        "Death Cross actif — la structure de fond contredit le sentiment euphorique",
+        "Historiquement, cette configuration précède des corrections de -30 à -60% en crypto",
+        ...(cycleNote ? [cycleNote] : []),
+      ],
+      triggers: [
+        "Fear & Greed redescend sous 60 (retour à la neutralité)",
+        "Golden Cross confirmé + structure HH+HL sur 3 pivots",
+        "Creux de cycle Sinewave après la correction",
+      ],
+    };
+  }
+
+  // W6 — VIX extrême + courbe inversée [macro]
+  if (macro && !macro.error
+      && macro.vix != null && macro.vix > SCORING_THRESHOLDS.vix.extreme
       && macro.spreadCurve != null && macro.spreadCurve < 0) return {
     type: "wait", icon: "⛔",
-    title: "Attendre normalisation du contexte macro",
-    reasons: ["VIX > 35 — stress de marché élevé", "Courbe des taux inversée — signal de récession"],
-    triggers: ["VIX redescend sous 25", "Spread courbe redevient positif"],
-  };
-
-  // W5 — Valorisation extrême + momentum fort
-  if (metrics?.gValorisation != null && metrics.gValorisation <= 2
-      && context.structure.type === "bullish") return {
-    type: "wait", icon: "⛔",
-    title: "Attendre une correction de valorisation",
+    title: "Stress macro extrême — attendre la normalisation",
     reasons: [
-      "Valorisation extrême (score ≤ 2/10) — le marché price la perfection",
-      "Momentum haussier fort — point d'entrée défavorable",
+      `VIX à ${macro.vix} — panique de marché, volatilité implicite anormalement élevée`,
+      "Courbe des taux inversée — signal de récession parmi les plus fiables historiquement",
+      "Dans ce contexte, même les actifs de qualité peuvent subir des baisses de corrélation forcée (ventes institutionnelles)",
     ],
     triggers: [
-      "Correction de −20% ou plus depuis le sommet",
-      "P/E revient sous 30",
-      "RSI descend sous 40",
+      `VIX redescend sous 25 (actuellement ${macro.vix})`,
+      "Spread courbe des taux redevient positif",
+      "Stabilisation des indices majeurs sur 2-3 semaines consécutives",
     ],
   };
 
-  // W5b — Valorisation tendue + essoufflement
-  if (context.subtype === "essoufflement"
-      && metrics?.gValorisation != null && metrics.gValorisation <= 3.5
-      && context.structure.type === "bullish") {
+  // W7 — Valorisation critique (toutes structures de marché) [stocks]
+  if (metrics?.gValorisation != null && metrics.gValorisation <= 2) {
+    const maturityNote = context.maturity === "divergence"
+      ? "Phase de divergence — le momentum s'affaiblit, amplifiant le risque de correction"
+      : context.maturity === "mature"
+      ? "Tendance mature — chaque nouvelle hausse se paie plus cher pour un potentiel décroissant"
+      : null;
+    const reasons: string[] = [
+      `Score de valorisation ${metrics.gValorisation.toFixed(1)}/10 — survalorisation critique, le marché price la perfection`,
+      "À ces niveaux, la moindre déception sur les résultats peut déclencher une correction violente",
+    ];
+    if (maturityNote) reasons.push(maturityNote);
+    const peTarget = metrics.pe != null ? Math.round(metrics.pe * 0.7) : null;
+    return {
+      type: "wait", icon: "⛔",
+      title: "Valorisation extrême — le marché price la perfection",
+      reasons,
+      triggers: [
+        "Correction de −20% ou plus depuis le sommet récent",
+        peTarget != null ? `P/E revient sous ${peTarget}` : "Valorisation revient à des niveaux raisonnables",
+        "RSI descend sous 40",
+      ],
+    };
+  }
+
+  // W8 — Valorisation tendue (toutes structures de marché) [stocks]
+  // W7 a déjà capturé <= 2 ; ici on couvre 2 < gValorisation <= 3.5
+  if (metrics?.gValorisation != null && metrics.gValorisation > 2
+      && metrics.gValorisation <= 3.5) {
     const gVal = metrics.gValorisation as number;
-    const reasons: string[] = [`Valorisation tendue (score ${gVal.toFixed(1)}/10) — prix déjà élevé`];
+    const structureNote = context.subtype === "essoufflement"
+      ? "Momentum en déclin — la tendance s'essouffle, réduisant l'upside potentiel"
+      : context.type === "range"
+      ? "Marché sans direction — la valorisation tendue offre peu de marge si le range casse à la baisse"
+      : "Marge de sécurité insuffisante au prix actuel";
+    const maturityNote = context.maturity === "divergence"
+      ? "Phase de divergence — signal précurseur d'un retournement, valorisation aggrave le risque"
+      : context.maturity === "mature"
+      ? "Tendance mature — chaque hausse supplémentaire coûte davantage pour un potentiel décroissant"
+      : null;
+    const reasons: string[] = [
+      `Valorisation tendue (score ${gVal.toFixed(1)}/10) — prix déjà élevé par rapport aux fondamentaux`,
+      structureNote,
+    ];
+    if (maturityNote) reasons.push(maturityNote);
     if (rsiValue != null && rsiValue < SCORING_THRESHOLDS.rsi.caution_lo)
-      reasons.push(`RSI en zone de survente (${rsiValue}) — rebond technique possible mais entrée risquée`);
+      reasons.push(`RSI en survente (${rsiValue}) — rebond technique possible mais upside limité par la valorisation`);
     if (sinewave?.cycleTurn === "trough")
-      reasons.push("Creux de cycle détecté — signal positif mais valorisation limite l'upside");
-    reasons.push("Momentum en déclin — tendance haussière qui s'essouffle");
+      reasons.push("Creux de cycle détecté — signal positif mais la valorisation plafonne le potentiel de hausse");
     if (sinewave?.dominantPeriod != null && sinewave.dominantPeriod > 100)
-      reasons.push(`Cycle dominant long (~${sinewave.dominantPeriod}j) — l'horizon de revalorisation est pluriannuel, pas un signal court terme`);
-    const peTarget = metrics.pe != null ? Math.round(metrics.pe * 0.7) : 20;
+      reasons.push(`Cycle dominant long (~${sinewave.dominantPeriod}j) — l'horizon de revalorisation est pluriannuel`);
+    const peTarget = metrics.pe != null ? Math.round(metrics.pe * 0.7) : null;
     const triggers: string[] = [
       "Correction de −15% ou plus depuis le sommet récent",
-      `P/E revient sous ${peTarget}`,
+      peTarget != null ? `P/E revient sous ${peTarget}` : "Valorisation revient à un niveau raisonnable",
     ];
-    if (rsiValue != null && rsiValue < SCORING_THRESHOLDS.rsi.caution_lo)
-      triggers.push("Confirmation du rebond avec volume supérieur à la moyenne");
     if (sinewave?.dominantPeriod != null && sinewave.dominantPeriod > 100)
-      triggers.push("Entrée fractionnée progressive envisageable si horizon > 3 ans, indépendamment du timing court terme");
+      triggers.push("Entrée fractionnée progressive envisageable sur horizon > 3 ans, indépendamment du timing court terme");
     return { type: "wait", icon: "⛔", title: "Attendre une correction de valorisation", reasons, triggers };
   }
 
-  // ── PRUDENTES (caution) ────────────────────────────────────────
-  // C1 — Qualité solide, timing défavorable
-  if (fundamentalScore != null && fundamentalScore >= 6.5
-      && finalScore != null && finalScore <= 4.5) {
+  // ── PRUDENTES (caution) ───────────────────────────────────────────────────
+
+  // C1 — Score global insuffisant (tous actifs, structure non baissière)
+  if (finalScore !== null && finalScore < 5.0
+      && context.structure.type !== "bearish") {
+    const upperWarn = context.fundamentalConfirm === "warns";
+    const maturityNote = context.maturity === "divergence"
+      ? "Phase de divergence détectée — le momentum s'affaiblit avant un éventuel retournement"
+      : context.maturity === "mature"
+      ? "Tendance en phase mature — les meilleurs points d'entrée sont derrière, le risque asymétrique se dégrade"
+      : context.maturity === "jeune"
+      ? "Tendance jeune mais score insuffisant — attendre une confirmation supplémentaire avant d'entrer"
+      : null;
+    const reasons: string[] = [
+      `Score synthétique ${finalScore.toFixed(1)}/10 — moins de la moitié des critères sont favorables`,
+      upperWarn
+        ? "Le contexte UT supérieure (1W) est défavorable et a pénalisé le score (-1.5 point)"
+        : "Le contexte multi-critères ne réunit pas les conditions pour une entrée en position",
+    ];
+    if (maturityNote) reasons.push(maturityNote);
+    return {
+      type: "caution", icon: "⚠️",
+      title: "Score global insuffisant pour une entrée favorable",
+      reasons,
+      triggers: [
+        "Score > 5 sur cette même UT : réévaluer la configuration",
+        upperWarn
+          ? "Attendre que l'UT supérieure (1W) repasse en structure haussière"
+          : "Surveiller l'amélioration du contexte technique (Golden Cross, sortie de range, creux Sinewave)",
+      ],
+    };
+  }
+
+  // C2 — Qualité fondamentale solide mais timing défavorable [stocks]
+  if (fs != null && fs >= 6.5 && finalScore != null && finalScore <= 4.5) {
     const reasons: string[] = [];
     if (hasDeathCross) reasons.push("Death Cross actif — tendance de fond baissière");
     else if (context.subtype === "essoufflement" && context.structure.type === "bullish")
       reasons.push("Tendance haussière qui s'essouffle — risque de pullback");
-    else if (rsiValue != null && rsiValue > SCORING_THRESHOLDS.rsi.neutral_hi) reasons.push("RSI en zone de surachat — entrée prématurée");
+    else if (rsiValue != null && rsiValue > SCORING_THRESHOLDS.rsi.neutral_hi)
+      reasons.push("RSI en zone de surachat — entrée prématurée");
     else if (momentum14 < -15) reasons.push("Momentum négatif à court terme");
-    else reasons.push("Timing technique défavorable");
+    else reasons.push("Timing technique défavorable malgré des fondamentaux solides");
     const triggers: string[] = [];
     if (hasGoldenCross) triggers.push("Pullback vers l'EMA50");
     if (sinewave) triggers.push("Creux de cycle Sinewave");
@@ -5706,115 +5678,206 @@ function computeEntryRecommendation(
     return { type: "caution", icon: "⚠️", title: "Qualité solide — attendre un meilleur timing", reasons, triggers };
   }
 
-  // C2 — Zone de survente sur bons fondamentaux
-  if (fundamentalScore != null && fundamentalScore >= 5.5
-      && rsiValue != null && rsiValue <= 35
-      && context.structure.type !== "bearish") return {
-    type: "caution", icon: "⚠️",
-    title: "Zone de survente — opportunité tactique à confirmer",
-    reasons: [
-      "RSI en zone de survente sur fondamentaux sains",
-      "Possible rebond technique — confirmer avec volume et structure",
-    ],
-    triggers: [
-      "Stabilisation du prix sur 2-3 séances",
-      "Volume supérieur à la moyenne sur une séance haussière",
-      "Creux de cycle Sinewave confirmé",
-    ],
-  };
-
-  // C3 — Essoufflement haussier avec bons fondamentaux
+  // C3 — Essoufflement haussier + RSI suracheté (tous actifs)
   if (context.subtype === "essoufflement" && context.structure.type === "bullish"
-      && fundamentalScore != null && fundamentalScore >= 6) {
-    const triggers = ["Creux de cycle Sinewave", "MACD recroise à la hausse sa ligne de signal"];
+      && rsiValue != null && rsiValue > SCORING_THRESHOLDS.rsi.neutral_hi) {
+    const cycleNote = sinewave?.dominantPeriod != null
+      ? `Cycle dominant ~${sinewave.dominantPeriod}j — un creux de cycle est attendu dans les prochaines séances`
+      : null;
+    const upperWarn = context.fundamentalConfirm === "warns";
+    const reasons: string[] = [
+      `RSI à ${rsiValue} — surachat sur une tendance en essoufflement`,
+      "Momentum en déclin — les corrections sur une tendance essoufflée peuvent atteindre -15 à -30%",
+    ];
+    if (upperWarn) reasons.push("L'UT supérieure (1W) confirme l'essoufflement — pas de relance haussière attendue à court terme");
+    if (cycleNote) reasons.push(cycleNote);
+    if (fs != null && fs >= 6) reasons.push(`Fondamentaux solides (${fs}/10) — le risque long terme reste limité, mais le timing est défavorable`);
+    const triggers: string[] = [];
     const emaSignal = techSignals.find(s => s.label.includes("EMA") || s.label === "Golden Cross");
-    if (emaSignal?.detail) {
-      const m = emaSignal.detail.match(/EMA50[^0-9]*([0-9]+[.,]?[0-9]*)/);
-      if (m) triggers.unshift(`Pullback vers l'EMA50 (${m[1]} ${metrics?.currency ?? ""})`);
-      else triggers.unshift("Pullback vers l'EMA50");
-    }
+    if (emaSignal) triggers.push("Pullback vers l'EMA50 sans casser la structure HL");
+    triggers.push("RSI redescend sous 45");
+    triggers.push("Creux de cycle Sinewave confirmé avec volume");
+    triggers.push("MACD recroise à la hausse sa ligne de signal");
     return {
       type: "caution", icon: "⚠️",
-      title: "Tendance haussière qui s'essouffle — entrée fractionnée possible",
-      reasons: [
-        "Momentum déclinant mais tendance de fond haussière intacte",
-        "Fondamentaux solides — risque limité sur le long terme",
-      ],
-      triggers,
+      title: fs != null && fs >= 6
+        ? "Tendance haussière qui s'essouffle — entrée fractionnée possible après le creux"
+        : "Tendance haussière qui s'essouffle — attendre le creux de cycle",
+      reasons, triggers,
     };
   }
 
-  // C4 — Range avec bons fondamentaux
-  if (context.type === "range" && fundamentalScore != null && fundamentalScore >= 6.5) return {
-    type: "caution", icon: "⚠️",
-    title: "Marché en range — entrée sur support possible",
-    reasons: ["Pas de tendance directionnelle", "Fondamentaux justifient une position à long terme"],
-    triggers: [
-      "Breakout au-dessus de la résistance avec volume",
-      "ADX passe au-dessus de 25",
-      "Golden Cross",
-    ],
-  };
-
-  // ── FAVORABLES ─────────────────────────────────────────────────
-  // F1 — Configuration optimale
-  if (fundamentalScore != null && fundamentalScore >= 5.5
-      && finalScore != null && finalScore >= 5.5
-      && context.type === "tendance"
-      && context.structure.type === "bullish" && !hasDeathCross) {
-    const reasons: string[] = [];
-    if (hasGoldenCross) reasons.push("Golden Cross actif — tendance haussière confirmée");
-    if (sinewave?.cycleTurn === "trough") reasons.push("Creux de cycle détecté — timing optimal");
-    if (momentum14 > 10) reasons.push(`Momentum positif +${momentum14.toFixed(1)}`);
-    reasons.push(`Fondamentaux solides (${fundamentalScore}/10)`);
+  // C4 — Extreme Greed seul [crypto]
+  if (fg != null && fg > SCORING_THRESHOLDS.fearGreed.greedX) {
+    const hasTrend = context.type === "tendance" && context.structure.type === "bullish";
     return {
-      type: "favorable", icon: "✅",
-      title: "Configuration favorable — entrée progressive possible",
-      reasons,
-      triggers: ["Surveiller RSI > 70 (zone de surachat) pour alléger"],
+      type: "caution", icon: "⚠️",
+      title: "Euphorie de marché — position réduite recommandée",
+      reasons: [
+        `Fear & Greed à ${fg}/100 — Extreme Greed`,
+        hasTrend
+          ? "La tendance haussière reste intacte, mais les entrées en Extreme Greed offrent statistiquement de mauvais rendements ajustés au risque"
+          : "Sans tendance haussière confirmée, l'euphorie est particulièrement risquée — les retournements sont violents",
+        ...(sinewave?.cycleTurn === "peak" ? ["Sommet de cycle Sinewave — risque de retournement à court terme"] : []),
+      ],
+      triggers: [
+        "Fear & Greed redescend sous 60",
+        "Creux de cycle Sinewave + RSI < 50",
+        hasTrend ? "Maintenir la position existante — ne pas renforcer" : "Attendre un retour à la neutralité du sentiment",
+      ],
     };
   }
 
-  // F2 — Rebond sur fondamentaux + survente extrême
-  if (fundamentalScore != null && fundamentalScore >= 6
-      && rsiValue != null && rsiValue <= 30
-      && context.structure.type !== "bearish") return {
-    type: "favorable", icon: "✅",
-    title: "Survente extrême sur fondamentaux solides — opportunité de rebond",
-    reasons: [
-      "RSI en zone de survente extrême (<30)",
-      "Fondamentaux solides justifient un rebond vers la valeur intrinsèque",
-    ],
-    triggers: [
-      "Confirmer avec une bougie de retournement haussière",
-      "Volume supérieur à la normale sur la séance de rebond",
-    ],
-  };
+  // C5 — Structure baissière + survente (rebond tactique, tous actifs)
+  if (context.structure.type === "bearish"
+      && rsiValue != null && rsiValue < SCORING_THRESHOLDS.rsi.oversold) {
+    const cycleNote = sinewave?.cycleTurn === "trough"
+      ? "Creux de cycle Sinewave simultané — rebond tactique à court terme probable"
+      : sinewave?.dominantPeriod != null
+      ? `Cycle dominant ~${sinewave.dominantPeriod}j — surveiller le prochain creux pour le timing du rebond`
+      : null;
+    const fsNote = fs != null && fs >= 6
+      ? `Fondamentaux solides (${fs}/10) — le rebond peut être plus significatif que sur un actif de faible qualité`
+      : null;
+    return {
+      type: "caution", icon: "⚠️",
+      title: "Survente sur tendance baissière — rebond tactique possible",
+      reasons: [
+        `RSI à ${rsiValue} — survente extrême, zone de rebond technique statistiquement probable`,
+        "Structure baissière de fond — tout rebond reste tactique, ne pas confondre avec un retournement",
+        ...(cycleNote ? [cycleNote] : []),
+        ...(fsNote ? [fsNote] : []),
+      ],
+      triggers: [
+        "Stabilisation sur 2-3 séances avec volume supérieur à la moyenne",
+        "Creux de cycle Sinewave confirmé",
+        "Ne pas tenir la position au-delà du premier niveau de résistance",
+      ],
+    };
+  }
 
-  // F3 — Creux de cycle confirmé
-  if (sinewave?.cycleTurn === "trough"
-      && fundamentalScore != null && fundamentalScore >= 5.5
-      && finalScore != null && finalScore >= 5) return {
-    type: "favorable", icon: "✅",
-    title: "Creux de cycle détecté — fenêtre d'entrée",
-    reasons: [
-      "Sinewave Ehlers signale un retournement cyclique haussier",
-      "Score fondamental suffisant pour justifier une position",
-    ],
-    triggers: [
-      "Surveiller confirmation RSI et volume dans les 3-5 séances",
-      "Stop suggéré : sous le dernier plus bas",
-    ],
-  };
-  // C5 — Macro modérément défavorable (après F1/F2/F3)
+  // C6 — Extreme Fear [crypto]
+  if (fg != null && fg < SCORING_THRESHOLDS.fearGreed.fearX) {
+    const hasGoldenCrossOrBullish = hasGoldenCross || context.structure.type === "bullish";
+    return {
+      type: "caution", icon: "⚠️",
+      title: hasGoldenCrossOrBullish
+        ? "Peur extrême sur structure haussière — opportunité à confirmer"
+        : "Peur extrême — rebond possible mais structure à vérifier",
+      reasons: [
+        `Fear & Greed à ${fg}/100 — Extreme Fear`,
+        hasGoldenCrossOrBullish
+          ? "La structure haussière reste intacte malgré le sentiment négatif — divergence favorable"
+          : "Structure non confirmée — la peur peut précéder une capitulation supplémentaire",
+        "Statistiquement, l'Extreme Fear précède des rebonds significatifs en crypto",
+      ],
+      triggers: [
+        "Creux de cycle Sinewave + RSI < 30",
+        "Première séance haussière avec volume fort",
+        hasGoldenCrossOrBullish
+          ? "Golden Cross maintenu — conserver si la structure HL tient"
+          : "Attendre la formation d'une structure HH+HL avant d'entrer",
+      ],
+    };
+  }
+
+  // C7 — Funding négatif persistant sur structure non baissière [crypto]
+  if (fundingRate != null && fundingRate < SCORING_THRESHOLDS.macro.funding_negX
+      && context.structure.type !== "bearish") {
+    const hasBullishStructure = context.structure.type === "bullish";
+    return {
+      type: "caution", icon: "⚠️",
+      title: hasBullishStructure
+        ? "Shorts dominants sur structure haussière — short squeeze probable"
+        : "Shorts dominants — compression possible",
+      reasons: [
+        `Funding rate négatif (${(fundingRate * 100).toFixed(4)}%) — les shorts paient les longs, pression vendeuse artificielle`,
+        hasBullishStructure
+          ? "Structure haussière maintenue malgré le funding négatif — les shorts sont exposés à un retournement brutal"
+          : "Structure non directionnelle — le squeeze est possible mais moins certain sans tendance de fond",
+        "Plus le funding négatif persiste, plus la compression potentielle est violente",
+      ],
+      triggers: [
+        "Breakout au-dessus d'une résistance clé avec volume 2× la moyenne",
+        "RSI dépasse 55 + momentum positif",
+        "Funding rate revient vers zéro (début de la compression)",
+      ],
+    };
+  }
+
+  // C8 — Range (tous actifs, enrichi si fondamentaux disponibles)
+  if (context.type === "range") {
+    const hasSolidFundamentals = fs != null && fs >= 6.5;
+    const cycleNote = sinewave?.cycleTurn === "trough"
+      ? "Creux de cycle Sinewave en range — timing favorable pour une entrée sur support"
+      : sinewave?.cycleTurn === "peak"
+      ? "Sommet de cycle en range — attendre le prochain creux avant d'entrer"
+      : null;
+    const upperWarn = context.fundamentalConfirm === "warns";
+    return {
+      type: "caution", icon: "⚠️",
+      title: hasSolidFundamentals
+        ? "Marché en range — entrée sur support possible"
+        : "Marché en range — attendre le breakout",
+      reasons: [
+        "Pas de tendance directionnelle (ADX bas) — le prix oscille entre support et résistance",
+        hasSolidFundamentals
+          ? `Fondamentaux solides (${fs}/10) — une accumulation progressive sur support est envisageable`
+          : "Sans tendance établie ni fondamentaux solides, le risque de faux breakout ou de breakdown est élevé",
+        ...(cycleNote ? [cycleNote] : []),
+        ...(upperWarn ? ["L'UT supérieure (1W) est défavorable — privilégier l'attente du breakout plutôt que l'entrée sur support"] : []),
+      ],
+      triggers: [
+        sinewave?.cycleTurn === "trough"
+          ? "Confirmation du rebond depuis le support avec volume — fenêtre ouverte"
+          : "Breakout haussier confirmé avec volume 2× la moyenne",
+        "ADX passe au-dessus de 25",
+        "Golden Cross",
+      ],
+    };
+  }
+
+  // C9 — Survente sur bons fondamentaux [stocks]
+  if (fs != null && fs >= 5.5 && rsiValue != null && rsiValue <= 35
+      && context.structure.type !== "bearish") {
+    const cycleConfirm = sinewave?.cycleTurn === "trough"
+      ? "Creux de cycle Sinewave simultané — convergence technique et fondamentale favorable"
+      : sinewave?.dominantPeriod != null
+      ? `Cycle dominant ~${sinewave.dominantPeriod}j — surveiller le prochain creux pour optimiser le timing`
+      : null;
+    return {
+      type: "caution", icon: "⚠️",
+      title: "Zone de survente sur fondamentaux solides — opportunité à confirmer",
+      reasons: [
+        `RSI à ${rsiValue} — survente, zone où les vendeurs s'épuisent statistiquement`,
+        `Fondamentaux solides (${fs}/10) — la baisse semble disproportionnée par rapport à la valeur réelle`,
+        ...(cycleConfirm ? [cycleConfirm] : []),
+      ],
+      triggers: [
+        "Stabilisation sur 2-3 séances consécutives",
+        "Volume supérieur à la moyenne sur une séance haussière",
+        sinewave?.cycleTurn === "trough"
+          ? "Creux de cycle confirmé — fenêtre d'entrée ouverte"
+          : "Creux de cycle Sinewave à surveiller pour optimiser l'entrée",
+      ],
+    };
+  }
+
+  // C10 — VIX modéré [macro]
   if (macro && !macro.error && finalScore != null && finalScore >= 5
-      && ((macro.vix != null && macro.vix > SCORING_THRESHOLDS.vix.caution) || (macro.rate10y != null && macro.rate10y > SCORING_THRESHOLDS.macro.rate10y_high))) {
+      && ((macro.vix != null && macro.vix > SCORING_THRESHOLDS.vix.caution)
+          || (macro.rate10y != null && macro.rate10y > SCORING_THRESHOLDS.macro.rate10y_high))) {
     const reasons: string[] = [];
-    if (macro.vix != null && macro.vix > SCORING_THRESHOLDS.vix.caution) reasons.push(`VIX à ${macro.vix} — volatilité élevée`);
-    if (macro.rate10y != null && macro.rate10y > SCORING_THRESHOLDS.macro.rate10y_high) reasons.push(`Taux à ${macro.rate10y}% — pression sur les valorisations`);
+    if (macro.vix != null && macro.vix > SCORING_THRESHOLDS.vix.caution)
+      reasons.push(`VIX à ${macro.vix} — volatilité macro élevée`);
+    if (macro.rate10y != null && macro.rate10y > SCORING_THRESHOLDS.macro.rate10y_high)
+      reasons.push(`Taux 10 ans à ${macro.rate10y}% — pression sur les valorisations`);
     const triggers: string[] = [];
-    if (macro.vix != null && macro.vix > SCORING_THRESHOLDS.vix.caution) triggers.push("VIX redescend sous 20");
-    if (macro.rate10y != null && macro.rate10y > SCORING_THRESHOLDS.macro.rate10y_high) triggers.push("Taux 10 ans repassent sous 4%");
+    if (macro.vix != null && macro.vix > SCORING_THRESHOLDS.vix.caution)
+      triggers.push("VIX redescend sous 20");
+    if (macro.rate10y != null && macro.rate10y > SCORING_THRESHOLDS.macro.rate10y_high)
+      triggers.push("Taux 10 ans repassent sous 4%");
+    reasons.push("Dans ce contexte, réduire la taille de position de 30-50% par rapport à la normale");
     return {
       type: "caution", icon: "⚠️",
       title: "Contexte macro à surveiller — position réduite recommandée",
@@ -5822,28 +5885,204 @@ function computeEntryRecommendation(
     };
   }
 
-  // ── FALLBACK — context null mais données fondamentales disponibles ──
-  if (fundamentalScore != null && context === null) {
-    if (fundamentalScore >= 6.5) return {
-      type: "caution", icon: "⚠️",
-      title: "Fondamentaux solides — données techniques insuffisantes",
-      reasons: [
-        `Score fondamental ${fundamentalScore}/10 — qualité intrinsèque solide`,
-        "Données techniques insuffisantes pour évaluer le timing d'entrée",
-      ],
+  // ── FAVORABLES ────────────────────────────────────────────────────────────
+
+  // F1 — Configuration optimale (tous actifs, enrichie si données dispo)
+  if (context.type === "tendance" && context.structure.type === "bullish"
+      && !hasDeathCross
+      && (rsiValue == null || rsiValue < SCORING_THRESHOLDS.rsi.overbought)) {
+    const maturityLabel = context.maturity === "jeune"
+      ? "Tendance jeune — fort potentiel mais non encore pleinement confirmée"
+      : context.maturity === "en_developpement"
+      ? "Tendance en développement — phase statistiquement la plus favorable pour entrer"
+      : context.maturity === "mature"
+      ? "Tendance mature — les gains futurs sont plus incertains, taille de position réduite recommandée"
+      : context.maturity === "divergence"
+      ? "Divergence détectée — la tendance haussière montre des signes d'essoufflement malgré une structure encore intacte"
+      : null;
+    const upperWarn = context.fundamentalConfirm === "warns";
+    const cycleNote = sinewave?.dominantPeriod != null
+      ? `Cycle dominant ~${sinewave.dominantPeriod}j — ${sinewave.cycleTurn === "trough" ? "creux en cours, fenêtre d'entrée ouverte" : "position dans le cycle à surveiller"}`
+      : null;
+    const reasons: string[] = [];
+    if (hasGoldenCross) reasons.push("Golden Cross actif — EMA50 au-dessus de l'EMA200, tendance de fond confirmée");
+    if (sinewave?.cycleTurn === "trough") reasons.push("Creux de cycle Sinewave détecté — alignement optimal tendance + cycle");
+    if (momentum14 > 10) reasons.push(`Momentum positif (+${momentum14.toFixed(1)}) — dynamique haussière en cours`);
+    if (fs != null && fs >= 5.5) reasons.push(`Fondamentaux solides (${fs}/10) — la qualité intrinsèque soutient la hausse`);
+    if (fg != null && fg > SCORING_THRESHOLDS.fearGreed.fifty && fg < SCORING_THRESHOLDS.fearGreed.greed)
+      reasons.push(`Fear & Greed ${fg}/100 — sentiment haussier modéré, pas encore en zone d'excès`);
+    if (fundingRate != null && fundingRate > 0 && fundingRate < SCORING_THRESHOLDS.macro.funding_mod)
+      reasons.push("Funding rate légèrement positif — longs dominants sans signe d'euphorie");
+    if (maturityLabel) reasons.push(maturityLabel);
+    if (cycleNote && sinewave?.cycleTurn !== "trough") reasons.push(cycleNote);
+    if (upperWarn) reasons.push("⚠️ L'UT supérieure (1W) montre un essoufflement — entrée fractionnée recommandée");
+    if (reasons.length === 0) reasons.push("Structure haussière active sans signal de retournement identifié");
+    const triggers: string[] = [
+      rsiValue != null ? `RSI dépasse 75 (actuellement ${rsiValue}) : commencer à alléger` : "RSI dépasse 75 : commencer à alléger",
+      fg != null ? "Fear & Greed dépasse 80 : réduire la position (zone d'excès spéculatif)" : "Apparition d'un signal de divergence : réduire la position",
+      "Stop suggéré : sous le dernier plus bas de structure (HL)",
+    ];
+    if (upperWarn) triggers.push("Surveiller le retour de l'UT supérieure en structure haussière pour confirmer l'entrée");
+    return {
+      type: upperWarn ? "caution" : "favorable",
+      icon: upperWarn ? "⚠️" : "✅",
+      title: upperWarn
+        ? "Structure favorable mais UT supérieure défavorable — entrée fractionnée uniquement"
+        : context.maturity === "mature"
+        ? "Configuration favorable — tendance mature, taille réduite recommandée"
+        : "Configuration favorable — entrée progressive possible",
+      reasons, triggers,
+    };
+  }
+
+  // F2 — Creux de cycle en structure haussière (tous actifs)
+  if (sinewave?.cycleTurn === "trough" && context.structure.type === "bullish"
+      && (rsiValue == null || rsiValue < SCORING_THRESHOLDS.rsi.mid)) {
+    const upperWarn = context.fundamentalConfirm === "warns";
+    const cycleContext = sinewave.dominantPeriod != null
+      ? `Cycle dominant ~${sinewave.dominantPeriod}j — la fenêtre d'entrée est courte, agir rapidement ou attendre le prochain creux`
+      : "Fenêtre d'entrée cyclique identifiée — à confirmer avec volume";
+    const reasons: string[] = [
+      "Creux de cycle Sinewave Ehlers détecté — retournement cyclique haussier probable",
+      "Structure de prix haussière (HH+HL) intacte — la tendance de fond n'est pas remise en cause",
+      cycleContext,
+    ];
+    if (fs != null && fs >= 5) reasons.push(`Fondamentaux corrects (${fs}/10) — soutien à long terme`);
+    if (upperWarn) reasons.push("⚠️ L'UT supérieure (1W) est défavorable — réduire la taille de position");
+    return {
+      type: upperWarn ? "caution" : "favorable",
+      icon: upperWarn ? "⚠️" : "✅",
+      title: upperWarn
+        ? "Creux de cycle détecté — contexte 1W défavorable, position réduite"
+        : "Creux de cycle en tendance haussière — fenêtre d'entrée",
+      reasons,
       triggers: [
-        "Analyser le graphique sur une plateforme technique dédiée (TradingView...)",
-        "Surveiller RSI, structure de prix et volume avant d'entrer",
+        "Confirmer avec une séance haussière et volume supérieur à la moyenne",
+        "Stop suggéré : sous le dernier plus bas de structure (HL)",
+        "RSI dépasse 70 : commencer à alléger",
       ],
     };
-    if (fundamentalScore >= 4 && finalScore != null && finalScore >= 5) return {
-      type: "caution", icon: "⚠️",
-      title: "Profil correct — contexte technique à confirmer",
+  }
+
+  // F3 — Survente extrême sur structure haussière (tous actifs)
+  if (rsiValue != null && rsiValue < SCORING_THRESHOLDS.rsi.oversoldX
+      && context.structure.type === "bullish" && !hasDeathCross) {
+    const cycleConfirm = sinewave?.cycleTurn === "trough"
+      ? "Creux de cycle Sinewave simultané — double confirmation technique, probabilité de rebond élevée"
+      : sinewave?.dominantPeriod != null
+      ? `Cycle dominant ~${sinewave.dominantPeriod}j — rebond probable dans les prochaines séances`
+      : null;
+    const upperWarn = context.fundamentalConfirm === "warns";
+    return {
+      type: upperWarn ? "caution" : "favorable",
+      icon: upperWarn ? "⚠️" : "✅",
+      title: upperWarn
+        ? "Survente extrême — structure 1W défavorable, entrée à taille réduite"
+        : "Survente extrême sur structure haussière — opportunité d'accumulation",
       reasons: [
-        `Score fondamental ${fundamentalScore}/10`,
-        "Données techniques insuffisantes pour évaluer le timing",
+        `RSI à ${rsiValue} — survente extrême, zone où les vendeurs s'épuisent statistiquement`,
+        "Structure de fond haussière maintenue — la baisse semble disproportionnée",
+        ...(cycleConfirm ? [cycleConfirm] : []),
+        ...(fs != null && fs >= 5 ? [`Fondamentaux (${fs}/10) confirment la solidité intrinsèque`] : []),
+        ...(upperWarn ? ["⚠️ L'UT supérieure (1W) est défavorable — réduire la taille d'entrée"] : []),
       ],
-      triggers: ["Surveiller RSI et structure de prix avant d'entrer"],
+      triggers: [
+        "Confirmation sur 1-2 séances de rebond avec volume supérieur à la moyenne",
+        "Ne pas renforcer si la structure HL est cassée",
+        upperWarn
+          ? "Surveiller le retour de l'UT 1W en structure haussière pour renforcer"
+          : "Stop suggéré : sous le dernier plus bas de structure",
+      ],
+    };
+  }
+
+  // F4 — Extreme Fear + Golden Cross [crypto]
+  if (fg != null && fg < SCORING_THRESHOLDS.fearGreed.fear && hasGoldenCross) {
+    const cycleConfirm = sinewave?.cycleTurn === "trough"
+      ? "Creux de cycle Sinewave simultané — triple confluence favorable (sentiment + structure + cycle)"
+      : null;
+    const upperWarn = context.fundamentalConfirm === "warns";
+    return {
+      type: upperWarn ? "caution" : "favorable",
+      icon: upperWarn ? "⚠️" : "✅",
+      title: upperWarn
+        ? "Peur extrême + Golden Cross — contexte 1W défavorable, position réduite"
+        : "Peur extrême sur tendance haussière — configuration rare et favorable",
+      reasons: [
+        `Fear & Greed à ${fg}/100 — Extreme Fear, le marché sous-évalue la situation`,
+        "Golden Cross actif — la tendance de fond haussière contredit le sentiment négatif",
+        "Historiquement, la divergence sentiment/structure en crypto précède des hausses significatives",
+        ...(cycleConfirm ? [cycleConfirm] : []),
+        ...(upperWarn ? ["⚠️ L'UT supérieure (1W) est défavorable — entrée fractionnée recommandée"] : []),
+      ],
+      triggers: [
+        cycleConfirm ? "Creux de cycle confirmé — fenêtre d'entrée ouverte" : "Creux de cycle Sinewave à surveiller",
+        "Volume en augmentation sur 2-3 séances haussières consécutives",
+        "Fear & Greed remonte au-dessus de 30 (retour de confiance)",
+      ],
+    };
+  }
+
+  // F5 — Rebond fondamentaux + survente extrême [stocks]
+  if (fs != null && fs >= 6 && rsiValue != null && rsiValue <= 30
+      && context.structure.type !== "bearish") {
+    const cycleConfirm = sinewave?.cycleTurn === "trough"
+      ? "Creux de cycle Sinewave simultané — convergence technique optimale"
+      : null;
+    const upperWarn = context.fundamentalConfirm === "warns";
+    return {
+      type: upperWarn ? "caution" : "favorable",
+      icon: upperWarn ? "⚠️" : "✅",
+      title: upperWarn
+        ? "Survente sur fondamentaux solides — contexte 1W défavorable, taille réduite"
+        : "Survente extrême sur fondamentaux solides — opportunité de rebond",
+      reasons: [
+        `RSI à ${rsiValue} — survente extrême, zone d'épuisement des vendeurs`,
+        `Fondamentaux solides (${fs}/10) — la valeur intrinsèque soutient un retour vers la moyenne`,
+        ...(cycleConfirm ? [cycleConfirm] : []),
+        ...(upperWarn ? ["⚠️ L'UT supérieure (1W) est défavorable — réduire la taille de position"] : []),
+      ],
+      triggers: [
+        "Confirmer avec une séance de retournement haussière",
+        "Volume supérieur à la normale sur la séance de rebond",
+        upperWarn
+          ? "Surveiller la structure 1W pour un renforcement éventuel"
+          : "Stop suggéré : sous le dernier plus bas",
+      ],
+    };
+  }
+
+  // F6 — Creux de cycle + fondamentaux suffisants [stocks]
+  if (sinewave?.cycleTurn === "trough" && fs != null && fs >= 5.5
+      && finalScore != null && finalScore >= 5) {
+    const upperWarn = context.fundamentalConfirm === "warns";
+    const periodNote = sinewave.dominantPeriod != null
+      ? `Cycle dominant ~${sinewave.dominantPeriod}j — fenêtre d'entrée courte, agir dans les prochaines séances ou attendre le cycle suivant`
+      : "Fenêtre d'entrée cyclique — confirmer rapidement";
+    const maturityNote = context.maturity === "jeune" || context.maturity === "en_developpement"
+      ? "Tendance en phase favorable — le creux de cycle s'inscrit dans une dynamique haussière robuste"
+      : context.maturity === "mature"
+      ? "Tendance mature — le creux offre une entrée mais l'upside est plus limité qu'en début de tendance"
+      : null;
+    return {
+      type: upperWarn ? "caution" : "favorable",
+      icon: upperWarn ? "⚠️" : "✅",
+      title: upperWarn
+        ? "Creux de cycle détecté — contexte 1W défavorable, position réduite"
+        : "Creux de cycle détecté — fenêtre d'entrée",
+      reasons: [
+        "Sinewave Ehlers signale un retournement cyclique haussier",
+        `Fondamentaux suffisants (${fs}/10) pour justifier une position`,
+        periodNote,
+        ...(maturityNote ? [maturityNote] : []),
+        ...(upperWarn ? ["⚠️ L'UT supérieure (1W) est défavorable — réduire la taille et surveiller de près"] : []),
+      ],
+      triggers: [
+        "Confirmer avec une séance haussière et volume dans les 3-5 séances suivantes",
+        upperWarn
+          ? "Surveiller la structure 1W pour un éventuel renforcement"
+          : "Stop suggéré : sous le dernier plus bas",
+      ],
     };
   }
 
@@ -6204,6 +6443,7 @@ function useChartLoader(
 
   return {
     chartData,
+    chartDataMap,
     chartDataUpper,
     chartLoading,
     ut,
@@ -6229,6 +6469,8 @@ function StockView({ metrics, ticker, macro, zone, eurRate, activeTab = "resume"
   // État graphique interactif
   const {
     chartData,
+    chartDataMap,
+    chartDataUpper: stockDataWeekly,
     chartLoading,
     ut,
     availableUTs,
@@ -6541,7 +6783,23 @@ function StockView({ metrics, ticker, macro, zone, eurRate, activeTab = "resume"
   const finalScoreResult = marketCtx
     ? computeFinalScore(metrics, marketCtx, techComputed.signals, closes, confluenceResult?.score ?? null)
     : null;
-  const finalScore = finalScoreResult?.score ?? null;
+  // UT supérieure : 1D→1W, 1W→1M, 1M→aucune
+  const stockUpperData =
+    ut === "1D" ? stockDataWeekly :
+    ut === "1W" ? (chartDataMap["1M"] ?? null) :
+    null;
+  const stockUpperCtx = stockUpperData
+    ? classifyMarketContext(stockUpperData.closes, stockUpperData.highs, stockUpperData.lows, stockUpperData.volumes)
+    : null;
+  const stockUpperBearish = stockUpperCtx != null &&
+    (stockUpperCtx.structure.type === "bearish" || stockUpperCtx.type === "chaos" ||
+     (stockUpperCtx.subtype === "essoufflement" && stockUpperCtx.structure.type === "bullish"));
+  const finalScoreRaw = finalScoreResult?.score ?? null;
+  const finalScore = finalScoreRaw != null
+    ? (stockUpperBearish && finalScoreRaw > 5
+        ? parseFloat(Math.max(1, finalScoreRaw - 1.5).toFixed(1))
+        : finalScoreRaw)
+    : null;
   const v = getVerdict(finalScore);
 
   // Badge synthétique : ne compte que les signaux directionnels (exclut neutral)
@@ -6710,12 +6968,14 @@ function StockView({ metrics, ticker, macro, zone, eurRate, activeTab = "resume"
             {/* Recommandation d'entrée */}
             {(() => {
               const entryRec = computeEntryRecommendation(
-                metrics,
                 finalScoreResult?.context ?? null,
                 techComputed.signals,
                 techComputed.sinewave,
-                macro,
                 finalScore,
+                null,
+                null,
+                macro,
+                metrics,
                 metrics?.globalScore ?? null,
               );
               return <EntryRecommendationPanel rec={entryRec}/>;
@@ -7731,7 +7991,7 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
         };
       })()
     : null;
-  const cryptoUpperCtx = (cryptoData && cryptoInterval === "1d" && allChartDataWeekly)
+  const cryptoUpperCtx = (cryptoData && allChartDataWeekly)
     ? classifyMarketContext(allChartDataWeekly.closes, allChartDataWeekly.highs, allChartDataWeekly.lows, allChartDataWeekly.volumes)
     : null;
   const cryptoMarketCtx = cryptoData
@@ -7755,12 +8015,16 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
         : cryptoFinalScoreRaw.score)
     : null;
   const cryptoEntryRec = (cryptoMarketCtx && cryptoTechComputed)
-    ? computeCryptoEntryRecommendation(
+    ? computeEntryRecommendation(
         cryptoUpperBearish ? { ...cryptoMarketCtx, fundamentalConfirm: "warns" } : cryptoMarketCtx,
         cryptoTechComputed.signals,
         cryptoTechComputed.sinewave,
+        cryptoAdjustedScore,
         fearGreed,
         funding,
+        null,
+        null,
+        null,
       )
     : null;
 
@@ -8378,12 +8642,14 @@ function ForexView({ currency, rate, allRates, ticker: forexTicker, activeTab = 
 
   const entryRec = (finalScoreResult && techComputed)
     ? computeEntryRecommendation(
-        null,
         finalScoreResult.context,
         techComputed.signals,
         techComputed.sinewave,
-        null,
         finalScore,
+        null,
+        null,
+        null,
+        null,
         null,
       )
     : { type: "none" as const, icon: "", title: "", reasons: [], triggers: [] };
@@ -8828,7 +9094,35 @@ export default function App() {
         }
         @media (max-width: 768px) {
           .nav-left { display: none; }
-          .content-area { margin-left: 0; max-width: 100%; padding: 16px; }
+          .content-area { margin-left: 0; max-width: 100%; padding: 16px; padding-bottom: 72px; }
+        }
+        .mobile-tab-bar {
+          display: none;
+        }
+        @media (max-width: 768px) {
+          .mobile-tab-bar {
+            display: flex;
+            position: fixed;
+            bottom: 0; left: 0; right: 0;
+            height: 56px;
+            background: #090f1a;
+            border-top: 1px solid #1e2a3a;
+            z-index: 50;
+            align-items: stretch;
+          }
+          .mobile-tab-bar button {
+            flex: 1; background: transparent; border: none;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            gap: 3px; cursor: pointer; padding: 6px 4px; transition: background .15s;
+          }
+          .mobile-tab-bar button.active {
+            background: rgba(245,158,11,0.12);
+            border-top: 2px solid #f59e0b;
+          }
+          .mobile-tab-bar button .tab-icon { font-size: 17px; line-height: 1; }
+          .mobile-tab-bar button .tab-label { font-size: 10px; font-weight: 600; color: #94a3b8; white-space: nowrap; }
+          .mobile-tab-bar button.active .tab-label { color: #f59e0b; }
         }
       `}</style>
 
@@ -9178,6 +9472,41 @@ export default function App() {
           </div>
 
         </main>
+
+          {/* Barre de navigation mobile — fixe en bas, hors nav-left */}
+          {result && (() => {
+            const mobileTabs = result.type === "stock" ? [
+              { icon:"📊", label:"Résumé",       tab:"resume"       as const },
+              { icon:"📈", label:"Technique",    tab:"technique"    as const },
+              { icon:"🏢", label:"Fondamentaux", tab:"fondamentaux" as const },
+              { icon:"🌍", label:"Macro",        tab:"macro"        as const },
+            ] : result.type === "crypto" ? [
+              { icon:"📊", label:"Résumé",    tab:"resume"    as const },
+              { icon:"📈", label:"Technique", tab:"technique" as const },
+              { icon:"🪙", label:"Marché",    tab:"marche"    as const },
+              { icon:"📰", label:"News",      tab:"macro"     as const },
+            ] : [
+              { icon:"📊", label:"Résumé",    tab:"resume"    as const },
+              { icon:"📈", label:"Technique", tab:"technique" as const },
+              { icon:"💱", label:"Marché",    tab:"marche"    as const },
+              { icon:"📰", label:"News",      tab:"macro"     as const },
+            ];
+            return (
+              <div className="mobile-tab-bar">
+                {mobileTabs.map(item => (
+                  <button
+                    key={item.tab}
+                    className={activeTab === item.tab ? "active" : ""}
+                    onClick={() => setActiveTab(item.tab)}
+                  >
+                    <span className="tab-icon">{item.icon}</span>
+                    <span className="tab-label">{item.label}</span>
+                  </button>
+                ))}
+              </div>
+            );
+          })()}
+
       </div>
 
     </div>
