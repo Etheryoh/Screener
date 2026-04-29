@@ -150,8 +150,6 @@ const STOCK_UT_CONFIG: Record<string, {
   "1W": { range: "10y", interval: "1wk", label: "1W", displayLabel: "Hebdomadaire" },
   "1M": { range: "max", interval: "1mo", label: "1M", displayLabel: "Mensuel"      },
 };
-const STOCK_UT_PERIODS = Object.entries(STOCK_UT_CONFIG)
-  .map(([key, cfg]) => ({ key, label: cfg.label }));
 
 // ── DÉTECTION UNIFIÉE DU TYPE D'ACTIF ────────────────────────
 const KNOWN_CRYPTO_SYMBOLS = new Set([
@@ -350,6 +348,11 @@ async function cgCoin(id: string): Promise<any> {
   } catch { return null; }
 }
 
+const safeFloat = (v: unknown): number | null => {
+  const n = typeof v === "string" || typeof v === "number" ? parseFloat(String(v)) : NaN;
+  return Number.isFinite(n) ? n : null;
+};
+
 async function binanceOHLCV(symbol: string, interval: string, limit: number): Promise<{
   closes: (number|null)[]; opens: (number|null)[]; highs: (number|null)[]; lows: (number|null)[];
   volumes: (number|null)[]; timestamps: number[];
@@ -360,11 +363,11 @@ async function binanceOHLCV(symbol: string, interval: string, limit: number): Pr
     );
     if (!Array.isArray(data) || data.length === 0) return null;
     return {
-      closes:     data.map((k: any) => parseFloat(k[4]) as number | null),
-      opens:      data.map((k: any) => parseFloat(k[1]) as number | null),
-      highs:      data.map((k: any) => parseFloat(k[2]) as number | null),
-      lows:       data.map((k: any) => parseFloat(k[3]) as number | null),
-      volumes:    data.map((k: any) => parseFloat(k[5]) as number | null),
+      closes:     data.map((k: any) => safeFloat(k[4])),
+      opens:      data.map((k: any) => safeFloat(k[1])),
+      highs:      data.map((k: any) => safeFloat(k[2])),
+      lows:       data.map((k: any) => safeFloat(k[3])),
+      volumes:    data.map((k: any) => safeFloat(k[5])),
       timestamps: data.map((k: any) => Math.floor(k[0] / 1000)),
     };
   } catch { return null; }
@@ -405,10 +408,10 @@ async function cgOHLCVFull(id: string): Promise<{
     const data = await getJson(`${PROXY}?type=cg&path=${encodeURIComponent(path)}`);
     if (!Array.isArray(data) || data.length === 0) return null;
     return {
-      opens:      data.map((k: number[]) => k[1] ?? null),
-      highs:      data.map((k: number[]) => k[2] ?? null),
-      lows:       data.map((k: number[]) => k[3] ?? null),
-      closes:     data.map((k: number[]) => k[4] ?? null),
+      opens:      data.map((k: number[]) => safeFloat(k[1])),
+      highs:      data.map((k: number[]) => safeFloat(k[2])),
+      lows:       data.map((k: number[]) => safeFloat(k[3])),
+      closes:     data.map((k: number[]) => safeFloat(k[4])),
       volumes:    data.map(() => null),
       timestamps: data.map((k: number[]) => k[0] > 1e12 ? Math.floor(k[0] / 1000) : k[0]),
     };
@@ -1466,8 +1469,7 @@ interface TrendStructureResult {
 function detectTrendStructure(
   highs:   (number|null)[],
   lows:    (number|null)[],
-  closes:  (number|null)[] = [],
-  _lookback = 20
+  closes:  (number|null)[] = []
 ): TrendStructureResult {
   // Lookback adaptatif basé sur la volatilité ATR relative
   let lookback = 30;
@@ -2033,10 +2035,7 @@ function classifyMarketContext(
     const hasDivergence = div.type !== null &&
       div.type !== (effectiveStructType === "bullish" ? "bullish" : "bearish");
     confidence = hasDivergence ? 70 : adx >= SCORING_THRESHOLDS.adx.emerging ? 62 : 52;
-    // Propager la direction corrigée dans la structure pour l'affichage
-    if (deathCrossActive && struct.type === "bullish") {
-      struct.type = "bearish";
-    }
+    // Pas de mutation — effectiveStructType est déjà calculé ligne 2031
   }
   // ── RANGE ─────────────────────────────────────────────────────
   else {
@@ -2046,6 +2045,11 @@ function classifyMarketContext(
       ? "3br" : "neuneu";
     if (subtype === "3br") confidence = Math.min(confidence + 10, 85);
   }
+  const effectiveStruct: TrendStructureResult = (
+    type === "tendance" &&
+    ema50 != null && ema200 != null && ema50 < ema200 &&
+    struct.type === "bullish"
+  ) ? { ...struct, type: "bearish" } : struct;
 
   return {
     type,
@@ -2056,7 +2060,7 @@ function classifyMarketContext(
     confidence: Math.round(Math.min(confidence, 95)),
     fundamentalConfirm: null,
     adx,
-    structure: struct,
+    structure: effectiveStruct,
     divergence: div,
   };
 }
@@ -2306,30 +2310,31 @@ function computeTechSignals(
     howToRead: "En dessous de 30 : le titre a trop baissé trop vite — rebond probable (survente). Au-dessus de 70 : le titre a trop monté trop vite — correction probable (surachat). Entre 40 et 60 : situation normale.",
   };
   if (rsi != null) {
-    if (rsi >= 75)
+    const RSI = SCORING_THRESHOLDS.rsi;
+    if (rsi >= RSI.overboughtX)
       signals.push({ emoji:"🔴", color:"#ef4444",
         plain:"Le titre est très suracheté — une correction est probable",
-        label:`RSI ${rsi}`, detail:"Indicateur de momentum · Zone de surachat extrême (>75)", strength:"bear",
+        label:`RSI ${rsi}`, detail:`Indicateur de momentum · Zone de surachat extrême (>${RSI.overboughtX})`, strength:"bear",
         edu: { ...rsiEdu, example:`Avec un RSI de ${rsi}, le titre a énormément monté en peu de temps. Les acheteurs s'essoufflent — statistiquement, une pause ou une baisse suit souvent.` } });
-    else if (rsi >= 60)
+    else if (rsi >= RSI.neutral_hi)
       signals.push({ emoji:"🟡", color:"#f59e0b",
         plain:"Le titre commence à être suracheté — surveiller un retournement",
-        label:`RSI ${rsi}`, detail:"Indicateur de momentum · Zone de surachat (60-75)", strength:"bear",
+        label:`RSI ${rsi}`, detail:`Indicateur de momentum · Zone de surachat (${RSI.neutral_hi}-${RSI.overboughtX})`, strength:"bear",
         edu: { ...rsiEdu, example:`Un RSI de ${rsi} indique une pression acheteuse forte mais pas encore excessive. Rester vigilant, le momentum peut s'inverser.` } });
-    else if (rsi <= 25)
+    else if (rsi <= RSI.oversoldX)
       signals.push({ emoji:"🟢", color:"#22c55e",
         plain:"Le titre est très survendu — un rebond est probable",
-        label:`RSI ${rsi}`, detail:"Indicateur de momentum · Zone de survente extrême (<25)", strength:"bull",
+        label:`RSI ${rsi}`, detail:`Indicateur de momentum · Zone de survente extrême (<${RSI.oversoldX})`, strength:"bull",
         edu: { ...rsiEdu, example:`Un RSI de ${rsi} signifie que le titre a été martelé par les vendeurs. Le marché réagit souvent en excès — un rebond technique est fréquent depuis ces niveaux.` } });
-    else if (rsi <= 40)
+    else if (rsi <= RSI.caution_lo)
       signals.push({ emoji:"🟡", color:"#f59e0b",
         plain:"Le titre est légèrement survendu — possible point d'entrée",
-        label:`RSI ${rsi}`, detail:"Indicateur de momentum · Zone de survente (25-40)", strength:"bull",
+        label:`RSI ${rsi}`, detail:`Indicateur de momentum · Zone de survente (${RSI.oversoldX}-${RSI.caution_lo})`, strength:"bull",
         edu: { ...rsiEdu, example:`RSI de ${rsi} : le titre a subi des ventes mais n'est pas encore en zone extrême. Surveiller une stabilisation avant d'entrer.` } });
     else
       signals.push({ emoji:"⚪", color:"#8b949e",
         plain:"Le titre n'est ni suracheté ni survendu — momentum neutre",
-        label:`RSI ${rsi}`, detail:"Indicateur de momentum · Zone neutre (40-60)", strength:"neutral",
+        label:`RSI ${rsi}`, detail:`Indicateur de momentum · Zone neutre (${RSI.caution_lo}-${RSI.neutral_hi})`, strength:"neutral",
         edu: { ...rsiEdu, example:`RSI de ${rsi} : le titre évolue normalement, sans excès dans un sens ni dans l'autre. Pas de signal directionnel fort à ce stade.` } });
   }
 
@@ -2860,7 +2865,7 @@ interface TooltipContent {
   }[];
 }
 
-function Tooltip({ content, id: _id }: { content: TooltipContent; id: string }) {
+function Tooltip({ content }: { content: TooltipContent }) {
   const [visible, setVisible]   = useState(false);
   const [pos, setPos]           = useState<{ top: number; left: number }>({ top: 0, left: 0 });
   const [width, setWidth]       = useState(320);
@@ -3011,7 +3016,7 @@ function EduTooltip({ edu, id }: { edu: TechSignal["edu"]; id: string }) {
     title: "Comprendre cet indicateur",
     sections,
   };
-  return <Tooltip content={content} id={id} />;
+  return <Tooltip content={content} />;
 }
 
 
@@ -3310,8 +3315,8 @@ function TechnicalPanel({ precomputed, context }: { precomputed: { signals: Tech
 }
 
 // ── COMPOSANT ENCART SITUATIONNEL ────────────────────────────
-function SituationalPanel({ metrics, closes }: { metrics: any; closes?: (number|null)[] }) {
-  const sw       = closes && closes.length > 0 ? calcSinewave(closes) : null;
+function SituationalPanel({ metrics, closes, sinewave }: { metrics: any; closes?: (number|null)[]; sinewave?: SinewaveResult | null }) {
+  const sw       = sinewave !== undefined ? sinewave : (closes && closes.length > 0 ? calcSinewave(closes) : null);
   const trendDev = closes && closes.length > 0 ? calcTrendDeviation(closes) : null;
   const ctx = computeSituationalContext(metrics, sw, trendDev);
   if (!ctx) return null;
@@ -3459,6 +3464,7 @@ function CandleChart({
   period,
   periods,
   displayLimit,
+  sinewave,
 }: {
   chartData: {
     closes:     (number|null)[];
@@ -3473,6 +3479,7 @@ function CandleChart({
   period?:       string;
   periods?:      { key: string; label: string }[];
   displayLimit?: number;
+  sinewave?:     SinewaveResult | null;
 }) {
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -3527,7 +3534,7 @@ function CandleChart({
   // displayCloses utilisé uniquement pour la régression (fenêtre visible)
   const displayCloses = display.map(d => d.c as number | null);
   const reg = calcRegressionDeviation(displayCloses);
-  const swData    = calcSinewave(closes);
+  const swData    = sinewave !== undefined ? sinewave : calcSinewave(closes);
 
   // Sinewave series pour le sous-panel
   const sineSeriesDisplay: (number|null)[] = new Array(N).fill(null);
@@ -4017,21 +4024,17 @@ function PerfChart({
   chartData,
   chartDataWeekly,
   currency,
-  quoteType,
   onPeriodChange,
   period,
   loading,
-  optimalUTKey,
   periods: periodsProp,
 }: {
   chartData:        { closes:(number|null)[]; timestamps:number[] } | null;
   chartDataWeekly?: { closes:(number|null)[]; opens:(number|null)[]; highs:(number|null)[]; lows:(number|null)[]; volumes:(number|null)[]; timestamps:number[] } | null;
   currency:         string;
-  quoteType?:       string;
   onPeriodChange:   (p: string) => void;
   period:           string;
   loading:          boolean;
-  optimalUTKey?:    string;
   periods?:         { key: string; label: string }[];
 }) {
   const svgRef = useRef<SVGSVGElement>(null);
@@ -4051,8 +4054,8 @@ function PerfChart({
                    chartData;
 
   const PERIOD_SECS: Record<string, number> = {
-    "7j":7*86400,"1m":30*86400,"3m":90*86400,"6m":180*86400,
-    "1a":365*86400,"2a":730*86400,"3a":1095*86400,"5a":1825*86400,"max":Infinity,
+    "3m":90*86400,"1a":365*86400,"2a":730*86400,
+    "3a":1095*86400,"5a":1825*86400,"max":Infinity,
   };
   const periodSecs = PERIOD_SECS[period] ?? Infinity;
   const nowSec     = Math.floor(Date.now()/1000);
@@ -4323,33 +4326,30 @@ function ChartBlock({
   candleLoading,
   candleDisplay,
   currency,
-  quoteType,
   period,
   periods,
   onPeriodChange,
   loading,
-  optimalUTKey,
   showEur,
   setShowEur,
   eurRate,
   priceValue,
+  sinewave,
 }: {
   chartData:        { closes:(number|null)[]; opens:(number|null)[]; highs:(number|null)[]; lows:(number|null)[]; volumes:(number|null)[]; timestamps:number[] } | null;
   chartDataWeekly?: { closes:(number|null)[]; opens:(number|null)[]; highs:(number|null)[]; lows:(number|null)[]; volumes:(number|null)[]; timestamps:number[] } | null;
-  candleData?:      { closes:(number|null)[]; opens:(number|null)[]; highs:(number|null)[]; lows:(number|null)[]; volumes:(number|null)[]; timestamps:number[] } | null;
   candleLoading?:   boolean;
   candleDisplay?:   number;
   currency:         string;
-  quoteType?:       string;
   period:           string;
   periods?:         { key:string; label:string }[];
   onPeriodChange:   (p:string) => void;
   loading:          boolean;
-  optimalUTKey?:    string;
   showEur?:         boolean;
   setShowEur?:      (v:boolean) => void;
   eurRate?:         number | null;
   priceValue?:      number | null;
+  sinewave?:        SinewaveResult | null;
 }) {
   const [chartMode, setChartMode] = useState<"perf"|"tech">("perf");
 
@@ -4382,7 +4382,7 @@ function ChartBlock({
         </div>
         <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
           {/* Bouton EUR — uniquement en mode Performance */}
-          {chartMode==="perf" && eurRate!=null && eurRate!==1 && priceValue!=null && setShowEur && (
+          {chartMode==="perf" && eurRate!=null && isFinite(eurRate) && eurRate!==1 && priceValue!=null && setShowEur && (
             <button onClick={()=>setShowEur(!showEur)} style={{
               background: showEur ? THEME.accent+"33" : THEME.scoreAmber+"22",
               border:`1px solid ${showEur ? THEME.accent : THEME.scoreAmber}`,
@@ -4429,12 +4429,10 @@ function ChartBlock({
           chartData={perfDisplayData}
           chartDataWeekly={chartDataWeekly}
           currency={currency}
-          quoteType={quoteType}
           period={period}
           periods={periods}
           onPeriodChange={onPeriodChange}
           loading={loading}
-          optimalUTKey={optimalUTKey}
         />
       ) : hasCandleData ? (
         <>
@@ -4445,6 +4443,7 @@ function ChartBlock({
             period={period}
             periods={periods}
             displayLimit={candleDisplay}
+            sinewave={sinewave}
           />
           <CollapsibleEduBlock overlays={OVERLAYS_EDU} />
         </>
@@ -4979,12 +4978,13 @@ function MarketContextPanel({
     return MATURITY_LABELS[context.maturity] ?? null;
   })() : null;
 
+  const ADX = SCORING_THRESHOLDS.adx;
   const adxDesc =
-    context.adx == null       ? null :
-    context.adx < 20          ? "Pas de tendance directionnelle" :
-    context.adx < 35          ? "Tendance modérée" :
-    context.adx < 50          ? "Tendance forte" :
-                                 "Tendance très forte";
+    context.adx == null              ? null :
+    context.adx < ADX.emerging       ? "Pas de tendance directionnelle" :
+    context.adx < ADX.strong         ? "Tendance modérée" :
+    context.adx < ADX.extreme        ? "Tendance forte" :
+                                       "Tendance très forte";
 
   const structLabel =
     context.structure.type === "bullish" ? "📈 HH+HL — Haussière" :
@@ -4996,7 +4996,7 @@ function MarketContextPanel({
     concept: "L'ADX (Average Directional Index) mesure la force d'une tendance, pas sa direction. Il va de 0 à 100.",
     howToRead: "Sous 20 : pas de tendance (range). 20–35 : tendance modérée. 35–50 : tendance forte. Au-dessus de 50 : tendance très forte ou excès.",
     example: context.adx != null
-      ? `ADX à ${context.adx.toFixed(1)} — ${context.adx < 20 ? "marché sans direction, range probable." : context.adx < 35 ? "tendance modérée, momentum en construction." : context.adx < 50 ? "tendance forte, structure directionnelle." : "tendance très forte, possible excès."}`
+      ? `ADX à ${context.adx.toFixed(1)} — ${context.adx < ADX.emerging ? "marché sans direction, range probable." : context.adx < ADX.strong ? "tendance modérée, momentum en construction." : context.adx < ADX.extreme ? "tendance forte, structure directionnelle." : "tendance très forte, possible excès."}`
       : "ADX non calculable (données insuffisantes).",
   };
 
@@ -6474,7 +6474,6 @@ function StockView({ metrics, ticker, macro, zone, eurRate, activeTab = "resume"
     chartLoading,
     ut,
     availableUTs,
-    defaultUT: optimalUTKey,
     handleUTChange: _handleUTChange,
   } = useChartLoader(ticker, "stock", null, (best) => {
     onUTNotify?.(best);
@@ -6856,16 +6855,15 @@ function StockView({ metrics, ticker, macro, zone, eurRate, activeTab = "resume"
             <ChartBlock
               chartData={chartData}
               currency={currency}
-              quoteType={quoteType}
               period={ut}
               periods={availableUTs}
               onPeriodChange={handleUTChange}
               loading={chartLoading}
-              optimalUTKey={optimalUTKey}
               showEur={showEur}
               setShowEur={setShowEur}
               eurRate={eurRate}
               priceValue={metrics?.price ?? null}
+              sinewave={techComputed.sinewave}
             />
           </div>
 
@@ -6967,8 +6965,13 @@ function StockView({ metrics, ticker, macro, zone, eurRate, activeTab = "resume"
 
             {/* Recommandation d'entrée */}
             {(() => {
+              const ctxForRec = finalScoreResult?.context
+                ? (stockUpperBearish
+                    ? { ...finalScoreResult.context, fundamentalConfirm: "warns" as const }
+                    : finalScoreResult.context)
+                : null;
               const entryRec = computeEntryRecommendation(
-                finalScoreResult?.context ?? null,
+                ctxForRec,
                 techComputed.signals,
                 techComputed.sinewave,
                 finalScore,
@@ -7074,7 +7077,8 @@ function StockView({ metrics, ticker, macro, zone, eurRate, activeTab = "resume"
           )}
           <SentimentPanel metrics={metrics} macro={macro}/>
           <SituationalPanel metrics={metrics}
-            closes={chartData?.closes ?? []}/>
+            closes={chartData?.closes ?? []}
+            sinewave={techComputed.sinewave}/>
         </div>
       )}
 
@@ -7831,7 +7835,6 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
     chartLoading,
     ut,
     availableUTs,
-    defaultUT:      optimalUTKey,
     handleUTChange: _handleUTChange,
   } = useChartLoader(
     (data.symbol || "").toUpperCase(),
@@ -8077,12 +8080,10 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
             <ChartBlock
               chartData={candleData ?? null}
               currency="USD"
-              quoteType="CRYPTOCURRENCY"
               period={ut}
               periods={availableUTs}
               onPeriodChange={handleUTChange}
               loading={chartLoading}
-              optimalUTKey={optimalUTKey}
             />
           </div>
 
@@ -8685,7 +8686,6 @@ function ForexView({ currency, rate, allRates, ticker: forexTicker, activeTab = 
             <ChartBlock
               chartData={chartData}
               currency={currency}
-              quoteType="CURRENCY"
               period={ut}
               periods={availableUTs}
               onPeriodChange={handleUTChange}
