@@ -214,6 +214,113 @@ const SCORING_THRESHOLDS = {
   },
 } as const;
 
+// Ordre canonique des UT du plus court au plus long.
+// Si une nouvelle UT est ajoutée (API payante), l'insérer ici dans l'ordre — la logique multi-TF s'adapte automatiquement.
+const UT_ORDER = ["1m","5m","15m","30m","1H","4H","1D","1W","1M"] as const;
+
+type MultiTFCohérence = {
+  isValid:        boolean;
+  coherenceLevel: "full" | "partial" | "conflict" | "flux" | "multitf" | "unknown";
+  blockers:       string[];
+  note:           string;
+  ut1Label:       string | null;
+  ut2Label:       string | null;
+};
+
+function assessMultiTFCoherence(
+  ut0Key:       string,
+  ctx0:         MarketContext,
+  availableUTs: string[],
+  ctxMap:       Record<string, MarketContext | null>,
+): MultiTFCohérence {
+  const ordered = UT_ORDER.filter(k => availableUTs.includes(k));
+  const idx  = ordered.indexOf(ut0Key as typeof UT_ORDER[number]);
+  const ut1Key = idx >= 0 && idx + 1 < ordered.length ? ordered[idx + 1] : null;
+  const ut2Key = idx >= 0 && idx + 2 < ordered.length ? ordered[idx + 2] : null;
+  const ctx1 = ut1Key ? (ctxMap[ut1Key] ?? null) : null;
+  const ctx2 = ut2Key ? (ctxMap[ut2Key] ?? null) : null;
+
+  const blockers: string[] = [];
+
+  if (!ctx1) {
+    return {
+      isValid: true,
+      coherenceLevel: "unknown",
+      blockers: [],
+      note: "Pas d'UT supérieure disponible — lecture mono-timeframe.",
+      ut1Label: null,
+      ut2Label: null,
+    };
+  }
+
+  // Règle 1 — Tendance sur UT0 ET UT+1 → FLUX
+  const isTendance0 = ctx0.type === "tendance" || ctx0.subtype === "essoufflement";
+  const isTendance1 = ctx1.type === "tendance" || ctx1.subtype === "essoufflement";
+  if (isTendance0 && isTendance1) {
+    const isTendance2 = ctx2 ? (ctx2.type === "tendance" || ctx2.subtype === "essoufflement") : false;
+    if (isTendance2) {
+      return {
+        isValid: true,
+        coherenceLevel: "multitf",
+        blockers: [],
+        note: `Tendance multi-timeframe confirmée sur ${ut0Key}/${ut1Key}/${ut2Key} — signal expert fort.`,
+        ut1Label: ut1Key,
+        ut2Label: ut2Key,
+      };
+    }
+    blockers.push(`Tendance présente sur ${ut1Key} — cette UT est un flux, privilégier ${ut1Key}.`);
+    return {
+      isValid: false,
+      coherenceLevel: "flux",
+      blockers,
+      note: `Flux détecté : tendance sur ${ut0Key} ET ${ut1Key} simultanément. Remonter sur ${ut1Key}.`,
+      ut1Label: ut1Key,
+      ut2Label: ut2Key ?? null,
+    };
+  }
+
+  // Règle 2 — Chaos sur UT+1
+  if (ctx1.type === "chaos") {
+    blockers.push(`Chaos sur ${ut1Key} — contexte supérieur illisible.`);
+  }
+
+  // Règle 3 — Contradiction directionnelle
+  const dir0 = ctx0.structure.type;
+  const dir1 = ctx1.structure.type;
+  if (dir0 !== "mixed" && dir1 !== "mixed" && dir0 !== dir1) {
+    blockers.push(`Contradiction directionnelle : ${ut0Key} ${dir0} vs ${ut1Key} ${dir1}.`);
+  }
+
+  // Règle 4 — Range sur UT+1 (invalide sauf si range UT+2 aussi)
+  if (ctx0.type === "range" && ctx1.type === "range") {
+    if (!(ctx2 && ctx2.type === "range")) {
+      blockers.push(`Range sur ${ut1Key} sans confirmation ${ut2Key ?? "UT+2"} — range UT+1 non validé.`);
+    }
+  }
+
+  if (blockers.length === 0) {
+    return {
+      isValid: true,
+      coherenceLevel: ctx2 ? "full" : "partial",
+      blockers: [],
+      note: ctx2
+        ? `Cohérence ${ut0Key}/${ut1Key}/${ut2Key} confirmée.`
+        : `Cohérence ${ut0Key}/${ut1Key} confirmée (${ut2Key ?? "UT+2"} indisponible).`,
+      ut1Label: ut1Key,
+      ut2Label: ut2Key ?? null,
+    };
+  }
+
+  return {
+    isValid: blockers.length <= 1 && ctx1.type !== "chaos",
+    coherenceLevel: "conflict",
+    blockers,
+    note: blockers[0],
+    ut1Label: ut1Key,
+    ut2Label: ut2Key ?? null,
+  };
+}
+
 const FOREX_CURRENCY_CODES = new Set([
   "USD","EUR","GBP","JPY","CHF","CAD","AUD","NZD","SEK","NOK",
   "DKK","PLN","HUF","CZK","TRY","ZAR","SGD","HKD","MXN","BRL",
@@ -5409,9 +5516,32 @@ function computeEntryRecommendation(
   macro            ?: MacroContext | null,
   metrics          ?: any | null,
   fundamentalScore ?: number | null,
+  multiTF          ?: MultiTFCohérence | null,
 ): EntryRecommendation {
   const NONE: EntryRecommendation = { type: "none", icon: "", title: "", reasons: [], triggers: [] };
   if (!context) return NONE;
+
+  // Cohérence multi-TF — bloc prioritaire avant toute recommandation
+  if (multiTF && !multiTF.isValid) {
+    if (multiTF.coherenceLevel === "flux") {
+      return {
+        type: "wait",
+        icon: "🔀",
+        title: `Flux détecté — privilégier l'UT ${multiTF.ut1Label ?? "supérieure"}`,
+        reasons: multiTF.blockers,
+        triggers: multiTF.ut1Label ? [`Analyser ${multiTF.ut1Label} pour un contexte plus lisible`] : [],
+      };
+    }
+    if (multiTF.coherenceLevel === "conflict") {
+      return {
+        type: "wait",
+        icon: "⚡",
+        title: "Conflit multi-timeframe — attendre la résolution",
+        reasons: multiTF.blockers,
+        triggers: ["Attendre que les deux timeframes s'alignent directionnellement"],
+      };
+    }
+  }
 
   const hasSignalLabel = (lbl: string) => techSignals.some(s => s.label === lbl || s.label.startsWith(lbl));
   const hasDeathCross  = hasSignalLabel("Death Cross");
@@ -6782,17 +6912,21 @@ function StockView({ metrics, ticker, macro, zone, eurRate, activeTab = "resume"
   const finalScoreResult = marketCtx
     ? computeFinalScore(metrics, marketCtx, techComputed.signals, closes, confluenceResult?.score ?? null)
     : null;
-  // UT supérieure : 1D→1W, 1W→1M, 1M→aucune
-  const stockUpperData =
-    ut === "1D" ? stockDataWeekly :
-    ut === "1W" ? (chartDataMap["1M"] ?? null) :
-    null;
-  const stockUpperCtx = stockUpperData
-    ? classifyMarketContext(stockUpperData.closes, stockUpperData.highs, stockUpperData.lows, stockUpperData.volumes)
-    : null;
+  // Contextes multi-TF : calculés pour toutes les UT disponibles
+  const stockCtxMap: Record<string, MarketContext | null> = {};
+  for (const utKey of availableUTs.map(u => u.key)) {
+    const d = chartDataMap[utKey];
+    stockCtxMap[utKey] = d && d.closes.length > 0
+      ? classifyMarketContext(d.closes, d.highs, d.lows, d.volumes)
+      : null;
+  }
+  const stockUpperCtx = stockCtxMap[ut === "1D" ? "1W" : ut === "1W" ? "1M" : ""] ?? null;
   const stockUpperBearish = stockUpperCtx != null &&
     (stockUpperCtx.structure.type === "bearish" || stockUpperCtx.type === "chaos" ||
      (stockUpperCtx.subtype === "essoufflement" && stockUpperCtx.structure.type === "bullish"));
+  const multiTFStock = marketCtx
+    ? assessMultiTFCoherence(ut, marketCtx, availableUTs.map(u => u.key), stockCtxMap)
+    : null;
   const finalScoreRaw = finalScoreResult?.score ?? null;
   const finalScore = finalScoreRaw != null
     ? (stockUpperBearish && finalScoreRaw > 5
@@ -6980,6 +7114,7 @@ function StockView({ metrics, ticker, macro, zone, eurRate, activeTab = "resume"
                 macro,
                 metrics,
                 metrics?.globalScore ?? null,
+                multiTFStock,
               );
               return <EntryRecommendationPanel rec={entryRec}/>;
             })()}
@@ -7831,6 +7966,7 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
 
   const {
     chartData:      candleData,
+    chartDataMap:   cryptoChartDataMap,
     chartDataUpper: allChartDataWeekly,
     chartLoading,
     ut,
@@ -7994,9 +8130,19 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
         };
       })()
     : null;
-  const cryptoUpperCtx = (cryptoData && allChartDataWeekly)
-    ? classifyMarketContext(allChartDataWeekly.closes, allChartDataWeekly.highs, allChartDataWeekly.lows, allChartDataWeekly.volumes)
-    : null;
+  const cryptoCtxMap: Record<string, MarketContext | null> = {};
+  for (const utKey of availableUTs.map(u => u.key)) {
+    const d = cryptoChartDataMap[utKey];
+    cryptoCtxMap[utKey] = d && d.closes.length > 0
+      ? classifyMarketContext(d.closes, d.highs, d.lows, d.volumes)
+      : null;
+  }
+  const cryptoUpperCtx = (() => {
+    const ordered = UT_ORDER.filter(k => availableUTs.map(u => u.key).includes(k));
+    const idx = ordered.indexOf(ut as typeof UT_ORDER[number]);
+    const ut1Key = idx >= 0 && idx + 1 < ordered.length ? ordered[idx + 1] : null;
+    return ut1Key ? (cryptoCtxMap[ut1Key] ?? null) : null;
+  })();
   const cryptoMarketCtx = cryptoData
     ? classifyMarketContext(cryptoData.closes, cryptoData.highs, cryptoData.lows, cryptoData.volumes)
     : null;
@@ -8006,6 +8152,11 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
   const cryptoUpperBearish = cryptoUpperCtx != null &&
     (cryptoUpperCtx.structure.type === "bearish" || cryptoUpperCtx.type === "chaos" ||
      (cryptoUpperCtx.subtype === "essoufflement" && cryptoUpperCtx.structure.type === "bullish"));
+  const cryptoUTKey = ut;
+  const cryptoMarketCtxForMTF = cryptoCtxMap[cryptoUTKey] ?? null;
+  const multiTFCrypto = cryptoMarketCtxForMTF
+    ? assessMultiTFCoherence(cryptoUTKey, cryptoMarketCtxForMTF, availableUTs.map(u => u.key), cryptoCtxMap)
+    : null;
   const cryptoConfluence = cryptoData
     ? calcConfluenceScore(cryptoData.closes, cryptoData.highs, cryptoData.lows, cryptoData.volumes)
     : null;
@@ -8028,6 +8179,7 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
         null,
         null,
         null,
+        multiTFCrypto,
       )
     : null;
 
