@@ -3674,6 +3674,13 @@ function CandleChart({
     x: number; o: number; h: number; l: number; c: number; v: number; date: string;
   } | null>(null);
 
+  const MIN_BARS = 20;
+  const [barsVisible, setBarsVisible] = useState<number>(displayLimit ?? 120);
+  const [indexEnd,    setIndexEnd]    = useState<number>(Number.MAX_SAFE_INTEGER);
+  const dragRef   = useRef<{ startX: number; startEnd: number } | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const touchRef  = useRef<{ dist: number; barsSnap: number; indexSnap: number } | null>(null);
+
   const toggleOverlay = (key: OverlayKey) => {
     setActiveOverlays(prev => {
       const next = new Set(prev);
@@ -3704,8 +3711,9 @@ function CandleChart({
     </div>
   );
 
-  const MAX_DISPLAY = displayLimit ?? 120;
-  const display = candles.length > MAX_DISPLAY ? candles.slice(-MAX_DISPLAY) : candles;
+  const safeEnd   = Math.min(Math.max(indexEnd, barsVisible - 1), candles.length - 1);
+  const safeStart = Math.max(safeEnd - barsVisible + 1, 0);
+  const display   = candles.slice(safeStart, safeEnd + 1);
   const N       = display.length;
 
   // Overlays calculés sur les bougies affichées uniquement → EMA démarre dès la 1ère bougie visible
@@ -3898,6 +3906,108 @@ function CandleChart({
     setTooltip({ x: toX(idx), o: d.o, h: d.h, l: d.l, c: d.c, v: d.v, date });
   };
 
+  // ── Zoom ancré sur le curseur (wheel) ──
+  const handleWheel = (e: React.WheelEvent<SVGSVGElement>) => {
+    e.preventDefault();
+    const svgEl = svgRef.current;
+    if (!svgEl) return;
+    const rect = svgEl.getBoundingClientRect();
+    const svgW = rect.width;
+    const innerW = svgW - (PAD_L / W) * svgW - (PAD_R / W) * svgW;
+    // Position relative du curseur dans la zone graphique [0…1]
+    const cursorX = Math.max(0, Math.min(e.clientX - rect.left - (PAD_L / W) * svgW, innerW));
+    const cursorRatio = innerW > 0 ? cursorX / innerW : 1;
+    // Bougie sous le curseur (index local dans display)
+    const cursorBarLocal = Math.round(cursorRatio * (barsVisible - 1));
+    // Index absolu de la bougie sous le curseur
+    const anchorIdx = safeStart + cursorBarLocal;
+
+    const delta = e.deltaY > 0 ? 1 : -1;
+    const step  = Math.max(1, Math.round(barsVisible * 0.08));
+    const nextBars = Math.min(Math.max(barsVisible + delta * step, MIN_BARS), candles.length);
+
+    // Recalculer indexEnd pour que anchorIdx reste sous le curseur
+    const nextEnd = Math.min(
+      Math.max(anchorIdx + Math.round(cursorRatio * (nextBars - 1)), nextBars - 1),
+      candles.length - 1
+    );
+    setBarsVisible(nextBars);
+    setIndexEnd(nextEnd);
+  };
+
+  // ── Pan (drag) ──
+  const handleMouseDown = (e: React.MouseEvent<SVGSVGElement>) => {
+    dragRef.current = { startX: e.clientX, startEnd: indexEnd === Number.MAX_SAFE_INTEGER ? candles.length - 1 : indexEnd };
+    setDragging(true);
+  };
+
+  const handleMouseMovePan = (e: React.MouseEvent<SVGSVGElement>) => {
+    if (!dragRef.current) return;
+    const svgEl = svgRef.current;
+    if (!svgEl) return;
+    const svgW = svgEl.getBoundingClientRect().width;
+    const pixelsPerBar = (svgW * (W - PAD_L - PAD_R) / W) / barsVisible;
+    if (pixelsPerBar <= 0) return;
+    const dxBars = Math.round((dragRef.current.startX - e.clientX) / pixelsPerBar);
+    const next = Math.min(
+      Math.max(dragRef.current.startEnd + dxBars, barsVisible - 1),
+      candles.length - 1
+    );
+    setIndexEnd(next);
+  };
+
+  const handleMouseUpPan = () => {
+    dragRef.current = null;
+    setDragging(false);
+  };
+
+  // ── Pinch (touch) ──
+  const handleTouchStart = (e: React.TouchEvent<SVGSVGElement>) => {
+    if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      touchRef.current = { dist: Math.hypot(dx, dy), barsSnap: barsVisible, indexSnap: safeEnd };
+    } else if (e.touches.length === 1) {
+      dragRef.current = { startX: e.touches[0].clientX, startEnd: safeEnd };
+      setDragging(true);
+    }
+  };
+
+  const handleTouchMove = (e: React.TouchEvent<SVGSVGElement>) => {
+    if (e.touches.length === 2 && touchRef.current) {
+      e.preventDefault();
+      const dx   = e.touches[0].clientX - e.touches[1].clientX;
+      const dy   = e.touches[0].clientY - e.touches[1].clientY;
+      const dist = Math.hypot(dx, dy);
+      const ratio = touchRef.current.dist / dist;
+      const next  = Math.min(
+        Math.max(Math.round(touchRef.current.barsSnap * ratio), MIN_BARS),
+        candles.length
+      );
+      setBarsVisible(next);
+      setIndexEnd(Math.min(touchRef.current.indexSnap, candles.length - 1));
+    } else if (e.touches.length === 1 && dragRef.current) {
+      e.preventDefault();
+      const svgEl = svgRef.current;
+      if (!svgEl) return;
+      const svgW = svgEl.getBoundingClientRect().width;
+      const pixelsPerBar = (svgW * chartW / W) / barsVisible;
+      if (pixelsPerBar <= 0) return;
+      const dxBars = Math.round((dragRef.current.startX - e.touches[0].clientX) / pixelsPerBar);
+      const next = Math.min(
+        Math.max(dragRef.current.startEnd + dxBars, barsVisible - 1),
+        candles.length - 1
+      );
+      setIndexEnd(next);
+    }
+  };
+
+  const handleTouchEnd = () => {
+    touchRef.current = null;
+    dragRef.current = null;
+    setDragging(false);
+  };
+
   // ── OVERLAY DEFINITIONS (pills) ──
   const OVERLAYS: { key: OverlayKey; label: string; color: string; edu: TechSignal["edu"] }[] = [
     { key: "bb", label: "BB", color: "#f59e0b", edu: {
@@ -3969,9 +4079,15 @@ function CandleChart({
           ref={svgRef}
           width="100%"
           viewBox={`0 0 ${W} ${totalH}`}
-          style={{ overflow:"visible", cursor:"crosshair", display:"block" }}
-          onMouseMove={handleMouseMove}
-          onMouseLeave={() => setTooltip(null)}
+          style={{ overflow:"visible", cursor: dragging ? "grabbing" : "grab", display:"block", touchAction:"none" }}
+          onMouseMove={(e) => { if (dragging) handleMouseMovePan(e); handleMouseMove(e); }}
+          onMouseLeave={() => { handleMouseUpPan(); setTooltip(null); }}
+          onWheel={handleWheel}
+          onMouseDown={handleMouseDown}
+          onMouseUp={handleMouseUpPan}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
         >
           <defs>
             <clipPath id="price-area">
@@ -4196,6 +4312,18 @@ function CandleChart({
                 </>
               ))}
             </div>
+          </div>
+        )}
+        {candles.length > barsVisible && (
+          <div style={{ height:3, background:THEME.borderPanel, borderRadius:2, marginTop:3, overflow:"hidden" }}>
+            <div style={{
+              height:"100%",
+              background: THEME.accent+"88",
+              borderRadius:2,
+              width:  `${(barsVisible / candles.length) * 100}%`,
+              marginLeft: `${(safeStart / candles.length) * 100}%`,
+              transition:"margin 0.05s, width 0.05s",
+            }}/>
           </div>
         )}
       </div>
