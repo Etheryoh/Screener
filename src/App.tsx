@@ -6527,22 +6527,44 @@ function useChartLoader(
       if (daily) {
         const sw = calcSinewave(daily.closes);
         if (sw) {
-          const dp    = sw.dominantPeriod;
-          const daily1W = newMap["1W"];
-          const ctxD  = classifyMarketContext(daily.closes, daily.highs, daily.lows, daily.volumes);
-          const ctxW  = daily1W ? classifyMarketContext(daily1W.closes, daily1W.highs, daily1W.lows, daily1W.volumes) : null;
-          const contradiction = ctxW != null && (
-            (ctxD.structure.type === "bearish" && ctxW.structure.type === "bullish") ||
-            (ctxD.structure.type === "bullish" && ctxW.structure.type === "bearish")
-          );
+          const dp = sw.dominantPeriod;
+
+          // Cycle Sinewave → UT candidate initiale
           const cycleUT: UTKey =
             dp <= 10  ? "1D" :
             dp <= 50  ? (candidates.includes("1W") ? "1W" : "1D") :
                         (candidates.includes("1M") ? "1M" : candidates[candidates.length - 1]);
-          if (ctxD.type === "chaos") {
-            best = candidates.includes("1W") ? "1W" : candidates[candidates.length - 1];
-          } else if (contradiction && ctxD.structure.type === "bearish" && ctxW?.structure.type === "bullish") {
-            best = candidates.includes("1W") ? "1W" : cycleUT;
+
+          // Construire ctxMap pour toutes les UT disponibles
+          const ctxMapLocal: Record<string, MarketContext | null> = {};
+          for (const k of candidates) {
+            const d = newMap[k];
+            ctxMapLocal[k] = d && d.closes.length > 0
+              ? classifyMarketContext(d.closes, d.highs, d.lows, d.volumes)
+              : null;
+          }
+
+          const ctxD = ctxMapLocal[cycleUT] ?? ctxMapLocal["1D"] ?? null;
+
+          if (ctxD?.type === "chaos") {
+            // Chaos sur l'UT candidate → monter d'un TF pour plus de lisibilité
+            const ordered = UT_ORDER.filter(k => candidates.includes(k));
+            const idx = ordered.indexOf(cycleUT as typeof UT_ORDER[number]);
+            const upper = idx >= 0 && idx + 1 < ordered.length ? ordered[idx + 1] : null;
+            best = (upper && candidates.includes(upper)) ? upper : cycleUT;
+          } else if (ctxD) {
+            // Évaluer la cohérence multi-TF depuis l'UT candidate
+            const mtf = assessMultiTFCoherence(cycleUT, ctxD, candidates, ctxMapLocal);
+            if (mtf.coherenceLevel === "flux" && mtf.ut1Label && candidates.includes(mtf.ut1Label)) {
+              // Flux détecté → monter sur UT+1
+              best = mtf.ut1Label;
+            } else if (mtf.coherenceLevel === "conflict" && mtf.ut1Label && candidates.includes(mtf.ut1Label)) {
+              // Conflit directionnel → monter sur UT+1 pour plus de lisibilité
+              best = mtf.ut1Label;
+            } else {
+              // Cohérence full/partial/multitf/unknown → rester sur cycleUT
+              best = candidates.includes(cycleUT) ? cycleUT : candidates[candidates.length - 1];
+            }
           } else {
             best = candidates.includes(cycleUT) ? cycleUT : candidates[candidates.length - 1];
           }
