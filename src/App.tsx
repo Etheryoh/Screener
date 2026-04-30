@@ -1627,13 +1627,12 @@ function calcSinewave(closes: (number|null)[]): SinewaveResult | null {
   const phAdv = Math.abs(Ph[L] - Ph[Math.max(10, L-5)]);
   const mode: "trending" | "cycling" = phAdv > 30 ? "trending" : "cycling";
 
-  // Momentum PRO : ROC(14) normalisé min/max glissant 100 périodes, lissé EMA(5), ±100
-  // Cyclique même en tendance prolongée — approximation du PRO Momentum (X=14, Y=5)
   let momentum14 = 0;
-  if (N >= 15) {
+  const rocPeriod = Math.max(5, Math.round(dp / 2));
+  if (N >= rocPeriod + 1) {
     const roc14: number[] = [];
-    for (let j = 14; j < N; j++) {
-      roc14.push(c[j - 14] !== 0 ? ((c[j] - c[j - 14]) / c[j - 14]) * 100 : 0);
+    for (let j = rocPeriod; j < N; j++) {
+      roc14.push(c[j - rocPeriod] !== 0 ? ((c[j] - c[j - rocPeriod]) / c[j - rocPeriod]) * 100 : 0);
     }
     const WIN = Math.max(20, Math.min(100, Math.floor(roc14.length / 2)));
     const normed: number[] = roc14.map((v, i) => {
@@ -1642,7 +1641,7 @@ function calcSinewave(closes: (number|null)[]): SinewaveResult | null {
       const hi = slice[Math.floor(slice.length * 0.95)];
       return (hi == null || lo == null || hi === lo) ? 0 : Math.max(-100, Math.min(100, ((v - lo) / (hi - lo)) * 200 - 100));
     });
-    const k5 = 2 / 6;
+    const k5 = 2 / 4;
     let ema = normed[0];
     for (let j = 1; j < normed.length; j++) ema = normed[j] * k5 + ema * (1 - k5);
     momentum14 = parseFloat(Math.max(-100, Math.min(100, ema)).toFixed(1));
