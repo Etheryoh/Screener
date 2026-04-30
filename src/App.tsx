@@ -227,6 +227,13 @@ type MultiTFCohérence = {
   ut2Label:       string | null;
 };
 
+type TrendPhase = {
+  phase:      1 | 2 | 3 | 4 | 5 | null;
+  label:      "Accumulation" | "Breakout" | "Suivi de tendance" | "Pull-back" | "Excès final" | null;
+  note:       string;
+  confidence: "low" | "medium" | "high";
+};
+
 type MultiTFSinewave = {
   alignment:  "confirmed" | "opposed" | "neutral" | "insufficient_data";
   note:       string;
@@ -327,6 +334,113 @@ function assessMultiTFCoherence(
     ut1Label: ut1Key,
     ut2Label: ut2Key ?? null,
   };
+}
+
+function detectTrendPhase(
+  context  : MarketContext | null,
+  sinewave : SinewaveResult | null,
+  closes   : (number|null)[],
+  signals  : TechSignal[],
+): TrendPhase {
+  const NULL_PHASE: TrendPhase = { phase: null, label: null, note: "", confidence: "low" };
+  if (!context) return NULL_PHASE;
+
+  const hasSignal = (lbl: string) => signals.some(s => s.label === lbl || s.label.startsWith(lbl));
+  const hasGoldenCross = hasSignal("Golden Cross");
+  const rsiSignal      = signals.find(s => s.label.startsWith("RSI"));
+  const rsiValue       = rsiSignal ? parseFloat(rsiSignal.label.split(" ")[1]) : null;
+
+  // Calculs locaux
+  const validCloses = closes.filter((v): v is number => v != null);
+  const last = validCloses[validCloses.length - 1] ?? 0;
+
+  // Régression locale (approximation σ via écart-type des 60 dernières clôtures)
+  const window60 = validCloses.slice(-60);
+  const mean60   = window60.length > 0 ? window60.reduce((a, b) => a + b, 0) / window60.length : last;
+  const std60    = window60.length > 1
+    ? Math.sqrt(window60.reduce((s, v) => s + (v - mean60) ** 2, 0) / window60.length)
+    : 0;
+  const zScore   = std60 > 0 ? (last - mean60) / std60 : 0;
+
+  // EMA50 approximation (20 dernières clôtures — proxy rapide)
+  const ema50closes = validCloses.slice(-50);
+  const ema50proxy  = ema50closes.length > 0
+    ? ema50closes.reduce((a, b) => a + b, 0) / ema50closes.length
+    : last;
+  const distEMA50pct = ema50proxy > 0 ? ((last - ema50proxy) / ema50proxy) * 100 : 0;
+
+  const isTendance  = context.type === "tendance";
+  const isRange     = context.type === "range";
+  const isBullDir   = context.structure.type !== "bearish";
+  const sw           = sinewave;
+
+  // ── Phase 5 — Excès final ──
+  // Tendance active + prix très au-dessus de la moyenne (zScore > 1.8) + Sinewave au sommet + RSI suracheté
+  if (isTendance && zScore > 1.8 && sw?.cycleTurn === "peak" && rsiValue != null && rsiValue > 68) {
+    return {
+      phase: 5, label: "Excès final",
+      note: `Phase 5 — Excès final détecté : prix à +${zScore.toFixed(1)}σ de la moyenne, Sinewave au sommet, RSI ${rsiValue}. Prudence maximale — TP 100% recommandé selon la méthodologie PRO.`,
+      confidence: "high",
+    };
+  }
+
+  // ── Phase 3 — Suivi / Divergence ──
+  // Tendance active + divergence RSI détectée + momentum ralentit (momentum14 en baisse)
+  const hasDivSignal = signals.some(s => s.label.includes("Divergence") && s.strength === "bear");
+  if (isTendance && hasDivSignal && sw != null && Math.abs(sw.momentum14) < 40) {
+    return {
+      phase: 3, label: "Suivi de tendance",
+      note: `Phase 3 — Suivi/Divergence : divergence détectée, le rythme ralentit (momentum ${sw.momentum14.toFixed(0)}). Signal de prise de profit partielle (TP50% + SL BE minimum).`,
+      confidence: "medium",
+    };
+  }
+
+  // ── Phase 4 — Pull-back ──
+  // Tendance active + recul vers EMA50 (±5%) + structure haussière préservée + Sinewave non au sommet
+  if (isTendance && isBullDir
+      && Math.abs(distEMA50pct) < 5
+      && sw?.cycleTurn !== "peak"
+      && context.structure.type !== "bearish") {
+    return {
+      phase: 4, label: "Pull-back",
+      note: `Phase 4 — Pull-back : prix revenu au contact de l'EMA50 (écart ${distEMA50pct.toFixed(1)}%) dans une tendance haussière préservée. Zone de renforcement selon la méthodologie PRO (signal DIV cachée ou BULL).`,
+      confidence: "medium",
+    };
+  }
+
+  // ── Phase 2 — Breakout ──
+  // Transition récente vers tendance haussière + Golden Cross + ADX en hausse
+  const isBreakoutMaturity = context.maturity === "jeune" || context.maturity === "en_developpement";
+  if (isTendance && isBullDir && (isBreakoutMaturity || hasGoldenCross)) {
+    const conf: TrendPhase["confidence"] = isBreakoutMaturity && hasGoldenCross ? "high" : "medium";
+    return {
+      phase: 2, label: "Breakout",
+      note: `Phase 2 — Breakout : tendance ${isBreakoutMaturity ? "jeune" : "confirmée par Golden Cross"}. Les targets de break seront généralement débordées en tendance. Favoriser le suivi plutôt que les prises de profit prématurées.`,
+      confidence: conf,
+    };
+  }
+
+  // ── Phase 1 — Accumulation ──
+  // Range mature + Sinewave en creux + contexte global haussier (Golden Cross ou EMA50 > EMA200 proxy)
+  const isRangeMature = isRange && (context.maturity === "mature" || context.maturity === "divergence");
+  if (isRangeMature && sw?.cycleTurn === "trough" && (hasGoldenCross || distEMA50pct > -10)) {
+    return {
+      phase: 1, label: "Accumulation",
+      note: `Phase 1 — Accumulation : range mature avec creux de cycle Sinewave. Zone spéculative favorable pour les profils agressifs — signal BULL attendu pour valider l'entrée.`,
+      confidence: "medium",
+    };
+  }
+
+  // Tendance active sans phase précise identifiée
+  if (isTendance) {
+    return {
+      phase: null, label: null,
+      note: `Tendance active — phase non déterminée avec précision (confidence insuffisante).`,
+      confidence: "low",
+    };
+  }
+
+  return NULL_PHASE;
 }
 
 function assessMultiTFSinewave(
@@ -5723,6 +5837,7 @@ function computeEntryRecommendation(
   fundamentalScore ?: number | null,
   multiTF          ?: MultiTFCohérence | null,
   multiTFSW        ?: MultiTFSinewave | null,
+  trendPhase       ?: TrendPhase | null,
 ): EntryRecommendation {
   const NONE: EntryRecommendation = { type: "none", icon: "", title: "", reasons: [], triggers: [] };
   if (!context) return NONE;
@@ -5755,6 +5870,11 @@ function computeEntryRecommendation(
   }
   const swNote = multiTFSW?.alignment === "opposed" ? multiTFSW.note : null;
 
+  // ── Phase de tendance — enrichissement des reasons (non bloquant) ──
+  const phaseNote = (trendPhase && trendPhase.confidence !== "low" && trendPhase.note)
+    ? trendPhase.note
+    : null;
+
   const hasSignalLabel = (lbl: string) => techSignals.some(s => s.label === lbl || s.label.startsWith(lbl));
   const hasDeathCross  = hasSignalLabel("Death Cross");
   const hasGoldenCross = hasSignalLabel("Golden Cross");
@@ -5782,6 +5902,7 @@ function computeEntryRecommendation(
     if (upperWarn) reasons.push("L'UT supérieure (1W) est également défavorable — pas de filet de sécurité structurel");
     if (fsNote) reasons.push(fsNote);
     if (swNote) reasons.push(swNote);
+    if (phaseNote) reasons.push(phaseNote);
     return {
       type: "wait", icon: "⛔",
       title: "Attendre la stabilisation — volatilité extrême",
@@ -5806,6 +5927,7 @@ function computeEntryRecommendation(
       "Structure LL+LH confirmée — chaque rebond est vendu",
       `Funding rate positif (${(fundingRate * 100).toFixed(4)}%) — les longs n'ont pas encore capitulé`,
       ...(swNote ? [swNote] : []),
+      ...(phaseNote ? [phaseNote] : []),
     ],
     triggers: [
       "Funding rate devient négatif (capitulation des positions longues)",
@@ -5829,6 +5951,7 @@ function computeEntryRecommendation(
     if (maturityNote) reasons.push(maturityNote);
     if (upperWarn) reasons.push("L'UT supérieure (1W) confirme la tendance baissière — pas de contre-tendance visible");
     if (swNote) reasons.push(swNote);
+    if (phaseNote) reasons.push(phaseNote);
     return {
       type: "wait", icon: "⛔",
       title: "Attendre un retournement haussier confirmé",
@@ -5860,6 +5983,7 @@ function computeEntryRecommendation(
     if (cycleNote) reasons.push(cycleNote);
     if (maturityNote) reasons.push(maturityNote);
     if (swNote) reasons.push(swNote);
+    if (phaseNote) reasons.push(phaseNote);
     return {
       type: "wait", icon: "⛔",
       title: "Zone de surachat extrême — attendre le prochain cycle",
@@ -5886,6 +6010,7 @@ function computeEntryRecommendation(
         "Historiquement, cette configuration précède des corrections de -30 à -60% en crypto",
         ...(cycleNote ? [cycleNote] : []),
         ...(swNote ? [swNote] : []),
+        ...(phaseNote ? [phaseNote] : []),
       ],
       triggers: [
         "Fear & Greed redescend sous 60 (retour à la neutralité)",
@@ -5906,6 +6031,7 @@ function computeEntryRecommendation(
       "Courbe des taux inversée — signal de récession parmi les plus fiables historiquement",
       "Dans ce contexte, même les actifs de qualité peuvent subir des baisses de corrélation forcée (ventes institutionnelles)",
       ...(swNote ? [swNote] : []),
+      ...(phaseNote ? [phaseNote] : []),
     ],
     triggers: [
       `VIX redescend sous 25 (actuellement ${macro.vix})`,
@@ -5927,6 +6053,7 @@ function computeEntryRecommendation(
     ];
     if (maturityNote) reasons.push(maturityNote);
     if (swNote) reasons.push(swNote);
+    if (phaseNote) reasons.push(phaseNote);
     const peTarget = metrics.pe != null ? Math.round(metrics.pe * 0.7) : null;
     return {
       type: "wait", icon: "⛔",
@@ -5974,6 +6101,7 @@ function computeEntryRecommendation(
     if (sinewave?.dominantPeriod != null && sinewave.dominantPeriod > 100)
       triggers.push("Entrée fractionnée progressive envisageable sur horizon > 3 ans, indépendamment du timing court terme");
     if (swNote) reasons.push(swNote);
+    if (phaseNote) reasons.push(phaseNote);
     return { type: "wait", icon: "⛔", title: "Attendre une correction de valorisation", reasons, triggers };
   }
 
@@ -5998,6 +6126,7 @@ function computeEntryRecommendation(
     ];
     if (maturityNote) reasons.push(maturityNote);
     if (swNote) reasons.push(swNote);
+    if (phaseNote) reasons.push(phaseNote);
     return {
       type: "caution", icon: "⚠️",
       title: "Score global insuffisant pour une entrée favorable",
@@ -6027,6 +6156,7 @@ function computeEntryRecommendation(
     if (rsiValue != null && rsiValue > SCORING_THRESHOLDS.rsi.neutral_hi) triggers.push("RSI redescend sous 45");
     if (hasDeathCross) triggers.push("Golden Cross");
     if (swNote) reasons.push(swNote);
+    if (phaseNote) reasons.push(phaseNote);
     return { type: "caution", icon: "⚠️", title: "Qualité solide — attendre un meilleur timing", reasons, triggers };
   }
 
@@ -6045,6 +6175,7 @@ function computeEntryRecommendation(
     if (cycleNote) reasons.push(cycleNote);
     if (fs != null && fs >= 6) reasons.push(`Fondamentaux solides (${fs}/10) — le risque long terme reste limité, mais le timing est défavorable`);
     if (swNote) reasons.push(swNote);
+    if (phaseNote) reasons.push(phaseNote);
     const triggers: string[] = [];
     const emaSignal = techSignals.find(s => s.label.includes("EMA") || s.label === "Golden Cross");
     if (emaSignal) triggers.push("Pullback vers l'EMA50 sans casser la structure HL");
@@ -6073,6 +6204,7 @@ function computeEntryRecommendation(
           : "Sans tendance haussière confirmée, l'euphorie est particulièrement risquée — les retournements sont violents",
         ...(sinewave?.cycleTurn === "peak" ? ["Sommet de cycle Sinewave — risque de retournement à court terme"] : []),
         ...(swNote ? [swNote] : []),
+        ...(phaseNote ? [phaseNote] : []),
       ],
       triggers: [
         "Fear & Greed redescend sous 60",
@@ -6102,6 +6234,7 @@ function computeEntryRecommendation(
         ...(cycleNote ? [cycleNote] : []),
         ...(fsNote ? [fsNote] : []),
         ...(swNote ? [swNote] : []),
+        ...(phaseNote ? [phaseNote] : []),
       ],
       triggers: [
         "Stabilisation sur 2-3 séances avec volume supérieur à la moyenne",
@@ -6126,6 +6259,7 @@ function computeEntryRecommendation(
           : "Structure non confirmée — la peur peut précéder une capitulation supplémentaire",
         "Statistiquement, l'Extreme Fear précède des rebonds significatifs en crypto",
         ...(swNote ? [swNote] : []),
+        ...(phaseNote ? [phaseNote] : []),
       ],
       triggers: [
         "Creux de cycle Sinewave + RSI < 30",
@@ -6153,6 +6287,7 @@ function computeEntryRecommendation(
           : "Structure non directionnelle — le squeeze est possible mais moins certain sans tendance de fond",
         "Plus le funding négatif persiste, plus la compression potentielle est violente",
         ...(swNote ? [swNote] : []),
+        ...(phaseNote ? [phaseNote] : []),
       ],
       triggers: [
         "Breakout au-dessus d'une résistance clé avec volume 2× la moyenne",
@@ -6184,6 +6319,7 @@ function computeEntryRecommendation(
         ...(cycleNote ? [cycleNote] : []),
         ...(upperWarn ? ["L'UT supérieure (1W) est défavorable — privilégier l'attente du breakout plutôt que l'entrée sur support"] : []),
         ...(swNote ? [swNote] : []),
+        ...(phaseNote ? [phaseNote] : []),
       ],
       triggers: [
         sinewave?.cycleTurn === "trough"
@@ -6211,6 +6347,7 @@ function computeEntryRecommendation(
         `Fondamentaux solides (${fs}/10) — la baisse semble disproportionnée par rapport à la valeur réelle`,
         ...(cycleConfirm ? [cycleConfirm] : []),
         ...(swNote ? [swNote] : []),
+        ...(phaseNote ? [phaseNote] : []),
       ],
       triggers: [
         "Stabilisation sur 2-3 séances consécutives",
@@ -6238,6 +6375,7 @@ function computeEntryRecommendation(
       triggers.push("Taux 10 ans repassent sous 4%");
     reasons.push("Dans ce contexte, réduire la taille de position de 30-50% par rapport à la normale");
     if (swNote) reasons.push(swNote);
+    if (phaseNote) reasons.push(phaseNote);
     return {
       type: "caution", icon: "⚠️",
       title: "Contexte macro à surveiller — position réduite recommandée",
@@ -6278,6 +6416,7 @@ function computeEntryRecommendation(
     if (upperWarn) reasons.push("⚠️ L'UT supérieure (1W) montre un essoufflement — entrée fractionnée recommandée");
     if (reasons.length === 0) reasons.push("Structure haussière active sans signal de retournement identifié");
     if (swNote) reasons.push(swNote);
+    if (phaseNote) reasons.push(phaseNote);
     const triggers: string[] = [
       rsiValue != null ? `RSI dépasse 75 (actuellement ${rsiValue}) : commencer à alléger` : "RSI dépasse 75 : commencer à alléger",
       fg != null ? "Fear & Greed dépasse 80 : réduire la position (zone d'excès spéculatif)" : "Apparition d'un signal de divergence : réduire la position",
@@ -6311,6 +6450,7 @@ function computeEntryRecommendation(
     if (fs != null && fs >= 5) reasons.push(`Fondamentaux corrects (${fs}/10) — soutien à long terme`);
     if (upperWarn) reasons.push("⚠️ L'UT supérieure (1W) est défavorable — réduire la taille de position");
     if (swNote) reasons.push(swNote);
+    if (phaseNote) reasons.push(phaseNote);
     return {
       type: upperWarn ? "caution" : "favorable",
       icon: upperWarn ? "⚠️" : "✅",
@@ -6348,6 +6488,7 @@ function computeEntryRecommendation(
         ...(fs != null && fs >= 5 ? [`Fondamentaux (${fs}/10) confirment la solidité intrinsèque`] : []),
         ...(upperWarn ? ["⚠️ L'UT supérieure (1W) est défavorable — réduire la taille d'entrée"] : []),
         ...(swNote ? [swNote] : []),
+        ...(phaseNote ? [phaseNote] : []),
       ],
       triggers: [
         "Confirmation sur 1-2 séances de rebond avec volume supérieur à la moyenne",
@@ -6378,6 +6519,7 @@ function computeEntryRecommendation(
         ...(cycleConfirm ? [cycleConfirm] : []),
         ...(upperWarn ? ["⚠️ L'UT supérieure (1W) est défavorable — entrée fractionnée recommandée"] : []),
         ...(swNote ? [swNote] : []),
+        ...(phaseNote ? [phaseNote] : []),
       ],
       triggers: [
         cycleConfirm ? "Creux de cycle confirmé — fenêtre d'entrée ouverte" : "Creux de cycle Sinewave à surveiller",
@@ -6406,6 +6548,7 @@ function computeEntryRecommendation(
         ...(cycleConfirm ? [cycleConfirm] : []),
         ...(upperWarn ? ["⚠️ L'UT supérieure (1W) est défavorable — réduire la taille de position"] : []),
         ...(swNote ? [swNote] : []),
+        ...(phaseNote ? [phaseNote] : []),
       ],
       triggers: [
         "Confirmer avec une séance de retournement haussière",
@@ -6442,6 +6585,7 @@ function computeEntryRecommendation(
         ...(maturityNote ? [maturityNote] : []),
         ...(upperWarn ? ["⚠️ L'UT supérieure (1W) est défavorable — réduire la taille et surveiller de près"] : []),
         ...(swNote ? [swNote] : []),
+        ...(phaseNote ? [phaseNote] : []),
       ],
       triggers: [
         "Confirmer avec une séance haussière et volume dans les 3-5 séances suivantes",
@@ -7188,6 +7332,9 @@ function StockView({ metrics, ticker, macro, zone, eurRate, activeTab = "resume"
   const multiTFSWStock = (techComputed.sinewave && Object.keys(chartDataMap).length > 0)
     ? assessMultiTFSinewave(ut, techComputed.sinewave, availableUTs.map(u => u.key), chartDataMap, chartInterval)
     : null;
+  const trendPhaseStock = (marketCtx && techComputed)
+    ? detectTrendPhase(marketCtx, techComputed.sinewave, closes, techComputed.signals)
+    : null;
   const finalScoreRaw = finalScoreResult?.score ?? null;
   const finalScore = finalScoreRaw != null
     ? (stockUpperBearish && finalScoreRaw > 5
@@ -7377,6 +7524,7 @@ function StockView({ metrics, ticker, macro, zone, eurRate, activeTab = "resume"
                 metrics?.globalScore ?? null,
                 multiTFStock,
                 multiTFSWStock,
+                trendPhaseStock,
               );
               return <EntryRecommendationPanel rec={entryRec}/>;
             })()}
@@ -8422,6 +8570,9 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
   const multiTFSWCrypto = (cryptoTechComputed?.sinewave && Object.keys(cryptoChartDataMap).length > 0)
     ? assessMultiTFSinewave(cryptoUTKey, cryptoTechComputed.sinewave, availableUTs.map(u => u.key), cryptoChartDataMap, cryptoInterval)
     : null;
+  const trendPhaseCrypto = (cryptoMarketCtx && cryptoTechComputed && cryptoData)
+    ? detectTrendPhase(cryptoMarketCtx, cryptoTechComputed.sinewave, cryptoData.closes, cryptoTechComputed.signals)
+    : null;
   const cryptoConfluence = cryptoData
     ? calcConfluenceScore(cryptoData.closes, cryptoData.highs, cryptoData.lows, cryptoData.volumes)
     : null;
@@ -8446,6 +8597,7 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
         null,
         multiTFCrypto,
         multiTFSWCrypto,
+        trendPhaseCrypto,
       )
     : null;
 
@@ -9072,6 +9224,7 @@ function ForexView({ currency, rate, allRates, ticker: forexTicker, activeTab = 
         null,
         null,
         null, // multiTFSW — non disponible en Forex (chartDataMap non exposé)
+        detectTrendPhase(marketCtx, techComputed?.sinewave ?? null, closes, techComputed?.signals ?? []),
       )
     : { type: "none" as const, icon: "", title: "", reasons: [], triggers: [] };
 
