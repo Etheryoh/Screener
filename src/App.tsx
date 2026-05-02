@@ -337,10 +337,11 @@ function assessMultiTFCoherence(
 }
 
 function detectTrendPhase(
-  context  : MarketContext | null,
-  sinewave : SinewaveResult | null,
-  closes   : (number|null)[],
-  signals  : TechSignal[],
+  context      : MarketContext | null,
+  sinewave     : SinewaveResult | null,
+  closes       : (number|null)[],
+  signals      : TechSignal[],
+  upperBearish?: boolean,
 ): TrendPhase {
   const NULL_PHASE: TrendPhase = { phase: null, label: null, note: "", confidence: "low" };
   if (!context) return NULL_PHASE;
@@ -376,7 +377,7 @@ function detectTrendPhase(
 
   // ── Phase 5 — Excès final ──
   // Tendance active + prix très au-dessus de la moyenne (zScore > 1.8) + Sinewave au sommet + RSI suracheté
-  if (isTendance && zScore > 1.8 && sw?.cycleTurn === "peak" && rsiValue != null && rsiValue > 68) {
+  if (isTendance && isBullDir && !upperBearish && zScore > 1.8 && sw != null && sw.sine > 60 && rsiValue != null && rsiValue > 68) {
     return {
       phase: 5, label: "Excès final",
       note: `Phase 5 — Excès final détecté : prix à +${zScore.toFixed(1)}σ de la moyenne, Sinewave au sommet, RSI ${rsiValue}. Prudence maximale — TP 100% recommandé selon la méthodologie PRO.`,
@@ -386,8 +387,8 @@ function detectTrendPhase(
 
   // ── Phase 3 — Suivi / Divergence ──
   // Tendance active + divergence RSI détectée + momentum ralentit (momentum14 en baisse)
-  const hasDivSignal = signals.some(s => s.label.includes("Divergence") && s.strength === "bear");
-  if (isTendance && hasDivSignal && sw != null && Math.abs(sw.momentum14) < 40) {
+  const hasDivSignal = signals.some(s => (s.label.includes("Divergence") || s.label.includes("Div.")) && s.strength === "bear");
+  if (isTendance && isBullDir && !upperBearish && hasDivSignal && sw != null && Math.abs(sw.momentum14) < 40) {
     return {
       phase: 3, label: "Suivi de tendance",
       note: `Phase 3 — Suivi/Divergence : divergence détectée, le rythme ralentit (momentum ${sw.momentum14.toFixed(0)}). Signal de prise de profit partielle (TP50% + SL BE minimum).`,
@@ -397,7 +398,7 @@ function detectTrendPhase(
 
   // ── Phase 4 — Pull-back ──
   // Tendance active + recul vers EMA50 (±5%) + structure haussière préservée + Sinewave non au sommet
-  if (isTendance && isBullDir
+  if (isTendance && isBullDir && !upperBearish
       && Math.abs(distEMA50pct) < 5
       && sw?.cycleTurn !== "peak"
       && context.structure.type !== "bearish") {
@@ -3760,9 +3761,9 @@ const OVERLAYS_EDU: { key: string; label: string; color: string; edu: TechSignal
     example: "Quand on voit la Sinewave rouge passer au-dessus de la LeadSine dans la zone basse du sous-panel, c'est le signal de retournement cyclique haussier — c'est ce croisement précis qu'il faut surveiller.",
   }},
   { key: "signals" as OverlayKey, label: "Signaux", color: "#f472b6", edu: {
-    concept: "Les marqueurs BULL et BEAR indiquent les retournements de cycle du Momentum. Un signal BULL (triangle vert ▲) apparaît quand le Momentum sort d'une zone de survente (< -60) et remonte — timing d'achat potentiel. Un signal BEAR (triangle rouge ▽) apparaît quand le Momentum sort d'une zone de surachat (> +60) et redescend — timing de sortie ou de prudence.",
-    howToRead: "Triangle vert ▲ sous une bougie = signal BULL — le Momentum sort d'une zone de survente (< -60) et remonte — timing d'achat potentiel. Triangle rouge ▽ au-dessus = signal BEAR — le Momentum sort d'une zone de surachat (> +60) et redescend. C'est un signal de prudence ou de sortie partielle. Ces signaux sont de timing uniquement — ils doivent toujours être confirmés par le contexte de marché (structure, UT supérieure).",
-    example: "Un signal BULL en bas de cycle Momentum (< -60) dans un contexte de range mature ou de pull-back sur tendance haussière est la configuration d'entrée la plus favorable. Un signal BEAR au sommet (> +60) avec une divergence RSI et une structure d'excès justifie une prise de profit partielle.",
+    concept: "Les marqueurs BULL et BEAR indiquent les retournements de cycle du Momentum. Un signal BULL (triangle vert ▲) apparaît quand le Momentum sort d'une zone de survente (< -60) et remonte — timing d'achat potentiel. Un signal BEAR (triangle rouge ▽) apparaît quand le Momentum sort d'une zone de surachat (> +60) et redescend — timing de prudence. En phase avancée de tendance (Phase 3–5), le signal BEAR devient un losange orange ◆ 'Épuisement' — le rythme de la tendance ralentit, prudence sur les positions longues.",
+    howToRead: "Triangle vert ▲ sous une bougie = signal BULL — timing d'achat potentiel. Triangle rouge ▽ au-dessus = signal BEAR (Phase 1–2) — prudence, le marché peut simplement respirer avant de continuer. Losange orange ◆ au-dessus = signal Épuisement (Phase 3–5) — le Momentum atteint un sommet dans une tendance mature ou en excès. Signal de vigilance, pas une certitude de retournement.",
+    example: "Un signal BULL en bas de cycle Momentum (< -60) dans un contexte de range mature ou de pull-back sur tendance haussière est la configuration d'entrée la plus favorable. Un losange orange ◆ Épuisement en Phase 4 ou Phase 5 indique que le rythme ralentit — envisager une prise de profit partielle si en position, sans anticiper un retournement.",
   }},
 ];
 
@@ -3773,6 +3774,7 @@ function CandleChart({
   period,
   periods,
   displayLimit,
+  trendPhase,
 }: {
   chartData: {
     closes:     (number|null)[];
@@ -3787,6 +3789,7 @@ function CandleChart({
   period?:       string;
   periods?:      { key: string; label: string }[];
   displayLimit?: number;
+  trendPhase?:   TrendPhase | null;
 }) {
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -4183,9 +4186,9 @@ function CandleChart({
       example: "Si un actif consolide entre 100 et 120 (range de 20) puis casse au-dessus de 120, l'objectif de breakout est 140 (+20 depuis le point de cassure). Ce n'est pas garanti — c'est une cible indicative.",
     }},
     { key: "signals" as OverlayKey, label: "Signaux", color: "#f472b6", edu: {
-      concept: "Les marqueurs BULL et BEAR indiquent les retournements de cycle du Momentum. Un signal BULL (triangle vert ▲) apparaît quand le Momentum sort d'une zone de survente (< -60) et remonte — timing d'achat potentiel. Un signal BEAR (triangle rouge ▽) apparaît quand le Momentum sort d'une zone de surachat (> +60) et redescend — timing de sortie ou de prudence.",
-      howToRead: "Ces signaux indiquent le timing cyclique uniquement — ils doivent toujours être confirmés par le contexte de marché avant d'agir. Un BULL en tendance haussière est plus fiable qu'un BULL en tendance baissière.",
-      example: "Un signal BULL en bas de cycle Momentum (< -60) dans un contexte de range mature est une configuration d'entrée favorable — le cycle acheteur arrive à son terme et le momentum commence à se retourner.",
+      concept: "Les marqueurs BULL et BEAR indiquent les retournements de cycle du Momentum. Un signal BULL (triangle vert ▲) apparaît quand le Momentum sort d'une zone de survente (< -60) et remonte — timing d'achat potentiel. Un signal BEAR (triangle rouge ▽) apparaît quand le Momentum sort d'une zone de surachat (> +60) et redescend — timing de prudence. En phase avancée (Phase 3–5), le BEAR devient un losange orange ◆ 'Épuisement' — le rythme de la tendance ralentit.",
+      howToRead: "Triangle vert ▲ = signal BULL (timing d'achat). Triangle rouge ▽ = signal BEAR Phase 1–2 — le marché peut respirer avant de continuer dans le même sens. Losange orange ◆ = signal Épuisement Phase 3–5 — Momentum au sommet dans une tendance mature. Signal de vigilance sur les positions longues, pas une certitude de retournement.",
+      example: "Un signal BULL en bas de cycle Momentum (< -60) dans un contexte de range mature est une configuration d'entrée favorable. Un losange orange ◆ Épuisement en Phase 4 ou Phase 5 indique que le rythme ralentit — envisager une prise de profit partielle si en position.",
     }},
   ];
 
@@ -4310,6 +4313,17 @@ function CandleChart({
               );
             }
             const cy = high - markerOffset;
+            const isExitPhase = (trendPhase?.phase ?? 0) >= 3;
+            if (isExitPhase) {
+              return (
+                <g key={`sig-${mi}`}>
+                  <polygon
+                    points={`${x},${cy-6} ${x+5},${cy} ${x},${cy+6} ${x-5},${cy}`}
+                    fill="#f59e0b" opacity={0.9}
+                  />
+                </g>
+              );
+            }
             return (
               <g key={`sig-${mi}`}>
                 <polygon
@@ -4827,6 +4841,7 @@ function ChartBlock({
   eurRate,
   priceValue,
   sinewave,
+  trendPhase,
 }: {
   chartData:        { closes:(number|null)[]; opens:(number|null)[]; highs:(number|null)[]; lows:(number|null)[]; volumes:(number|null)[]; timestamps:number[] } | null;
   chartDataWeekly?: { closes:(number|null)[]; opens:(number|null)[]; highs:(number|null)[]; lows:(number|null)[]; volumes:(number|null)[]; timestamps:number[] } | null;
@@ -4842,6 +4857,7 @@ function ChartBlock({
   eurRate?:         number | null;
   priceValue?:      number | null;
   sinewave?:        SinewaveResult | null;
+  trendPhase?:      TrendPhase | null;
 }) {
   const [chartMode, setChartMode] = useState<"perf"|"tech">("perf");
 
@@ -4935,6 +4951,7 @@ function ChartBlock({
             period={period}
             periods={periods}
             displayLimit={candleDisplay}
+            trendPhase={trendPhase}
           />
           <CollapsibleEduBlock overlays={OVERLAYS_EDU} />
         </>
@@ -7398,7 +7415,7 @@ function StockView({ metrics, ticker, macro, zone, eurRate, activeTab = "resume"
     ? assessMultiTFSinewave(ut, techComputed.sinewave, availableUTs.map(u => u.key), chartDataMap, chartInterval)
     : null;
   const trendPhaseStock = (marketCtx && techComputed)
-    ? detectTrendPhase(marketCtx, techComputed.sinewave, closes, techComputed.signals)
+    ? detectTrendPhase(marketCtx, techComputed.sinewave, closes, techComputed.signals, stockUpperBearish)
     : null;
   const finalScoreRaw = finalScoreResult?.score ?? null;
   const finalScore = finalScoreRaw != null
@@ -7471,6 +7488,7 @@ function StockView({ metrics, ticker, macro, zone, eurRate, activeTab = "resume"
               eurRate={eurRate}
               priceValue={metrics?.price ?? null}
               sinewave={techComputed.sinewave}
+              trendPhase={trendPhaseStock}
             />
           </div>
 
@@ -8636,7 +8654,7 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
     ? assessMultiTFSinewave(cryptoUTKey, cryptoTechComputed.sinewave, availableUTs.map(u => u.key), cryptoChartDataMap, cryptoInterval)
     : null;
   const trendPhaseCrypto = (cryptoMarketCtx && cryptoTechComputed && cryptoData)
-    ? detectTrendPhase(cryptoMarketCtx, cryptoTechComputed.sinewave, cryptoData.closes, cryptoTechComputed.signals)
+    ? detectTrendPhase(cryptoMarketCtx, cryptoTechComputed.sinewave, cryptoData.closes, cryptoTechComputed.signals, cryptoUpperBearish)
     : null;
   const cryptoConfluence = cryptoData
     ? calcConfluenceScore(cryptoData.closes, cryptoData.highs, cryptoData.lows, cryptoData.volumes)
@@ -8719,6 +8737,7 @@ function CryptoView({ data, activeTab = "resume", onUTChange, onUTNotify }: { da
               periods={availableUTs}
               onPeriodChange={handleUTChange}
               loading={chartLoading}
+              trendPhase={trendPhaseCrypto}
             />
           </div>
 
@@ -9276,6 +9295,9 @@ function ForexView({ currency, rate, allRates, ticker: forexTicker, activeTab = 
   const finalScore = finalScoreResult?.score ?? null;
   const v = getVerdict(finalScore);
 
+  const trendPhaseForex = (marketCtx && techComputed)
+    ? detectTrendPhase(marketCtx, techComputed.sinewave, closes, techComputed.signals, false)
+    : null;
   const entryRec = (finalScoreResult && techComputed)
     ? computeEntryRecommendation(
         finalScoreResult.context,
@@ -9289,7 +9311,7 @@ function ForexView({ currency, rate, allRates, ticker: forexTicker, activeTab = 
         null,
         null,
         null, // multiTFSW — non disponible en Forex (chartDataMap non exposé)
-        detectTrendPhase(marketCtx, techComputed?.sinewave ?? null, closes, techComputed?.signals ?? []),
+        trendPhaseForex,
       )
     : { type: "none" as const, icon: "", title: "", reasons: [], triggers: [] };
 
@@ -9328,6 +9350,7 @@ function ForexView({ currency, rate, allRates, ticker: forexTicker, activeTab = 
               periods={availableUTs}
               onPeriodChange={handleUTChange}
               loading={chartLoading}
+              trendPhase={trendPhaseForex}
             />
           </div>
 
