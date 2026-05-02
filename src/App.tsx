@@ -1560,6 +1560,7 @@ interface SinewaveResult {
   mode:           "trending" | "cycling";
   cycleTurn:      "peak" | "trough" | null;
   momentum14:     number;
+  momentumSeries: number[];
   optimalUT: { label: string; horizon: string; note: string; };
 }
 
@@ -1627,6 +1628,7 @@ function calcSinewave(closes: (number|null)[]): SinewaveResult | null {
   const phAdv = Math.abs(Ph[L] - Ph[Math.max(10, L-5)]);
   const mode: "trending" | "cycling" = phAdv > 30 ? "trending" : "cycling";
 
+  let momentumSeriesArr: number[] = [];
   let momentum14 = 0;
   const rocPeriod = Math.max(5, Math.round(dp / 2));
   if (N >= rocPeriod + 1) {
@@ -1643,8 +1645,13 @@ function calcSinewave(closes: (number|null)[]): SinewaveResult | null {
     });
     const k5 = 2 / 4;
     let ema = normed[0];
-    for (let j = 1; j < normed.length; j++) ema = normed[j] * k5 + ema * (1 - k5);
+    const emaArr: number[] = [ema];
+    for (let j = 1; j < normed.length; j++) {
+      ema = normed[j] * k5 + ema * (1 - k5);
+      emaArr.push(ema);
+    }
     momentum14 = parseFloat(Math.max(-100, Math.min(100, ema)).toFixed(1));
+    momentumSeriesArr = emaArr;
   }
 
   const optimalUT =
@@ -1653,7 +1660,7 @@ function calcSinewave(closes: (number|null)[]): SinewaveResult | null {
     dp <= 40  ? { label:"Hebdomadaire",            horizon:"Position 1-3 mois",                     note:`Cycle ~${dp}j — l'hebdomadaire filtre le bruit et aligne sur les mouvements de fond.` } :
                 { label:"Mensuel / Hebdomadaire",  horizon:"Long terme 3-12 mois",                  note:`Cycle long ~${dp}j — les fondamentaux reprennent le dessus sur les signaux techniques.` };
 
-  return { sine, leadSine, dominantPeriod: dp, phase, mode, cycleTurn, momentum14, optimalUT };
+  return { sine, leadSine, dominantPeriod: dp, phase, mode, cycleTurn, momentum14, momentumSeries: momentumSeriesArr, optimalUT };
 }
 
 // ── RÉGRESSION LOG-LINÉAIRE (déviation prix / tendance) ───────
@@ -2554,7 +2561,7 @@ function computeFinalScore(
     }
   }
 
-  // ── Modificateur confluence (0-4 conditions PRO Indicators) ──
+  // ── Modificateur confluence (0-4 conditions) ──
   if (confluenceScore != null) {
     const conflMod =
       confluenceScore === 4 ?  0.5 :
@@ -3704,7 +3711,7 @@ interface ChartData {
 }
 
 // ── GRAPHIQUE TECHNIQUE EN CHANDELIERS ──────────────────────────
-type OverlayKey = "bb" | "ema20" | "ema50" | "ema200" | "target" | "regression";
+type OverlayKey = "bb" | "ema20" | "ema50" | "ema200" | "target" | "regression" | "signals";
 
 const OVERLAYS_EDU: { key: string; label: string; color: string; edu: TechSignal["edu"] }[] = [
   { key: "bb", label: "BB — Bandes de Bollinger", color: "#f59e0b", edu: {
@@ -3742,15 +3749,20 @@ const OVERLAYS_EDU: { key: string; label: string; color: string; edu: TechSignal
     howToRead: "Au-dessus de +5% : élan haussier — les acheteurs accélèrent. En dessous de -5% : élan baissier — les vendeurs dominent. Proche de 0 : marché sans direction. Un changement de signe (passage de positif à négatif ou inversement) peut précéder un retournement de prix.",
     example: "Si le ROC était à +12% il y a 3 bougies et est maintenant à +2%, la hausse ralentit fortement même si le prix monte encore — signal d'essoufflement à surveiller avant de prendre position.",
   }},
-  { key: "sinewave", label: "Sinewave (Ehlers)", color: "#ef4444", edu: {
+  { key: "sinewave", label: "Sinewave", color: "#ef4444", edu: {
     concept: "Le Sinewave d'Ehlers utilise la transformée de Hilbert pour décomposer le prix en composantes cycliques. Il détecte la phase du marché (en cycle ou en tendance) et identifie les retournements cycliques avec plus de précision que les oscillateurs classiques.",
     howToRead: "Quand la ligne Sine (rouge) croise la LeadSine (rouge atténué) vers le haut depuis le bas = creux de cycle = signal haussier. Vers le bas depuis le haut = sommet de cycle = signal baissier. Quand les deux lignes évoluent en parallèle sans se croiser = marché en tendance directionnelle (pas en cycle).",
     example: "Un creux de cycle Sinewave qui coïncide avec un RSI sous 35 et une structure de prix haussière (HH+HL) est l'une des configurations d'entrée les plus solides — les trois indicateurs convergent vers le même signal.",
   }},
-  { key: "leadsine", label: "LeadSine (Ehlers)", color: "#ef444488", edu: {
+  { key: "leadsine", label: "LeadSine", color: "#ef444488", edu: {
     concept: "La LeadSine est une version avancée de 45° de la Sinewave. Elle anticipe le retournement d'un quart de cycle avant qu'il ne se produise sur la Sinewave principale — d'où son nom 'Lead' (avance).",
     howToRead: "La LeadSine ne s'utilise pas seule — elle sert uniquement comme référence pour détecter le croisement avec la Sinewave. Croisement Sine au-dessus de LeadSine = début de phase haussière. Sine sous LeadSine = début de phase baissière.",
     example: "Quand on voit la Sinewave rouge passer au-dessus de la LeadSine dans la zone basse du sous-panel, c'est le signal de retournement cyclique haussier — c'est ce croisement précis qu'il faut surveiller.",
+  }},
+  { key: "signals" as OverlayKey, label: "Signaux", color: "#f472b6", edu: {
+    concept: "Les marqueurs BULL et BEAR indiquent les retournements de cycle du Momentum PRO. Un signal BULL (triangle vert ▲) apparaît quand le Momentum sort d'une zone de survente (< -60) et remonte — timing d'achat potentiel. Un signal BEAR (triangle rouge ▽) apparaît quand le Momentum sort d'une zone de surachat (> +60) et redescend — timing de sortie ou de prudence.",
+    howToRead: "Ces signaux indiquent le timing cyclique uniquement — ils doivent toujours être confirmés par le contexte de marché (structure, contexte UT supérieure) avant d'agir. Un BULL en tendance haussière est plus fiable qu'un BULL en tendance baissière.",
+    example: "BTC 1W : un signal BULL en bas de cycle Momentum (< -60) dans un contexte de range mature correspond à la Phase 1 Accumulation — configuration d'entrée PRO la plus favorable.",
   }},
 ];
 
@@ -3829,6 +3841,43 @@ function CandleChart({
   const display   = candles.slice(safeStart, safeEnd + 1);
   const N       = display.length;
 
+  // ── Marqueurs BULL / BEAR basés sur série Momentum ──
+  type SignalMarker = { origIdx: number; kind: "bull" | "bear"; };
+  const signalMarkers: SignalMarker[] = [];
+  if (activeOverlays.has("signals") && candles.length >= 20) {
+    const candleCloses = candles.map(d => d.c);
+    const swLocal = calcSinewave(candleCloses);
+    if (swLocal && swLocal.momentumSeries.length > 4) {
+      const ms     = swLocal.momentumSeries;
+      const msN    = ms.length;
+      const dp     = swLocal.dominantPeriod;
+      const candleOffset = candles.length - msN;
+      const minGap = Math.max(3, Math.round(dp / 3));
+      const OB = 60;
+      const OS = -60;
+      let lastBull = -999;
+      let lastBear = -999;
+      for (let i = 2; i < msN - 1; i++) {
+        const candleIdx = candleOffset + i;
+        if (candleIdx < 0 || candleIdx >= candles.length) continue;
+        const bar = candles[candleIdx];
+        if (!bar) continue;
+        const prev = ms[i - 1];
+        const curr = ms[i];
+        const isTrough = ms[i-2] > prev && prev < curr;
+        const isPeak   = ms[i-2] < prev && prev > curr;
+        if (isTrough && prev < OS && candleIdx - lastBull >= minGap) {
+          signalMarkers.push({ origIdx: bar.origIdx, kind: "bull" });
+          lastBull = candleIdx;
+        }
+        if (isPeak && prev > OB && candleIdx - lastBear >= minGap) {
+          signalMarkers.push({ origIdx: bar.origIdx, kind: "bear" });
+          lastBear = candleIdx;
+        }
+      }
+    }
+  }
+
   // Overlays calculés sur les bougies affichées uniquement → EMA démarre dès la 1ère bougie visible
   // Overlays calculés sur le dataset complet → EMA/BB convergés avant la première
   // bougie affichée, comme sur TradingView. L'accès se fait via d.origIdx.
@@ -3852,10 +3901,12 @@ function CandleChart({
     // Calculé sur closes complet pour warm-up correct, extrait sur display via origIdx
     const cValid = closes.map((v, i) => ({ v, i })).filter(x => x.v != null) as { v: number; i: number }[];
     const M = cValid.length;
-    if (M >= 15) {
+    const dp2 = sinewave?.dominantPeriod ?? 14;
+    const rocP2 = Math.max(5, Math.round(dp2 / 2));
+    if (M >= rocP2 + 1) {
       const roc14: number[] = [];
-      for (let j = 14; j < M; j++) {
-        roc14.push(cValid[j - 14].v !== 0 ? ((cValid[j].v - cValid[j - 14].v) / cValid[j - 14].v) * 100 : 0);
+      for (let j = rocP2; j < M; j++) {
+        roc14.push(cValid[j - rocP2].v !== 0 ? ((cValid[j].v - cValid[j - rocP2].v) / cValid[j - rocP2].v) * 100 : 0);
       }
       const WIN = Math.max(20, Math.min(100, Math.floor(roc14.length / 2)));
       const normed: number[] = roc14.map((v, i) => {
@@ -3864,12 +3915,12 @@ function CandleChart({
         const hi = slice[Math.floor(slice.length * 0.95)];
         return (hi == null || lo == null || hi === lo) ? 0 : Math.max(-100, Math.min(100, ((v - lo) / (hi - lo)) * 200 - 100));
       });
-      const k5 = 2 / 6;
+      const k5 = 2 / 4;
       let emaVal = normed[0];
       const momSmoothed: (number|null)[] = new Array(closes.length).fill(null);
       for (let j = 0; j < normed.length; j++) {
         emaVal = j === 0 ? normed[0] : normed[j] * k5 + emaVal * (1 - k5);
-        momSmoothed[cValid[j + 14].i] = parseFloat(Math.max(-100, Math.min(100, emaVal)).toFixed(2));
+        momSmoothed[cValid[j + rocP2].i] = parseFloat(Math.max(-100, Math.min(100, emaVal)).toFixed(2));
       }
       display.forEach((d, dispI) => {
         const v = momSmoothed[d.origIdx];
@@ -4153,6 +4204,11 @@ function CandleChart({
       howToRead: "Ligne verte = objectif haussier (breakout vers le haut). Ligne rouge = objectif baissier (breakdown vers le bas). La cible est valide environ 30 bougies après le breakout — passé ce délai, elle est invalidée.",
       example: "Si un actif consolide entre 100 et 120 (range de 20) puis casse au-dessus de 120, l'objectif de breakout est 140 (+20 depuis le point de cassure). Ce n'est pas garanti — c'est une cible indicative.",
     }},
+    { key: "signals" as OverlayKey, label: "Signaux", color: "#f472b6", edu: {
+      concept: "Les marqueurs BULL et BEAR indiquent les retournements de cycle du Momentum. Un signal BULL (triangle vert ▲) apparaît quand le Momentum sort d'une zone de survente (< -60) et remonte — timing d'achat potentiel. Un signal BEAR (triangle rouge ▽) apparaît quand le Momentum sort d'une zone de surachat (> +60) et redescend — timing de sortie ou de prudence.",
+      howToRead: "Ces signaux indiquent le timing cyclique uniquement — ils doivent toujours être confirmés par le contexte de marché avant d'agir. Un BULL en tendance haussière est plus fiable qu'un BULL en tendance baissière.",
+      example: "Un signal BULL en bas de cycle Momentum (< -60) dans un contexte de range mature est une configuration d'entrée favorable — le cycle acheteur arrive à son terme et le momentum commence à se retourner.",
+    }},
   ];
 
   return (
@@ -4252,6 +4308,39 @@ function CandleChart({
               </g>
             );
           })()}
+
+          {/* ── MARQUEURS BULL / BEAR ── */}
+          {activeOverlays.has("signals") && signalMarkers.map((marker, mi) => {
+            const localIdx = display.findIndex(d => d.origIdx === marker.origIdx);
+            if (localIdx < 0) return null;
+            const bar = display[localIdx];
+            if (!bar) return null;
+            const x    = toX(localIdx);
+            const low  = toPriceY(Math.min(bar.l ?? bar.c ?? 0, bar.c ?? 0));
+            const high = toPriceY(Math.max(bar.h ?? bar.c ?? 0, bar.c ?? 0));
+            const candleH = Math.abs(high - low);
+            const markerOffset  = Math.max(10, candleH * 0.4 + 8);
+            if (marker.kind === "bull") {
+              const cy = low + markerOffset;
+              return (
+                <g key={`sig-${mi}`}>
+                  <polygon
+                    points={`${x},${cy-8} ${x-5},${cy+2} ${x+5},${cy+2}`}
+                    fill="#22c55e" opacity={0.9}
+                  />
+                </g>
+              );
+            }
+            const cy = high - markerOffset;
+            return (
+              <g key={`sig-${mi}`}>
+                <polygon
+                  points={`${x},${cy+8} ${x-5},${cy-2} ${x+5},${cy-2}`}
+                  fill="#ef4444" opacity={0.9}
+                />
+              </g>
+            );
+          })}
 
           {/* ── OVERLAY EMA 20 ── */}
           {activeOverlays.has("ema20") && (() => {
