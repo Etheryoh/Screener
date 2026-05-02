@@ -3745,7 +3745,7 @@ const OVERLAYS_EDU: { key: string; label: string; color: string; edu: TechSignal
     example: "Si un actif consolide entre 100 et 120 (range de 20) puis casse au-dessus de 120, l'objectif de breakout est 140. Ce n'est pas garanti — c'est une cible indicative.",
   }},
   { key: "momentum", label: "Momentum ROC", color: "#60a5fa", edu: {
-    concept: "Le Momentum ROC (Rate of Change) mesure la variation du prix sur les 14 dernières bougies en pourcentage. Il capture la vitesse et la direction du mouvement récent — plus simple et plus direct que le RSI.",
+    concept: "Le Momentum ROC (Rate of Change) mesure la variation du prix sur une fenêtre adaptée au cycle dominant de l'actif (entre 5 et 50 bougies selon l'unité de temps). Il capture la vitesse et la direction du mouvement récent — plus simple et plus direct que le RSI.",
     howToRead: "Au-dessus de +5% : élan haussier — les acheteurs accélèrent. En dessous de -5% : élan baissier — les vendeurs dominent. Proche de 0 : marché sans direction. Un changement de signe (passage de positif à négatif ou inversement) peut précéder un retournement de prix.",
     example: "Si le ROC était à +12% il y a 3 bougies et est maintenant à +2%, la hausse ralentit fortement même si le prix monte encore — signal d'essoufflement à surveiller avant de prendre position.",
   }},
@@ -3760,9 +3760,9 @@ const OVERLAYS_EDU: { key: string; label: string; color: string; edu: TechSignal
     example: "Quand on voit la Sinewave rouge passer au-dessus de la LeadSine dans la zone basse du sous-panel, c'est le signal de retournement cyclique haussier — c'est ce croisement précis qu'il faut surveiller.",
   }},
   { key: "signals" as OverlayKey, label: "Signaux", color: "#f472b6", edu: {
-    concept: "Les marqueurs BULL et BEAR indiquent les retournements de cycle du Momentum PRO. Un signal BULL (triangle vert ▲) apparaît quand le Momentum sort d'une zone de survente (< -60) et remonte — timing d'achat potentiel. Un signal BEAR (triangle rouge ▽) apparaît quand le Momentum sort d'une zone de surachat (> +60) et redescend — timing de sortie ou de prudence.",
-    howToRead: "Ces signaux indiquent le timing cyclique uniquement — ils doivent toujours être confirmés par le contexte de marché (structure, contexte UT supérieure) avant d'agir. Un BULL en tendance haussière est plus fiable qu'un BULL en tendance baissière.",
-    example: "BTC 1W : un signal BULL en bas de cycle Momentum (< -60) dans un contexte de range mature correspond à la Phase 1 Accumulation — configuration d'entrée PRO la plus favorable.",
+    concept: "Les marqueurs BULL et BEAR indiquent les retournements de cycle du Momentum. Un signal BULL (triangle vert ▲) apparaît quand le Momentum sort d'une zone de survente (< -60) et remonte — timing d'achat potentiel. Un signal BEAR (triangle rouge ▽) apparaît quand le Momentum sort d'une zone de surachat (> +60) et redescend — timing de sortie ou de prudence.",
+    howToRead: "Triangle vert ▲ sous une bougie = signal BULL — le Momentum sort d'une zone de survente (< -60) et remonte — timing d'achat potentiel. Triangle rouge ▽ au-dessus = signal BEAR — le Momentum sort d'une zone de surachat (> +60) et redescend. C'est un signal de prudence ou de sortie partielle. Ces signaux sont de timing uniquement — ils doivent toujours être confirmés par le contexte de marché (structure, UT supérieure).",
+    example: "Un signal BULL en bas de cycle Momentum (< -60) dans un contexte de range mature ou de pull-back sur tendance haussière est la configuration d'entrée la plus favorable. Un signal BEAR au sommet (> +60) avec une divergence RSI et une structure d'excès justifie une prise de profit partielle.",
   }},
 ];
 
