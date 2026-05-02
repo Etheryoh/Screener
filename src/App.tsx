@@ -3773,7 +3773,6 @@ function CandleChart({
   period,
   periods,
   displayLimit,
-  sinewave,
 }: {
   chartData: {
     closes:     (number|null)[];
@@ -3788,7 +3787,6 @@ function CandleChart({
   period?:       string;
   periods?:      { key: string; label: string }[];
   displayLimit?: number;
-  sinewave?:     SinewaveResult | null;
 }) {
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -3841,16 +3839,16 @@ function CandleChart({
   const display   = candles.slice(safeStart, safeEnd + 1);
   const N       = display.length;
 
+  const swData = calcSinewave(candles.map(d => d.c));
+
   // ── Marqueurs BULL / BEAR basés sur série Momentum ──
   type SignalMarker = { origIdx: number; kind: "bull" | "bear"; };
   const signalMarkers: SignalMarker[] = [];
   if (activeOverlays.has("signals") && candles.length >= 20) {
-    const candleCloses = candles.map(d => d.c);
-    const swLocal = calcSinewave(candleCloses);
-    if (swLocal && swLocal.momentumSeries.length > 4) {
-      const ms     = swLocal.momentumSeries;
+    if (swData && swData.momentumSeries.length > 4) {
+      const ms     = swData.momentumSeries;
       const msN    = ms.length;
-      const dp     = swLocal.dominantPeriod;
+      const dp     = swData.dominantPeriod;
       const candleOffset = candles.length - msN;
       const minGap = Math.max(3, Math.round(dp / 3));
       const OB = 60;
@@ -3888,7 +3886,6 @@ function CandleChart({
   // displayCloses utilisé uniquement pour la régression (fenêtre visible)
   const displayCloses = display.map(d => d.c as number | null);
   const reg = calcRegressionDeviation(displayCloses);
-  const swData    = sinewave !== undefined ? sinewave : calcSinewave(closes);
 
   // Sinewave series pour le sous-panel
   const sineSeriesDisplay: (number|null)[] = new Array(N).fill(null);
@@ -3897,34 +3894,15 @@ function CandleChart({
   (() => {
     const c = closes.filter((v): v is number => v != null);
     if (c.length < 50) return;
-    // Momentum PRO : ROC(14) normalisé min/max glissant 100 périodes, lissé EMA(5), ±100
-    // Calculé sur closes complet pour warm-up correct, extrait sur display via origIdx
-    const cValid = closes.map((v, i) => ({ v, i })).filter(x => x.v != null) as { v: number; i: number }[];
-    const M = cValid.length;
-    const dp2 = sinewave?.dominantPeriod ?? 14;
-    const rocP2 = Math.max(5, Math.round(dp2 / 2));
-    if (M >= rocP2 + 1) {
-      const roc14: number[] = [];
-      for (let j = rocP2; j < M; j++) {
-        roc14.push(cValid[j - rocP2].v !== 0 ? ((cValid[j].v - cValid[j - rocP2].v) / cValid[j - rocP2].v) * 100 : 0);
-      }
-      const WIN = Math.max(20, Math.min(100, Math.floor(roc14.length / 2)));
-      const normed: number[] = roc14.map((v, i) => {
-        const slice = roc14.slice(Math.max(0, i - WIN + 1), i + 1).slice().sort((a, b) => a - b);
-        const lo = slice[Math.floor(slice.length * 0.05)];
-        const hi = slice[Math.floor(slice.length * 0.95)];
-        return (hi == null || lo == null || hi === lo) ? 0 : Math.max(-100, Math.min(100, ((v - lo) / (hi - lo)) * 200 - 100));
-      });
-      const k5 = 2 / 4;
-      let emaVal = normed[0];
-      const momSmoothed: (number|null)[] = new Array(closes.length).fill(null);
-      for (let j = 0; j < normed.length; j++) {
-        emaVal = j === 0 ? normed[0] : normed[j] * k5 + emaVal * (1 - k5);
-        momSmoothed[cValid[j + rocP2].i] = parseFloat(Math.max(-100, Math.min(100, emaVal)).toFixed(2));
-      }
+    // Momentum depuis swData (calcul unifié)
+    if (swData && swData.momentumSeries.length > 0) {
+      const ms  = swData.momentumSeries;
+      const msN = ms.length;
+      const offset = candles.length - msN;
       display.forEach((d, dispI) => {
-        const v = momSmoothed[d.origIdx];
-        if (v != null) momSeriesDisplay[dispI] = v;
+        const ci = d.origIdx - (closes.length - candles.length);
+        const mi = ci - offset;
+        if (mi >= 0 && mi < msN) momSeriesDisplay[dispI] = ms[mi];
       });
     }
     // Sinewave sur toutes les closes valides, puis extraire les 120 dernières
@@ -4957,7 +4935,6 @@ function ChartBlock({
             period={period}
             periods={periods}
             displayLimit={candleDisplay}
-            sinewave={sinewave}
           />
           <CollapsibleEduBlock overlays={OVERLAYS_EDU} />
         </>
